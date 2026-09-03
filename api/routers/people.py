@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from api.auth import verify_token
 from clients import db
@@ -35,6 +35,16 @@ class PersonList(BaseModel):
 class PersonPatch(BaseModel):
     notes: str | None = None
     relationship_label: str | None = None
+
+    @field_validator("relationship_label")
+    @classmethod
+    def _relationship_label_not_blank(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            raise ValueError("relationship_label must not be blank")
+        return v
 
 
 def to_out(row: dict) -> PersonOut:

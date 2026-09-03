@@ -105,6 +105,11 @@ def test_patch_write_through(monkeypatch):
     assert r.json()["notes"] == "hi"
 
 
+def test_patch_blank_label_is_422():
+    r = client.patch("/people/alice@x.com", json={"relationship_label": "   "})
+    assert r.status_code == 422
+
+
 def test_patch_not_linked_is_409(monkeypatch):
     def raise_unlinked(conn, email, **kw):
         raise person_edit.NotLinked(email)
