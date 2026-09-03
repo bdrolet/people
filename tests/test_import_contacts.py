@@ -156,3 +156,26 @@ def test_iter_messages_retries_on_429(monkeypatch):
     result = list(g.iter_messages("inbox", datetime(2026, 1, 1, tzinfo=UTC)))
     assert result == []
     assert len(calls) == 2
+
+
+def test_retry_after_http_date_falls_back(monkeypatch):
+    calls = []
+    sleeps = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append(url)
+        if len(calls) == 1:
+            # Retry-After as an HTTP-date (RFC 7231), not a delay in seconds.
+            return FakeResp(429, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"})
+        return FakeResp(200, payload={"value": []})
+
+    monkeypatch.setattr(glocal.requests, "get", fake_get)
+    monkeypatch.setattr(glocal.time, "sleep", lambda s: sleeps.append(s))
+
+    g = glocal.GraphLocal()
+    g._token = "t"
+    result = list(g.iter_messages("inbox", datetime(2026, 1, 1, tzinfo=UTC)))
+    assert result == []
+    assert len(calls) == 2
+    # falls back to exponential backoff (2**0 == 1) instead of raising
+    assert sleeps == [1]

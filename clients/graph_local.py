@@ -50,7 +50,13 @@ class GraphLocal:
         for attempt in range(3):
             if resp.status_code != 429 and resp.status_code < 500:
                 break
-            wait = int(resp.headers.get("Retry-After", 0)) or 2**attempt
+            retry_after = resp.headers.get("Retry-After", "")
+            # Retry-After can be either a delay in seconds or an HTTP-date
+            # (RFC 7231); only the digits-only form is a delay we can use
+            # directly — anything else (including a date) falls back to
+            # exponential backoff rather than failing to parse.
+            wait = int(retry_after) if retry_after.strip().isdigit() else 0
+            wait = wait or 2**attempt
             time.sleep(wait)
             resp = requests.get(url, headers=headers, timeout=60)
         resp.raise_for_status()
