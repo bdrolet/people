@@ -10,10 +10,13 @@ import os
 from fastapi import FastAPI, Request
 
 import clients.otel as otel
+from api.routers import people, search
 
 otel.setup_telemetry(os.environ.get("K_SERVICE", "people-api-local"))
 
 app = FastAPI(title="people-api")
+app.include_router(people.router)
+app.include_router(search.router)
 
 
 @app.middleware("http")
@@ -40,6 +43,3 @@ async def request_metrics(request: Request, call_next):
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
-
-
-# No routers yet — a later task adds api/routers/ and includes them here.
