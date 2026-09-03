@@ -28,7 +28,7 @@ def _set_label(person_rn: str, live: dict, label: str) -> None:
         (
             g["resourceName"]
             for n, g in groups.items()
-            if g.get("groupType") != "SYSTEM_CONTACT_GROUP" and n.lower() == wanted.lower()
+            if g.get("groupType") != gsync.SYSTEM_GROUP_TYPE and n.lower() == wanted.lower()
         ),
         None,
     ) or gc.ensure_group(wanted)
@@ -37,7 +37,7 @@ def _set_label(person_rn: str, live: dict, label: str) -> None:
         old_rn = next(
             g["resourceName"]
             for n, g in groups.items()
-            if g.get("groupType") != "SYSTEM_CONTACT_GROUP" and n.lower() == current
+            if g.get("groupType") != gsync.SYSTEM_GROUP_TYPE and n.lower() == current
         )
         gc.modify_group_members(old_rn, [], [person_rn])
     gc.modify_group_members(target, [person_rn], [])

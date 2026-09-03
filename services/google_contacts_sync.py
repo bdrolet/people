@@ -12,7 +12,7 @@ from repo import people, sync_state
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM = "SYSTEM_CONTACT_GROUP"
+SYSTEM_GROUP_TYPE = "SYSTEM_CONTACT_GROUP"
 
 
 def group_name() -> str:
@@ -50,7 +50,7 @@ def relationship_label(person: dict, groups: dict[str, dict]) -> str | None:
         if not rn or rn not in by_rn:
             continue
         name, kind = by_rn[rn]
-        if kind == _SYSTEM or name == group_name():
+        if kind == SYSTEM_GROUP_TYPE or name == group_name():
             continue
         return name.lower()
     return None
@@ -148,6 +148,11 @@ def run_sync(conn: Any) -> dict[str, int]:
         otel.external_errors.add(1, {"system": "google"})
         try:
             sync_state.set_token(conn, token, f"error: {type(e).__name__}")
+            # Controller ruling: commit the error-status row explicitly here.
+            # The surrounding transaction is about to be rolled back by
+            # design (we're re-raising), which would otherwise discard this
+            # diagnostic write along with everything else.
+            conn.commit()
         except Exception:
             logger.warning("could not record sync error status", exc_info=True)
         raise

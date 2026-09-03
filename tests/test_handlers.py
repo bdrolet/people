@@ -6,7 +6,7 @@ import clients.db as db
 import services.google_contacts_sync as gsync
 import services.hubspot_mirror as mirror
 import services.ingest as ingest
-from handlers import email_classified, email_sent
+from handlers import email_classified, email_sent, sync
 from models.types import IngestResult
 
 
@@ -138,3 +138,13 @@ def test_sent_records_to_and_cc(monkeypatch, calls):
     assert conn.commits == 2
     assert log[0] == "commit"
     assert ("google", "bob@x.com") in log and ("hubspot", "bob@x.com") in log
+
+
+def test_sync_handler_commits_twice_on_success(monkeypatch):
+    conn = FakeConn()
+    monkeypatch.setattr(db, "get_conn", lambda: conn)
+    monkeypatch.setattr(gsync, "run_sync", lambda c: {"updated": 1})
+    monkeypatch.setattr(mirror, "reconcile", lambda c: {"adopted": 1})
+    result = sync.run()
+    assert conn.commits == 2
+    assert result == {"google": {"updated": 1}, "hubspot": {"adopted": 1}}

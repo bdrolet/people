@@ -296,3 +296,26 @@ def test_run_sync_records_error_status_and_reraises(wire, monkeypatch):
     with pytest.raises(RuntimeError):
         sync.run_sync(None)
     assert saved == {"token": "tok1", "status": "error: RuntimeError"}
+
+
+class FakeConn:
+    def __init__(self):
+        self.commits = 0
+
+    def commit(self):
+        self.commits += 1
+
+
+def test_run_sync_commits_error_status(wire, monkeypatch):
+    fr = FakeRepo()
+    fg = FakeGC()
+
+    def boom(sync_token):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(fg, "list_connections", boom)
+    wire(fg, fr)
+    conn = FakeConn()
+    with pytest.raises(RuntimeError):
+        sync.run_sync(conn)
+    assert conn.commits == 1
