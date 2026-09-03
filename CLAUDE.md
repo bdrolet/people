@@ -108,12 +108,14 @@ tests/                      one test module per unit
   `received_at`/`category` drive `services/ingest.py::record_inbound`;
   `subject`/`body`/`body_html` are used only for the HubSpot engagement
   (`hubspot_mirror.log_email`), never persisted in `people`.
-- **`email_sent`**: `from`, `to`, `cc`, `sent_at` — `to`+`cc` (Bcc excluded)
-  drive `services/ingest.py::record_outbound`; `from` is checked against
-  `OWN_ADDRESSES` to skip self-sends.
+- **`email_sent`**: `to`, `cc`, `sent_at` — `to`+`cc` (Bcc excluded) drive
+  `services/ingest.py::record_outbound`; the handler never reads `from`.
+  Each recipient is instead filtered through `OWN_ADDRESSES` by
+  `record_outbound`, so a self-addressed recipient is skipped, not the
+  whole message.
 
 Every other field (`message_id`, `importance`, `confidence`, `tags`,
-`reasoning`, `web_link`, `graph_message_id`, `conversation_id`, `subject` on
+`reasoning`, `web_link`, `graph_message_id`, `conversation_id`, `from`, `subject` on
 `email_sent`) is carried in the TypedDict for shape-compatibility but unused
 today. Unknown event kinds are logged and ignored (`main.py::process`),
 exactly as tasks and schedule do.
