@@ -7,6 +7,9 @@
 Runs against whatever DB clients/db.py resolves from env (Cloud SQL connector
 in .env by default). Counters are not idempotent: run once on an empty table,
 or with --reset-counters to zero them first.
+
+Commits after every message, so an interrupted run keeps what it processed;
+re-running is safe with --reset-counters.
 """
 
 import argparse
@@ -26,25 +29,34 @@ from services import google_contacts_sync, hubspot_mirror, ingest  # noqa: E402
 
 
 def run(conn, messages: Iterable[dict], *, own: set[str], dry_run: bool) -> dict[str, int]:
-    counts = {"inbound": 0, "outbound": 0, "newly_eligible": 0}
+    counts = {"inbound": 0, "outbound": 0, "newly_eligible": 0, "skipped": 0}
     for m in messages:
         if m["folder"] == "sentitems":
+            sent_at = m.get("sent_at")
+            if not sent_at:
+                counts["skipped"] += 1
+                continue
             results = ingest.record_outbound(
                 conn,
                 recipients=m["to"] + m["cc"],
                 display_by_email=None,
-                sent_at=ingest.parse_ts(m["sent_at"]),
+                sent_at=ingest.parse_ts(sent_at),
             )
             counts["outbound"] += 1
         else:
             if not m["from"] or m["from"] in own:
+                counts["skipped"] += 1
+                continue
+            received_at = m.get("received_at")
+            if not received_at:
+                counts["skipped"] += 1
                 continue
             results = [
                 ingest.record_inbound(
                     conn,
                     sender=m["from"],
                     display=m.get("from_name"),
-                    received_at=ingest.parse_ts(m["received_at"]),
+                    received_at=ingest.parse_ts(received_at),
                     category=m["category"],
                 )
             ]
@@ -55,6 +67,8 @@ def run(conn, messages: Iterable[dict], *, own: set[str], dry_run: bool) -> dict
             if not dry_run and res.row.get("eligible"):
                 row = google_contacts_sync.ensure_contact(conn, res.row)
                 hubspot_mirror.ensure_contact(conn, row)
+        if not dry_run:
+            conn.commit()
     return counts
 
 

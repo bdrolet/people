@@ -1,8 +1,10 @@
 import importlib.util
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+import clients.graph_local as glocal
 import services.google_contacts_sync as gsync
 import services.hubspot_mirror as mirror
 import services.ingest as ingest
@@ -11,6 +13,18 @@ from models.types import IngestResult
 spec = importlib.util.spec_from_file_location("import_contacts", Path("scripts/import_contacts.py"))
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
+
+
+class FakeConn:
+    """Minimal conn stand-in: run() only ever calls .commit() on it directly
+    (record_inbound/record_outbound/ensure_contact are monkeypatched below and
+    ignore conn)."""
+
+    def __init__(self):
+        self.commits = 0
+
+    def commit(self):
+        self.commits += 1
 
 
 @pytest.fixture
@@ -57,7 +71,7 @@ def msg(folder, frm, to, ts="2026-09-03T12:00:00Z"):
 
 def test_run_routes_inbox_and_sent(wired):
     counts = mod.run(
-        None,
+        FakeConn(),
         [msg("inbox", "alice@x.com", ["me@x.com"]), msg("sentitems", "me@x.com", ["bob@x.com"])],
         own={"me@x.com"},
         dry_run=False,
@@ -70,3 +84,75 @@ def test_run_routes_inbox_and_sent(wired):
 def test_dry_run_skips_side_effects(wired):
     mod.run(None, [msg("inbox", "alice@x.com", ["me@x.com"])], own={"me@x.com"}, dry_run=True)
     assert not any(k in ("google", "hubspot") for k, _ in wired)
+
+
+def test_run_commits_per_message_when_not_dry_run(wired):
+    conn = FakeConn()
+    mod.run(
+        conn,
+        [msg("inbox", "alice@x.com", ["me@x.com"]), msg("sentitems", "me@x.com", ["bob@x.com"])],
+        own={"me@x.com"},
+        dry_run=False,
+    )
+    assert conn.commits == 2
+
+
+def test_run_does_not_commit_in_dry_run(wired):
+    conn = FakeConn()
+    mod.run(
+        conn,
+        [msg("inbox", "alice@x.com", ["me@x.com"]), msg("sentitems", "me@x.com", ["bob@x.com"])],
+        own={"me@x.com"},
+        dry_run=True,
+    )
+    assert conn.commits == 0
+
+
+def test_run_skips_messages_without_timestamp(wired):
+    conn = FakeConn()
+    counts = mod.run(
+        conn,
+        [
+            msg("inbox", "alice@x.com", ["me@x.com"], ts=None),
+            msg("sentitems", "me@x.com", ["bob@x.com"], ts=None),
+        ],
+        own={"me@x.com"},
+        dry_run=False,
+    )
+    assert counts["skipped"] == 2
+    assert counts["inbound"] == 0
+    assert counts["outbound"] == 0
+    assert not wired
+
+
+class FakeResp:
+    def __init__(self, status_code, headers=None, payload=None):
+        self.status_code = status_code
+        self.headers = headers or {}
+        self._payload = payload if payload is not None else {}
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"status {self.status_code}")
+
+
+def test_iter_messages_retries_on_429(monkeypatch):
+    calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append(url)
+        if len(calls) == 1:
+            return FakeResp(429, headers={"Retry-After": "0"})
+        return FakeResp(200, payload={"value": []})
+
+    monkeypatch.setattr(glocal.requests, "get", fake_get)
+    monkeypatch.setattr(glocal.time, "sleep", lambda s: None)
+
+    g = glocal.GraphLocal()
+    g._token = "t"
+    result = list(g.iter_messages("inbox", datetime(2026, 1, 1, tzinfo=UTC)))
+    assert result == []
+    assert len(calls) == 2

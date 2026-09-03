@@ -4,6 +4,7 @@ msal-token-cache secret. Public client: CLIENT_ID + TENANT_ID, no secret."""
 
 import json
 import os
+import time
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +41,20 @@ class GraphLocal:
         self._token = result["access_token"]
         if cache.has_state_changed:
             _CACHE.write_text(cache.serialize())
+            _CACHE.chmod(0o600)
+
+    def _get(self, url: str, headers: dict[str, str]):
+        """GET with retry on throttling/transient errors: up to 4 attempts
+        total, honoring Retry-After on 429 and backing off on 5xx."""
+        resp = requests.get(url, headers=headers, timeout=60)
+        for attempt in range(3):
+            if resp.status_code != 429 and resp.status_code < 500:
+                break
+            wait = int(resp.headers.get("Retry-After", 0)) or 2**attempt
+            time.sleep(wait)
+            resp = requests.get(url, headers=headers, timeout=60)
+        resp.raise_for_status()
+        return resp
 
     def iter_messages(self, folder: str, since: datetime) -> Iterator[dict]:
         """Yields normalized dicts: folder, from, from_name, to, cc, received_at, sent_at."""
@@ -51,8 +66,7 @@ class GraphLocal:
         )
         headers = {"Authorization": f"Bearer {self._token}"}
         while url:
-            resp = requests.get(url, headers=headers, timeout=60)
-            resp.raise_for_status()
+            resp = self._get(url, headers)
             data = resp.json()
             for m in data.get("value", []):
                 frm = (m.get("from") or {}).get("emailAddress") or {}
