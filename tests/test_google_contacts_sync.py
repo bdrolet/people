@@ -217,6 +217,33 @@ def test_ensure_contact_swallows_google_errors(wire, monkeypatch):
     assert out["google_resource_name"] is None
 
 
+def test_ensure_contact_db_failure_propagates(wire, monkeypatch):
+    fr = FakeRepo([row("a@x.com")])
+    fg = FakeGC(found=None)
+    wire(fg, fr)
+
+    def boom(conn, email, **kw):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(people_repo, "set_google", boom)
+    with pytest.raises(RuntimeError):
+        sync.ensure_contact(None, fr.rows["a@x.com"])
+    assert len(fg.created) == 1
+
+
+def test_ensure_contact_reuses_listed_group(wire, monkeypatch):
+    fr = FakeRepo([row("a@x.com")])
+    fg = FakeGC(found=None)
+    wire(fg, fr)
+
+    def must_not_be_called(name):
+        raise AssertionError("must not be called")
+
+    monkeypatch.setattr(gc, "ensure_group", must_not_be_called)
+    sync.ensure_contact(None, fr.rows["a@x.com"])
+    assert fg.created == [(None, "a@x.com", "contactGroups/inbox1")]
+
+
 def test_run_sync_updates_links_creates_deletes(wire):
     fr = FakeRepo(
         [
@@ -255,3 +282,17 @@ def test_run_sync_falls_back_to_full_on_expired_token(wire):
     wire(fg, fr, token="stale")
     sync.run_sync(None)
     assert fg.calls == ["stale", None]
+
+
+def test_run_sync_records_error_status_and_reraises(wire, monkeypatch):
+    fr = FakeRepo()
+    fg = FakeGC()
+
+    def boom(sync_token):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(fg, "list_connections", boom)
+    saved = wire(fg, fr)
+    with pytest.raises(RuntimeError):
+        sync.run_sync(None)
+    assert saved == {"token": "tok1", "status": "error: RuntimeError"}

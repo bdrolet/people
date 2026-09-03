@@ -73,20 +73,19 @@ def ensure_contact(conn: Any, row: dict) -> dict:
         return row
     try:
         groups = gc.list_groups()
-        found = gc.search_by_email(row["email"])
-        if found:
-            _link(conn, row["email"], found, groups)
-        else:
-            created = gc.create_contact(
-                row.get("display_name"), row["email"], gc.ensure_group(group_name())
+        person = gc.search_by_email(row["email"])
+        if person is None:
+            target = (groups.get(group_name()) or {}).get("resourceName") or gc.ensure_group(
+                group_name()
             )
+            person = gc.create_contact(row.get("display_name"), row["email"], target)
             otel.google_contacts_created.add(1)
-            _link(conn, row["email"], created, groups)
-        return people.get(conn, row["email"]) or row
     except Exception:
         otel.external_errors.add(1, {"system": "google"})
         logger.warning("Google ensure_contact failed for %s", row["email"], exc_info=True)
         return row
+    _link(conn, row["email"], person, groups)  # DB write — a failure here propagates
+    return people.get(conn, row["email"]) or row
 
 
 def apply_person(conn: Any, person: dict, groups: dict[str, dict]) -> str | None:
@@ -147,7 +146,10 @@ def run_sync(conn: Any) -> dict[str, int]:
         sync_state.set_token(conn, next_token, "ok")
     except Exception as e:
         otel.external_errors.add(1, {"system": "google"})
-        sync_state.set_token(conn, token, f"error: {type(e).__name__}")
+        try:
+            sync_state.set_token(conn, token, f"error: {type(e).__name__}")
+        except Exception:
+            logger.warning("could not record sync error status", exc_info=True)
         raise
     return counts
 
