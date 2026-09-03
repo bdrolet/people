@@ -37,6 +37,7 @@ data "archive_file" "source" {
     "tests",
     "scripts",
     ".env",
+    ".pre-commit-config.yaml",
     "requirements-dev.txt",
     "conftest.py",
     # Bytecode/test/lint caches: not gitignored from the archive_file's view

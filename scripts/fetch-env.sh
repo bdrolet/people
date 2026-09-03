@@ -6,12 +6,10 @@ secret() { gcloud secrets versions access latest --secret="$1" --project="$PROJE
 tfvar() { grep "^$1" terraform/terraform.tfvars | sed 's/.*= *"\(.*\)"/\1/'; }
 
 cat > .env <<EOF
-CLIENT_ID=$(secret client-id)
-CLIENT_SECRET=$(secret client-secret)
-TENANT_ID=$(secret tenant-id)
-GOOGLE_CALENDAR_CLIENT_ID=$(secret google-calendar-client-id)
-GOOGLE_CALENDAR_CLIENT_SECRET=$(secret google-calendar-client-secret)
-GOOGLE_CONTACTS_REFRESH_TOKEN=$(secret google-contacts-refresh-token 2>/dev/null || echo "")
+GCP_PROJECT_ID=bens-project-462804
+GOOGLE_CLIENT_ID=$(secret google-calendar-client-id)
+GOOGLE_CLIENT_SECRET=$(secret google-calendar-client-secret)
+GOOGLE_REFRESH_TOKEN=$(secret google-contacts-refresh-token 2>/dev/null || echo "")
 HUBSPOT_TOKEN=$(secret hubspot-token)
 HUBSPOT_OWNER_ID=$(tfvar hubspot_owner_id)
 HUBSPOT_MAX_CONTACTS=$(tfvar hubspot_max_contacts)

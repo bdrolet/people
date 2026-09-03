@@ -51,7 +51,7 @@ jobs:
 
       - name: Smoke test deployed service
         env:
-          PEOPLE_API_TOKEN: ${{ secrets.TF_VAR_PEOPLE_API_TOKEN }}
+          PEOPLE_API_TOKEN: ${{ secrets.PEOPLE_API_TOKEN }}
         run: |
           pip install httpx python-dotenv
           URL=$(gcloud run services describe people-api \

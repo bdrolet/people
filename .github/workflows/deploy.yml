@@ -41,9 +41,9 @@ jobs:
         working-directory: terraform
         env:
           TF_VAR_project_id: bens-project-462804
-          TF_VAR_people_db_password: ${{ secrets.TF_VAR_PEOPLE_DB_PASSWORD }}
-          TF_VAR_people_api_token: ${{ secrets.TF_VAR_PEOPLE_API_TOKEN }}
-          TF_VAR_people_sync_token: ${{ secrets.TF_VAR_PEOPLE_SYNC_TOKEN }}
-          TF_VAR_hubspot_owner_id: ${{ vars.HUBSPOT_OWNER_ID }}
           TF_VAR_deployer_sa: ${{ secrets.GCP_DEPLOYER_SA }}
+          TF_VAR_hubspot_owner_id: ${{ vars.HUBSPOT_OWNER_ID }}
+          TF_VAR_own_addresses: ${{ vars.OWN_ADDRESSES }}
+          TF_VAR_automated_sender_domains: ${{ vars.AUTOMATED_SENDER_DOMAINS }}
+          TF_VAR_hubspot_writes_enabled: ${{ vars.HUBSPOT_WRITES_ENABLED || 'false' }}
         run: terraform apply -auto-approve
