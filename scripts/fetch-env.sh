@@ -7,6 +7,11 @@ tfvar() { grep "^$1" terraform/terraform.tfvars | sed 's/.*= *"\(.*\)"/\1/'; }
 
 cat > .env <<EOF
 GCP_PROJECT_ID=bens-project-462804
+# Inbox-owned Graph auth secrets, read-only here — used only by the local
+# import script (scripts/import_contacts.py via clients/graph_local.py),
+# which is a public client and needs no CLIENT_SECRET.
+CLIENT_ID=$(secret client-id)
+TENANT_ID=$(secret tenant-id)
 GOOGLE_CLIENT_ID=$(secret google-calendar-client-id)
 GOOGLE_CLIENT_SECRET=$(secret google-calendar-client-secret)
 GOOGLE_REFRESH_TOKEN=$(secret google-contacts-refresh-token 2>/dev/null || echo "")
