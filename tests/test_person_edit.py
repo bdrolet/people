@@ -84,3 +84,60 @@ def test_unlinked_raises(monkeypatch, wire):
     )
     with pytest.raises(person_edit.NotLinked):
         person_edit.update(None, "a@x.com", notes="x")
+
+
+def test_label_leaves_unrelated_groups_alone(wire, monkeypatch):
+    monkeypatch.setattr(
+        gc,
+        "get_person",
+        lambda rn: {
+            "resourceName": rn,
+            "etag": "e1",
+            "memberships": [
+                {"contactGroupMembership": {"contactGroupResourceName": "contactGroups/fam1"}},
+                {"contactGroupMembership": {"contactGroupResourceName": "contactGroups/inbox1"}},
+                {"contactGroupMembership": {"contactGroupResourceName": "contactGroups/bc1"}},
+            ],
+        },
+    )
+    groups = {
+        **GROUPS,
+        "Book Club": {"resourceName": "contactGroups/bc1", "groupType": "USER_CONTACT_GROUP"},
+    }
+    monkeypatch.setattr(gc, "list_groups", lambda: groups)
+    person_edit.update(None, "a@x.com", relationship_label="colleague")
+    group_calls = [c for c in wire if c[0] == "group"]
+    assert not any("contactGroups/bc1" in c[3] for c in group_calls)
+    assert ("group", "contactGroups/fam1", [], ["people/c1"]) in group_calls
+
+
+def test_label_matches_existing_group_case_insensitively(wire, monkeypatch):
+    def must_not_be_called(name):
+        raise AssertionError("must not be called")
+
+    monkeypatch.setattr(gc, "ensure_group", must_not_be_called)
+    person_edit.update(None, "a@x.com", relationship_label="FAMILY")
+    group_calls = [c for c in wire if c[0] == "group"]
+    assert ("group", "contactGroups/fam1", ["people/c1"], []) in group_calls
+    assert not any(c[3] for c in group_calls)
+
+
+def test_notes_uses_live_etag(wire, monkeypatch):
+    monkeypatch.setattr(
+        gc,
+        "get_person",
+        lambda rn: {"resourceName": "people/c1", "etag": "e2", "memberships": []},
+    )
+    person_edit.update(None, "a@x.com", notes="n")
+    assert ("bio", "people/c1", "e2", "n") in wire
+
+
+def test_partial_failure_still_resyncs_and_reraises(wire, monkeypatch):
+    def boom(g, add, remove):
+        raise RuntimeError("quota")
+
+    monkeypatch.setattr(gc, "modify_group_members", boom)
+    with pytest.raises(RuntimeError):
+        person_edit.update(None, "a@x.com", notes="n", relationship_label="colleague")
+    assert ("sync", "a@x.com") in wire
+    assert any(c[0] == "bio" for c in wire)
