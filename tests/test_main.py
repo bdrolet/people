@@ -43,6 +43,29 @@ def test_process_ignores_unknown(seen):
     assert seen == []
 
 
+class BadEvent:
+    """A CloudEvent whose data is not valid base64/JSON."""
+
+    def __init__(self):
+        self.data = {"message": {"data": "not-valid-base64-or-json!!!", "attributes": {}}}
+
+
+class FakeCounter:
+    def __init__(self):
+        self.calls = []
+
+    def add(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+
+
+def test_process_counts_decode_errors(monkeypatch, seen):
+    counter = FakeCounter()
+    monkeypatch.setattr(main.otel, "errors", counter)
+    with pytest.raises(Exception):
+        main.process(BadEvent())
+    assert counter.calls == [((1, {"handler": "decode"}), {})]
+
+
 class Req:
     def __init__(self, method="POST", auth=None):
         self.method = method

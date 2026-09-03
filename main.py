@@ -41,10 +41,11 @@ otel.setup_telemetry(os.environ.get("K_SERVICE", "people-local"))
 
 @functions_framework.cloud_event
 def process(cloud_event: CloudEvent) -> None:
-    data = json.loads(base64.b64decode(cloud_event.data["message"]["data"]))
-    otel.flush()
-    kind = data.get("event")
+    kind = None
     try:
+        data = json.loads(base64.b64decode(cloud_event.data["message"]["data"]))
+        otel.flush()
+        kind = data.get("event")
         match kind:
             case "email_classified":
                 email_classified.handle(data)
@@ -53,7 +54,7 @@ def process(cloud_event: CloudEvent) -> None:
             case other:
                 logger.info("Ignoring event type %r", other)
     except Exception:
-        otel.errors.add(1, {"handler": str(kind or "unknown")})
+        otel.errors.add(1, {"handler": "decode" if kind is None else str(kind)})
         raise
     finally:
         otel.flush()
