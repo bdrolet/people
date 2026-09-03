@@ -29,6 +29,7 @@ class FakeRepo:
             email, {"email": email, "eligible": False, "my_response_count": 0}
         )
         row["my_response_count"] += 1
+        row["display"] = display
         return dict(row)
 
     def set_flags(self, conn, email, *, automated, eligible):
@@ -102,6 +103,24 @@ def test_outbound_to_automated_address_counts_but_not_eligible(repo):
         conn=None, recipients=["support@x.com"], display_by_email=None, sent_at=TS
     )
     assert results[0].row["eligible"] is False
+
+
+def test_outbound_display_lookup_is_case_insensitive(repo):
+    ingest.record_outbound(
+        conn=None,
+        recipients=["Bob@x.com"],
+        display_by_email={"BOB@X.COM": "Bob"},
+        sent_at=TS,
+    )
+    assert repo.rows["bob@x.com"]["display"] == "Bob"
+
+
+def test_outbound_skips_empty_recipient(repo):
+    results = ingest.record_outbound(
+        conn=None, recipients=["", "bob@x.com"], display_by_email=None, sent_at=TS
+    )
+    assert len(results) == 1
+    assert results[0].row["email"] == "bob@x.com"
 
 
 def test_parse_ts_accepts_iso_with_offset_and_z():

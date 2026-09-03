@@ -23,7 +23,10 @@ def parse_ts(value: str) -> datetime:
 def _apply_flags(conn: Any, row: dict, *, automated: bool, eligible_now: bool) -> IngestResult:
     was_eligible = bool(row.get("eligible"))
     people.set_flags(conn, row["email"], automated=automated, eligible=eligible_now)
-    updated = people.get(conn, row["email"]) or row
+    updated = people.get(conn, row["email"])
+    if updated is None:
+        logger.warning("people row %s vanished after write", row["email"])
+        updated = row
     newly = (not was_eligible) and bool(updated.get("eligible"))
     if newly:
         otel.eligibility_changes.add(1)
@@ -52,11 +55,12 @@ def record_outbound(
     sent_at: datetime,
 ) -> list[IngestResult]:
     results: list[IngestResult] = []
+    displays = {eligibility.normalize(k): v for k, v in (display_by_email or {}).items()}
     for raw in recipients:
         email = eligibility.normalize(raw)
         if not email or eligibility.is_own(email):
             continue
-        display = (display_by_email or {}).get(email)
+        display = displays.get(email)
         row = people.upsert_outbound(conn, email, display, sent_at)
         otel.people_upserts.add(1, {"direction": "outbound"})
         automated = eligibility.is_automated(email)
