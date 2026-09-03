@@ -1,0 +1,26 @@
+# Import script (msal auth, HTTP, Google OAuth device/local flow):
+msal>=1.28
+requests>=2.31
+google-auth-oauthlib>=1.2
+
+ruff>=0.4
+mypy>=1.10
+pytest>=8.0
+pre-commit>=3.7
+# Runtime deps the test suite imports (CI installs only this file):
+httpx>=0.27
+hubspot-api-client>=10.0
+google-api-python-client>=2.130
+google-auth>=2.30
+functions-framework>=3.0
+# [binary] pulls the psycopg-binary wheel, which bundles libpq. Without it a
+# fresh venv has no libpq on macOS and the DB-touching test modules fail at
+# collection, not at assert. Runtime requirements.txt stays plain — the CF/Run
+# images resolve libpq themselves.
+psycopg[binary]>=3.1
+pg8000>=1.31
+cloud-sql-python-connector>=1.7.0
+opentelemetry-sdk>=1.24
+opentelemetry-exporter-otlp-proto-http>=1.24
+python-dotenv>=1.0.0
+fastapi>=0.111

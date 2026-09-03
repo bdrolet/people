@@ -1,0 +1,60 @@
+name: Deploy API
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'api/**'
+      - 'clients/**'
+      - 'repo/**'
+      - 'services/**'
+      - 'models/**'
+      - 'Dockerfile'
+      - 'requirements.txt'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOYER_SA }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Build and push people-api image
+        env:
+          IMAGE: us-central1-docker.pkg.dev/bens-project-462804/people/people-api:latest
+        run: |
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy people-api \
+            --image us-central1-docker.pkg.dev/bens-project-462804/people/people-api:latest \
+            --region us-central1 \
+            --project bens-project-462804
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Smoke test deployed service
+        env:
+          PEOPLE_API_TOKEN: ${{ secrets.TF_VAR_PEOPLE_API_TOKEN }}
+        run: |
+          pip install httpx python-dotenv
+          URL=$(gcloud run services describe people-api \
+            --region us-central1 --project bens-project-462804 \
+            --format='value(status.url)')
+          python scripts/test-api-local.py --base "$URL"

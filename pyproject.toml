@@ -1,0 +1,28 @@
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+# docs/ excluded: ruff formats Python inside fenced markdown blocks, and the
+# plan/spec docs under docs/superpowers/ have illustrative code snippets that
+# are plan text, not real source — they should read exactly as authored, not
+# as ruff would reflow them.
+exclude = [".claude", ".venv", "docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"main.py" = ["E402"]
+"api/main.py" = ["E402"]
+"scripts/*.py" = ["E402", "I001"]
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["repo.*", "clients.db"]
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

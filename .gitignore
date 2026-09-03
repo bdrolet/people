@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+*.tfvars.backup
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Secrets / tokens
+.env
+.env.*
+!.env.example
+*token*.json
+
+# macOS
+.DS_Store
+
+# Subagent-driven-development scratch (briefs, reports, review packages)
+.superpowers/
+
+# Local scratch facts only — this repo is public, nothing personal is committed.
+context/*
+!context/README.md
+!context/standing-context.example.md

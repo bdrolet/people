@@ -1,0 +1,21 @@
+# HubSpot CRM
+hubspot-api-client>=10.0
+
+# Google People API
+google-api-python-client>=2.130
+google-auth>=2.30
+
+# Cloud Functions
+functions-framework>=3.0
+
+# Database — connector uses pg8000 (does NOT support psycopg); psycopg3 for local direct
+psycopg>=3.1
+pg8000>=1.31
+cloud-sql-python-connector>=1.7.0
+
+# Observability
+opentelemetry-sdk>=1.24
+opentelemetry-exporter-otlp-proto-http>=1.24
+
+# Environment (local dev / scripts)
+python-dotenv>=1.0.0

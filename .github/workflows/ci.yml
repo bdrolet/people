@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Format check
+        run: ruff format --check .
+
+      - name: Type check
+        run: mypy clients/ services/ handlers/ models/ repo/ api/ main.py
+
+      - name: Tests
+        run: pytest tests/ -q
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.5"
+
+      - name: Terraform validate
+        working-directory: terraform
+        run: |
+          terraform init -backend=false
+          terraform validate
