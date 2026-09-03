@@ -1,8 +1,9 @@
 resource "google_cloud_scheduler_job" "people_sync" {
-  name      = "people-sync"
-  schedule  = "0 4 * * *"
-  time_zone = "America/New_York"
-  region    = var.region
+  name             = "people-sync"
+  schedule         = "0 4 * * *"
+  time_zone        = "America/New_York"
+  region           = var.region
+  attempt_deadline = "540s"
 
   http_target {
     http_method = "POST"
