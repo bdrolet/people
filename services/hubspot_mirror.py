@@ -114,8 +114,8 @@ def log_email(row: dict, event: dict) -> None:
 
 def reconcile(conn: Any) -> dict[str, int]:
     """Nightly: adopt, heal, enforce, fill (spec §8.3). Raises on a HubSpot
-    listing failure so the sync run reports it; per-contact writes are
-    swallowed."""
+    listing failure or any DB failure so the sync run reports it; per-contact
+    HubSpot write failures are swallowed and counted."""
     counts = {"adopted": 0, "healed": 0, "evicted": 0, "filled": 0}
     if not enabled():
         return counts
@@ -129,7 +129,7 @@ def reconcile(conn: Any) -> dict[str, int]:
         if cid in managed_ids or not c["email"]:
             continue
         row = people.get(conn, c["email"])
-        if row and row["eligible"] and not row.get("hubspot_contact_id"):
+        if row and row.get("eligible") and not row.get("hubspot_contact_id"):
             people.set_hubspot(conn, row["email"], cid)
             counts["adopted"] += 1
 
@@ -141,22 +141,15 @@ def reconcile(conn: Any) -> dict[str, int]:
 
     # enforce
     while total > cap():
-        victim = people.oldest_managed(conn)
-        if victim is None:
-            logger.warning(
-                "HubSpot over cap by %d with no managed contacts to evict", total - cap()
-            )
-            break
         try:
-            hubspot.archive_contact(victim["hubspot_contact_id"])
+            if not _evict_oldest(conn):
+                break  # only unmanaged contacts left — _evict_oldest already warned
         except Exception:
             otel.external_errors.add(1, {"system": "hubspot"})
-            logger.warning("archive failed for %s", victim["email"], exc_info=True)
+            logger.warning("eviction failed during reconcile", exc_info=True)
             break
-        people.clear_hubspot(conn, victim["email"])
         total -= 1
         counts["evicted"] += 1
-        otel.hubspot_evictions.add(1)
 
     # fill
     room = cap() - total

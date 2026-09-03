@@ -212,3 +212,36 @@ def test_reconcile_fills_when_under_cap(monkeypatch, env):
     wire(monkeypatch, fh, fr)
     counts = mirror.reconcile(None)
     assert counts["filled"] == 2 and len(fh.created) == 2
+
+
+def test_reconcile_db_error_propagates(monkeypatch, env):
+    fh = FakeHubSpot(total=1, contacts=[{"id": "hs-b", "email": "b@x.com"}])
+    fr = FakeRepo([row("b@x.com")])
+    wire(monkeypatch, fh, fr)
+
+    def boom(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(people_repo, "set_hubspot", boom)
+    with pytest.raises(RuntimeError):
+        mirror.reconcile(None)
+
+
+def test_reconcile_archive_failure_stops_enforce_without_raising(monkeypatch, env):
+    old = datetime(2025, 1, 1, tzinfo=UTC)
+    monkeypatch.setenv("HUBSPOT_MAX_CONTACTS", "1")
+    fh = FakeHubSpot(
+        total=2,
+        contacts=[{"id": "hs-a", "email": "a@x.com"}, {"id": "hs-b", "email": "b@x.com"}],
+    )
+    fr = FakeRepo([row("a@x.com", cid="hs-a", when=old), row("b@x.com", cid="hs-b")])
+    wire(monkeypatch, fh, fr)
+
+    def boom(*a, **k):
+        raise RuntimeError("archive failed")
+
+    monkeypatch.setattr(hs, "archive_contact", boom)
+    counts = mirror.reconcile(None)
+    assert counts["evicted"] == 0
+    assert fr.rows["a@x.com"]["hubspot_contact_id"] == "hs-a"
+    assert fr.rows["b@x.com"]["hubspot_contact_id"] == "hs-b"
