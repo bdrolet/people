@@ -28,11 +28,17 @@ def _client():
     return HubSpot(access_token=_token())
 
 
+def _as_utc(dt: datetime) -> datetime:
+    """Normalize datetime to UTC: naive → assume UTC; aware → convert to UTC."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _hs_date(dt: datetime) -> str:
     """HubSpot date property: midnight UTC in ms."""
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return str(int(dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000))
+    dt_utc = _as_utc(dt)
+    return str(int(dt_utc.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000))
 
 
 def _split_name(display_name: str | None) -> tuple[str, str]:
@@ -140,7 +146,7 @@ def log_email(
     )
 
     props = {
-        "hs_timestamp": str(int(received_at.timestamp() * 1000)),
+        "hs_timestamp": str(int(_as_utc(received_at).timestamp() * 1000)),
         "hs_email_subject": subject or "(no subject)",
         "hs_email_direction": "INCOMING_EMAIL",
         "hs_email_status": "SENT",
