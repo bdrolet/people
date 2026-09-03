@@ -3,7 +3,7 @@
 set -e
 PROJECT=bens-project-462804
 secret() { gcloud secrets versions access latest --secret="$1" --project="$PROJECT"; }
-tfvar() { grep "^$1" terraform/terraform.tfvars | sed 's/.*= *"\(.*\)"/\1/'; }
+tfvar() { grep "^$1" terraform/terraform.tfvars | sed -E 's/^[^=]+=[[:space:]]*("([^"]*)"|([^[:space:]#]+)).*/\2\3/'; }
 
 cat > .env <<EOF
 GCP_PROJECT_ID=bens-project-462804
