@@ -66,6 +66,14 @@ class FakeRepo:
         return self.rows.get(email)
 
 
+class FakeConn:
+    def __init__(self):
+        self.commits = 0
+
+    def commit(self):
+        self.commits += 1
+
+
 def row(email, eligible=True, cid=None, when=TS):
     return {
         "email": email,
@@ -196,13 +204,15 @@ def test_reconcile_adopt_heal_enforce_fill(monkeypatch, env):
         ]
     )
     wire(monkeypatch, fh, fr)
-    counts = mirror.reconcile(None)
+    conn = FakeConn()
+    counts = mirror.reconcile(conn)
     assert counts["adopted"] == 1 and fr.rows["b@x.com"]["hubspot_contact_id"] == "hs-b"
     assert counts["healed"] == 1 and fr.rows["gone@x.com"]["hubspot_contact_id"] is None
     # cap=2, total=3 after adopt/heal → evict the oldest managed (a) once
     assert counts["evicted"] == 1 and fh.archived == ["hs-a"]
     # now total=2 == cap → nothing to fill
     assert counts["filled"] == 0 and fh.created == []
+    assert conn.commits >= 1
 
 
 def test_reconcile_fills_when_under_cap(monkeypatch, env):
@@ -210,7 +220,7 @@ def test_reconcile_fills_when_under_cap(monkeypatch, env):
     fh = FakeHubSpot(total=1, contacts=[{"id": "hs-a", "email": "a@x.com"}])
     fr = FakeRepo([row("a@x.com", cid="hs-a"), row("n1@x.com"), row("n2@x.com"), row("n3@x.com")])
     wire(monkeypatch, fh, fr)
-    counts = mirror.reconcile(None)
+    counts = mirror.reconcile(FakeConn())
     assert counts["filled"] == 2 and len(fh.created) == 2
 
 
@@ -224,7 +234,7 @@ def test_reconcile_db_error_propagates(monkeypatch, env):
 
     monkeypatch.setattr(people_repo, "set_hubspot", boom)
     with pytest.raises(RuntimeError):
-        mirror.reconcile(None)
+        mirror.reconcile(FakeConn())
 
 
 def test_reconcile_archive_failure_stops_enforce_without_raising(monkeypatch, env):
@@ -241,7 +251,17 @@ def test_reconcile_archive_failure_stops_enforce_without_raising(monkeypatch, en
         raise RuntimeError("archive failed")
 
     monkeypatch.setattr(hs, "archive_contact", boom)
-    counts = mirror.reconcile(None)
+    counts = mirror.reconcile(FakeConn())
     assert counts["evicted"] == 0
     assert fr.rows["a@x.com"]["hubspot_contact_id"] == "hs-a"
     assert fr.rows["b@x.com"]["hubspot_contact_id"] == "hs-b"
+
+
+def test_reconcile_disabled_does_not_commit(monkeypatch, env):
+    monkeypatch.setenv("HUBSPOT_WRITES_ENABLED", "false")
+    fh, fr = FakeHubSpot(), FakeRepo([])
+    wire(monkeypatch, fh, fr)
+    conn = FakeConn()
+    counts = mirror.reconcile(conn)
+    assert counts == {"adopted": 0, "healed": 0, "evicted": 0, "filled": 0}
+    assert conn.commits == 0

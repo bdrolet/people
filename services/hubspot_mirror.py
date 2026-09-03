@@ -64,6 +64,9 @@ def _evict_oldest(conn: Any) -> bool:
 
 
 def _create(conn: Any, row: dict) -> str:
+    # Unlike google_contacts_sync.ensure_contact, a set_hubspot DB failure
+    # here is swallowed by the caller (system="hubspot") and healed by the
+    # nightly adopt phase (by email).
     existing = hubspot.find_by_email(row["email"])
     if existing:
         cid = existing["id"]
@@ -115,7 +118,16 @@ def log_email(row: dict, event: dict) -> None:
 def reconcile(conn: Any) -> dict[str, int]:
     """Nightly: adopt, heal, enforce, fill (spec §8.3). Raises on a HubSpot
     listing failure or any DB failure so the sync run reports it; per-contact
-    HubSpot write failures are swallowed and counted."""
+    HubSpot write failures are swallowed and counted.
+
+    Controller ruling: unlike other services, this one commits its own
+    progress along the way instead of leaving it all to the handler's final
+    commit. Each phase here interleaves an external HubSpot write with a DB
+    write, and a function timeout partway through must not discard DB rows
+    that already match HubSpot reality (or, worse, replay a HubSpot create
+    against a row we already wrote). The handler's final commit still covers
+    the Google half of the sync run.
+    """
     counts = {"adopted": 0, "healed": 0, "evicted": 0, "filled": 0}
     if not enabled():
         return counts
@@ -139,6 +151,8 @@ def reconcile(conn: Any) -> dict[str, int]:
             people.clear_hubspot(conn, r["email"])
             counts["healed"] += 1
 
+    conn.commit()
+
     # enforce
     while total > cap():
         try:
@@ -150,6 +164,7 @@ def reconcile(conn: Any) -> dict[str, int]:
             break
         total -= 1
         counts["evicted"] += 1
+        conn.commit()
 
     # fill
     room = cap() - total
@@ -158,6 +173,7 @@ def reconcile(conn: Any) -> dict[str, int]:
             try:
                 _create(conn, row)
                 counts["filled"] += 1
+                conn.commit()
             except Exception:
                 otel.external_errors.add(1, {"system": "hubspot"})
                 logger.warning("fill create failed for %s", row["email"], exc_info=True)
