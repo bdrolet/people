@@ -3,15 +3,18 @@
 set -e
 PROJECT=bens-project-462804
 secret() { gcloud secrets versions access latest --secret="$1" --project="$PROJECT"; }
-tfvar() { grep "^$1" terraform/terraform.tfvars | sed 's/.*= *"\(.*\)"/\1/'; }
+tfvar() { grep "^$1" terraform/terraform.tfvars | sed -E 's/^[^=]+=[[:space:]]*("([^"]*)"|([^[:space:]#]+)).*/\2\3/'; }
 
 cat > .env <<EOF
+GCP_PROJECT_ID=bens-project-462804
+# Inbox-owned Graph auth secrets, read-only here — used only by the local
+# import script (scripts/import_contacts.py via clients/graph_local.py),
+# which is a public client and needs no CLIENT_SECRET.
 CLIENT_ID=$(secret client-id)
-CLIENT_SECRET=$(secret client-secret)
 TENANT_ID=$(secret tenant-id)
-GOOGLE_CALENDAR_CLIENT_ID=$(secret google-calendar-client-id)
-GOOGLE_CALENDAR_CLIENT_SECRET=$(secret google-calendar-client-secret)
-GOOGLE_CONTACTS_REFRESH_TOKEN=$(secret google-contacts-refresh-token 2>/dev/null || echo "")
+GOOGLE_CLIENT_ID=$(secret google-calendar-client-id)
+GOOGLE_CLIENT_SECRET=$(secret google-calendar-client-secret)
+GOOGLE_REFRESH_TOKEN=$(secret google-contacts-refresh-token 2>/dev/null || echo "")
 HUBSPOT_TOKEN=$(secret hubspot-token)
 HUBSPOT_OWNER_ID=$(tfvar hubspot_owner_id)
 HUBSPOT_MAX_CONTACTS=$(tfvar hubspot_max_contacts)

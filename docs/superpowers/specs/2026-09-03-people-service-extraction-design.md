@@ -75,7 +75,7 @@ does).
 | **Infra** | `terraform/` — GCS backend `bens-project-462804-tf-state`, state prefix `people` |
 
 Repo is **public**. Nothing personal is committed: the HubSpot owner id (today
-hardcoded as `"93744502"` in inbox's client), the automated-sender skip
+hardcoded as `<numeric owner id>` in inbox's client), the automated-sender skip
 domains, the own-address list, the cap, and every token are env vars or
 secrets. `context/` (if any) is gitignored like tasks.
 
@@ -453,7 +453,7 @@ possible (Graph can notify twice); people's counters accept that (§6.1).
   "graph_message_id": "<immutable id>",
   "conversation_id": "<Graph conversationId or null>",
   "sent_at": "2026-09-03T14:05:00+00:00",
-  "from": "ben@drolet.cloud",
+  "from": "you@example.com",
   "to": ["alice@example.com"],
   "cc": [],
   "subject": "Re: …"

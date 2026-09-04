@@ -1,0 +1,5 @@
+deployer_sa              = "github-deployer@bens-project-462804.iam.gserviceaccount.com"
+hubspot_owner_id         = "<numeric owner id from HubSpot>"
+own_addresses            = "you@example.com,alias@example.com"
+automated_sender_domains = "group.calendar.google.com,bcc.na2.hubspot.com"
+# hubspot_writes_enabled = true   # Phase C
