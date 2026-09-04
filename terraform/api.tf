@@ -200,6 +200,21 @@ resource "google_cloud_run_v2_service_iam_member" "deployer_run_developer" {
   member   = "serviceAccount:${var.deployer_sa}"
 }
 
+# Custom domain — DNS half lives in ~/src/infra (cloudflare/drolet-cloud.tf:
+# CNAME people-api -> ghs.googlehosted.com, DNS-only). Same shape as schedule-api.
+resource "google_cloud_run_domain_mapping" "api" {
+  name     = "people-api.drolet.cloud"
+  location = var.region
+
+  metadata {
+    namespace = var.project_id
+  }
+
+  spec {
+    route_name = google_cloud_run_v2_service.api.name
+  }
+}
+
 output "people_api_url" {
   description = "people-api Cloud Run service URL"
   value       = google_cloud_run_v2_service.api.uri
