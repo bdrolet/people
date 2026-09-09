@@ -20,7 +20,7 @@ first.
 ## Base URL and token
 
 ```bash
-BASE=$(cd ~/src/people/terraform && terraform output -raw people_api_url)
+BASE=https://people-api.drolet.cloud
 TOKEN=$(gcloud secrets versions access latest --secret people-api-token --project bens-project-462804)
 ```
 

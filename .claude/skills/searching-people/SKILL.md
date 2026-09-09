@@ -13,10 +13,10 @@ description: >
 ## Base URL
 
 ```bash
-BASE=$(cd ~/src/people/terraform && terraform output -raw people_api_url)
+BASE=https://people-api.drolet.cloud
 ```
 
-No custom domain is mapped yet — `people_api_url` is a `run.app` URL.
+`people-api.drolet.cloud` is the Cloud Run domain mapping (terraform/api.tf); the raw `run.app` URL is still available via `cd ~/src/people/terraform && terraform output -raw people_api_url` if DNS is ever the problem.
 
 ## Auth token
 
