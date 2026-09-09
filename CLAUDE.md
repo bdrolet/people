@@ -241,11 +241,11 @@ either workflow can run unattended — see "First-time setup" in `README.md`.
 
 Manual/local verification: `/deploy-people` and `/verifying-pr-locally` skills.
 
-**Phase C.** `HUBSPOT_WRITES_ENABLED` (Terraform var
-`hubspot_writes_enabled`) defaults to `false` — people builds its index and
-creates Google Contacts, but writes nothing to HubSpot, until the inbox-side
-extraction (removing inbox's own HubSpot code and `senders` table, per the
-design's §11 Phase B) ships and is verified. Flipping it to `true` is a
-one-line `terraform.tfvars` change followed by a manual `people-sync` run
-(review the eviction count in the logs before letting the scheduler own it
-unattended) — the design's cutover phases are in §11 of the spec.
+**Phase C (shipped 2026-09-08).** `HUBSPOT_WRITES_ENABLED` (Terraform var
+`hubspot_writes_enabled`, GitHub variable of the same name) is `true`: the
+inbox-side extraction (inbox PR #52 — no HubSpot code, no `senders` table,
+`email_sent` flowing) shipped first, then the flag was flipped and the first
+reconcile run by hand — it adopted 19 existing HubSpot contacts, filled 14 and
+evicted none (HubSpot was under the cap). The nightly `people-sync` owns the
+mirror from here; the design's cutover phases are in §11 of the spec. To pause
+HubSpot writes again, set the variable back to `false` and apply.
