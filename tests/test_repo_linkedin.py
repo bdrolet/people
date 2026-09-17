@@ -112,3 +112,92 @@ def test_replace_snapshot_batches():
         (sql, p) for sql, p in conn.calls if sql.startswith("INSERT INTO linkedin_connections")
     ]
     assert [len(p) // 15 for _, p in inserts] == [500, 500, 201]
+
+
+def test_connection_for_person():
+    conn = FakeConn(results=[[{"profile_url": "linkedin.com/in/alice-example"}]])
+    row = linkedin.connection_for_person(conn, "alice@example.com")
+    sql, params = conn.calls[0]
+    assert "FROM linkedin_connections WHERE person_email = %s" in sql
+    assert "ORDER BY last_message_at DESC NULLS LAST" in sql and sql.endswith("LIMIT 1")
+    assert params == ("alice@example.com",) and row["profile_url"].endswith("alice-example")
+
+
+def test_search_connections():
+    conn = FakeConn(results=[[]])
+    linkedin.search_connections(conn, " Health ", 20)
+    sql, params = conn.calls[0]
+    for col in ("full_name", "company", "position"):
+        assert f"{col} ILIKE %s" in sql and f"similarity({col}, %s) > 0.3" in sql
+    assert params == ("%health%",) * 3 + ("Health",) * 3 + (20,)
+
+
+def test_list_connections_no_filters():
+    conn = FakeConn(results=[[]])
+    linkedin.list_connections(conn)
+    sql, params = conn.calls[0]
+    assert "WHERE" not in sql
+    assert sql.endswith(
+        "ORDER BY last_message_at DESC NULLS LAST, connected_on DESC NULLS LAST LIMIT %s"
+    )
+    assert params == (50,)
+
+
+def test_list_connections_all_filters():
+    conn = FakeConn(results=[[]])
+    linkedin.list_connections(
+        conn,
+        q="ali",
+        company="Example",
+        position="cto",
+        min_messages=3,
+        replied=False,
+        quiet_since=date(2026, 1, 1),
+        unmatched=True,
+        limit=10,
+    )
+    sql, params = conn.calls[0]
+    assert (
+        "WHERE full_name ILIKE %s AND company ILIKE %s AND position ILIKE %s"
+        " AND message_count >= %s AND my_message_count = 0 AND last_message_at < %s"
+        " AND person_email IS NULL ORDER BY"
+    ) in sql
+    assert params == ("%ali%", "%Example%", "%cto%", 3, date(2026, 1, 1), 10)
+
+
+def test_list_connections_true_false_variants():
+    conn = FakeConn(results=[[]])
+    linkedin.list_connections(conn, replied=True, unmatched=False)
+    sql, _ = conn.calls[0]
+    assert "my_message_count > 0 AND person_email IS NOT NULL" in sql
+
+
+def test_get_connection():
+    conn = FakeConn(results=[[]])
+    assert linkedin.get_connection(conn, "linkedin.com/in/nobody") is None
+    sql, params = conn.calls[0]
+    assert "WHERE profile_url = %s" in sql and params == ("linkedin.com/in/nobody",)
+
+
+def test_messages_for_uses_participant_index_expression():
+    conn = FakeConn(results=[[]])
+    linkedin.messages_for(conn, "linkedin.com/in/alice-example", 100)
+    sql, params = conn.calls[0]
+    assert "(recipient_profile_urls || ARRAY[sender_profile_url]) @> ARRAY[%s]::text[]" in sql
+    assert sql.endswith("ORDER BY sent_at DESC LIMIT %s")
+    assert params == ("linkedin.com/in/alice-example", 100)
+
+
+def test_recommendations_for():
+    conn = FakeConn(results=[[]])
+    linkedin.recommendations_for(conn, "linkedin.com/in/alice-example")
+    sql, params = conn.calls[0]
+    assert "FROM linkedin_recommendations WHERE profile_url = %s" in sql
+    assert params == ("linkedin.com/in/alice-example",)
+
+
+def test_latest_import():
+    conn = FakeConn(results=[[{"source": "Basic_Export"}]])
+    assert linkedin.latest_import(conn) == {"source": "Basic_Export"}
+    sql, _ = conn.calls[0]
+    assert "FROM linkedin_imports ORDER BY id DESC LIMIT 1" in sql
