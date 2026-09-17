@@ -26,6 +26,7 @@ def test_normalize_profile_url(raw, expected):
         ("Élodie  Accent", "elodie accent"),
         ("Alice E.", "alice e"),
         ("Mary-Jane O'Brien", "mary-jane o'brien"),
+        ("Mary-Jane O'Brien", "mary-jane o'brien"),  # U+2019 typographic apostrophe
         ("  BOB   sample ", "bob sample"),
         (None, ""),
     ],

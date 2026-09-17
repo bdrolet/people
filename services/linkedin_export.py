@@ -19,6 +19,13 @@ class ExportError(Exception):
 
 _URL_PREFIX = re.compile(r"^(https?://)?(www\.)?")
 _DATE_FORMATS = ("%d %b %Y", "%m/%d/%y %I:%M %p", "%m/%d/%y, %I:%M %p", "%m/%d/%Y", "%Y-%m-%d")
+_APOSTROPHE_MAP = str.maketrans(
+    {
+        "’": "'",  # U+2019 RIGHT SINGLE QUOTATION MARK
+        "‘": "'",  # U+2018 LEFT SINGLE QUOTATION MARK
+        "ʼ": "'",  # U+02BC MODIFIER LETTER APOSTROPHE
+    }
+)
 
 
 def normalize_profile_url(url: str | None) -> str | None:
@@ -31,6 +38,7 @@ def normalize_name(name: str | None) -> str:
     """Matching key only — stored names keep their original form (§5.2)."""
     decomposed = unicodedata.normalize("NFKD", name or "")
     s = "".join(c for c in decomposed if not unicodedata.combining(c)).lower()
+    s = s.translate(_APOSTROPHE_MAP)
     s = re.sub(r"[^\w\s'-]", " ", s)
     return " ".join(s.split())
 
