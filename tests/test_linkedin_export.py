@@ -205,3 +205,39 @@ def test_zip_and_nested_directory_inputs(tmp_path):
             zf.write(p, f"nested/{p.name}")
     s = lx.parse_export(archive, now=NOW)
     assert s.source == "Basic_Export.zip" and len(s.connections) == 6 and len(s.messages) == 7
+
+
+PEOPLE = [
+    # Alice matches by email; her display_name collides with Élodie's to prove a
+    # claimed email is never re-used by a name match.
+    {"email": "alice@example.com", "display_name": "Elodie Accent"},
+    {"email": "Bob@Work.example", "display_name": "Bob  Sample"},
+    {"email": "dana@dup.example", "display_name": "Dana Dup"},
+    {"email": "carol@a.example", "display_name": "Carol Test"},
+    {"email": "carol@b.example", "display_name": "carol test"},
+    {"email": "nameless@x.example", "display_name": None},
+]
+
+
+def test_match_people():
+    s = lx.parse_export(FIXTURE, now=NOW)
+    lx.match_people(s, PEOPLE)
+    by_url = conns(s)
+    links = {url: (c.person_email, c.match_method) for url, c in by_url.items()}
+    assert links == {
+        "linkedin.com/in/alice-example": ("alice@example.com", "email"),
+        "linkedin.com/in/bob-sample": ("bob@work.example", "name"),
+        "linkedin.com/in/carol-test": (None, None),  # two people named Carol Test
+        "linkedin.com/in/dana-dup-1": (None, None),  # two connections named Dana Dup
+        "linkedin.com/in/dana-dup-2": (None, None),
+        "linkedin.com/in/elodie-accent": (None, None),  # only candidate already claimed by email
+    }
+    assert (s.matched_by_email, s.matched_by_name) == (1, 1)
+
+
+def test_match_people_rerun_clears_stale_links():
+    s = lx.parse_export(FIXTURE, now=NOW)
+    lx.match_people(s, PEOPLE)
+    lx.match_people(s, [])
+    assert all(c.person_email is None and c.match_method is None for c in s.connections)
+    assert (s.matched_by_email, s.matched_by_name) == (0, 0)

@@ -312,3 +312,31 @@ def _parse_recommendations(
             )
         )
     return out
+
+
+def match_people(snapshot: LinkedInSnapshot, people_rows: list[dict]) -> None:
+    """Soft-link connections to people rows (§5.4): exact email first, then a
+    normalized name unique among people and among connections. Wrong links are
+    worse than missing ones."""
+    emails = {normalize_email(r["email"]) for r in people_rows}
+    for c in snapshot.connections:
+        c.person_email = c.match_method = None
+        if c.email and c.email in emails:
+            c.person_email, c.match_method = c.email, "email"
+    claimed = {c.person_email for c in snapshot.connections if c.person_email}
+
+    people_by_name = _unique_by_name(
+        (r.get("display_name") or "", normalize_email(r["email"])) for r in people_rows
+    )
+    connection_names = _unique_by_name((c.full_name, c.profile_url) for c in snapshot.connections)
+    for c in snapshot.connections:
+        if c.person_email:
+            continue
+        key = normalize_name(c.full_name)
+        email = people_by_name.get(key)
+        if email and email not in claimed and connection_names.get(key) == c.profile_url:
+            c.person_email, c.match_method = email, "name"
+            claimed.add(email)
+
+    snapshot.matched_by_email = sum(c.match_method == "email" for c in snapshot.connections)
+    snapshot.matched_by_name = sum(c.match_method == "name" for c in snapshot.connections)
