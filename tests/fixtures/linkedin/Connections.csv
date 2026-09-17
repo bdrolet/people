@@ -1,0 +1,11 @@
+Notes:
+"When exporting your connection data, you may notice that some of the email addresses are missing. You will only see email addresses for connections who have allowed it."
+
+First Name,Last Name,URL,Email Address,Company,Position,Connected On,Extra Column
+Alice,Example,https://www.linkedin.com/in/alice-example,Alice@Example.com,Example Health,CTO,02 Apr 2021,x
+Bob,Sample,https://www.linkedin.com/in/Bob-Sample/,,Sample Corp,VP Engineering,15 Jan 2019,
+Carol,Test,https://www.linkedin.com/in/carol-test?trk=abc,,Test Labs,Founder,01 Mar 2020,
+Dana,Dup,https://www.linkedin.com/in/dana-dup-1,,Dup Inc,Engineer,05 May 2022,
+Dana,Dup,https://www.linkedin.com/in/dana-dup-2,,Other Inc,Designer,06 May 2022,
+Élodie,Accent,https://www.linkedin.com/in/elodie-accent,,Accent SA,Partner,07 Jun 2023,
+Nobody,Nourl,,,,,08 Jul 2023,

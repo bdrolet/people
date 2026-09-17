@@ -1,0 +1,9 @@
+CONVERSATION ID,CONVERSATION TITLE,FROM,SENDER PROFILE URL,TO,RECIPIENT PROFILE URLS,DATE,SUBJECT,CONTENT,FOLDER
+c1,,Alice Example,https://www.linkedin.com/in/alice-example,Me Example,https://www.linkedin.com/in/me-example,2026-01-10 09:00:00 UTC,,Hi there,INBOX
+c1,,Me Example,https://www.linkedin.com/in/me-example,Alice Example,https://www.linkedin.com/in/alice-example,2026-01-11 10:00:00 UTC,,Hello back,INBOX
+c1,,Alice Example,https://www.linkedin.com/in/alice-example,Me Example,https://www.linkedin.com/in/me-example,2026-02-01 08:30:00 UTC,,"Coffee, next week?",INBOX
+c2,Group chat,Me Example,https://www.linkedin.com/in/me-example,"Alice Example,Bob Sample","https://www.linkedin.com/in/alice-example,https://www.linkedin.com/in/bob-sample",2025-06-01 12:00:00 UTC,,Intro,INBOX
+c2,Group chat,Bob Sample,https://www.linkedin.com/in/bob-sample,"Me Example,Alice Example","https://www.linkedin.com/in/me-example,https://www.linkedin.com/in/alice-example",2025-06-02 12:00:00 UTC,,Thanks,INBOX
+c3,,Rita Recruiter,https://www.linkedin.com/in/rita-recruiter,Me Example,https://www.linkedin.com/in/me-example,2026-03-01 15:00:00 UTC,Opportunity,Are you open?,INBOX
+c4,,Carol Test,,Me Example,https://www.linkedin.com/in/me-example,2024-12-24 18:00:00 UTC,,Happy holidays,INBOX
+c4,,Me Example,https://www.linkedin.com/in/me-example,Carol Test,,not-a-date,,bad row,INBOX
