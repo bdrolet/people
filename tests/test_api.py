@@ -253,6 +253,19 @@ def test_linkedin_connection_detail_404():
     assert client.get("/linkedin/connections/nobody").status_code == 404
 
 
+def test_linkedin_connection_detail_percent_encoded_non_ascii_slug(monkeypatch):
+    seen = {}
+
+    def get_connection(conn, url):
+        seen["url"] = url
+        return None
+
+    monkeypatch.setattr(linkedin_repo, "get_connection", get_connection)
+    r = client.get("/linkedin/connections/J%C3%B6rg-Example")
+    assert r.status_code == 404
+    assert seen["url"] == "linkedin.com/in/jörg-example"
+
+
 def test_linkedin_imports_latest(monkeypatch):
     assert client.get("/linkedin/imports/latest").status_code == 404
     monkeypatch.setattr(

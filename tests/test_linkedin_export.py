@@ -15,6 +15,8 @@ from services import linkedin_export as lx
         ("http://linkedin.com/in/bob?trk=abc", "linkedin.com/in/bob"),
         ("www.linkedin.com/in/carol#top", "linkedin.com/in/carol"),
         ("  linkedin.com/in/dana  ", "linkedin.com/in/dana"),
+        ("https://www.linkedin.com/in/J%C3%B6rg-Example/", "linkedin.com/in/jörg-example"),
+        ("linkedin.com/in/Jörg-Example", "linkedin.com/in/jörg-example"),
         ("", None),
         (None, None),
     ],
@@ -67,6 +69,16 @@ def test_read_table_skips_preamble_blank_rows_and_keeps_extra_columns():
 def test_read_table_missing_required_column_raises():
     with pytest.raises(lx.ExportError, match="Connections.csv.*Connected On"):
         lx.read_table(PREAMBLE_CSV, {"First Name", "Connected On"}, "Connections.csv")
+
+
+def test_read_table_handles_field_over_default_csv_limit():
+    # LinkedIn message bodies can exceed Python's default 131072-char csv field
+    # limit; a longer CONTENT cell must not raise _csv.Error.
+    huge = "x" * 200_000
+    csv_text = f"CONVERSATION ID,CONTENT\nc1,{huge}\n"
+    rows = lx.read_table(csv_text, {"CONVERSATION ID", "CONTENT"}, "messages.csv")
+    assert len(rows) == 1
+    assert rows[0]["CONTENT"] == huge
 
 
 @pytest.mark.parametrize(

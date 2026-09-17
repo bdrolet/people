@@ -15,6 +15,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable
 from datetime import UTC, date, datetime
 from pathlib import Path
+from urllib.parse import unquote
 
 from models.linkedin import (
     LinkedInConnection,
@@ -24,12 +25,17 @@ from models.linkedin import (
 )
 from services.eligibility import normalize as normalize_email
 
+# LinkedIn message bodies can exceed Python's default 131072-char csv field
+# limit; raise it rather than crash on a long CONTENT cell. Not sys.maxsize —
+# that overflows the C long the csv module casts it to on some platforms.
+csv.field_size_limit(2**31 - 1)
+
 
 class ExportError(Exception):
     """The export is unusable: a required file or column is missing."""
 
 
-_URL_PREFIX = re.compile(r"^(https?://)?(www\.)?")
+_URL_PREFIX = re.compile(r"^(https?://)?(www\.)?", re.IGNORECASE)
 _DATE_FORMATS = ("%d %b %Y", "%m/%d/%y %I:%M %p", "%m/%d/%y, %I:%M %p", "%m/%d/%Y", "%Y-%m-%d")
 _APOSTROPHE_MAP = str.maketrans(
     {
@@ -41,8 +47,9 @@ _APOSTROPHE_MAP = str.maketrans(
 
 
 def normalize_profile_url(url: str | None) -> str | None:
-    u = (url or "").strip().lower()
+    u = (url or "").strip()
     u = _URL_PREFIX.sub("", u).split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    u = unquote(u).lower()
     return u or None
 
 
