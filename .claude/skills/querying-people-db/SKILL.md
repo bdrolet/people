@@ -54,6 +54,10 @@ connection paths (Cloud SQL connector and local direct psycopg3).
 |---|---|
 | `people` | `email` (PK), `display_name`, `first_seen`, `last_seen`, `last_contacted`, `message_count`, `my_response_count`, `relationship_label`, `notes`, `eligible`, `automated`, `google_resource_name`, `google_etag`, `google_deleted_at`, `hubspot_contact_id`, `hubspot_synced_at`, `updated_at` |
 | `sync_state` | one row, `key='google_contacts'`: `sync_token`, `last_run_at`, `last_status` |
+| `linkedin_connections` | LinkedIn snapshot, PK `profile_url` (`linkedin.com/in/<slug>`): `full_name`, `email`, `company`, `position`, `connected_on`, `person_email` (soft link to `people.email`), `match_method`, `message_count`, `my_message_count`, `last_message_at`, `last_my_message_at`, `snapshot_at` |
+| `linkedin_messages` | `conversation_id`, `sender_name`, `sender_profile_url`, `recipient_names`, `recipient_profile_urls` (text[]), `sent_at`, `subject`, `content`, `folder`, `from_me` |
+| `linkedin_recommendations` | `direction` (`given`/`received`), `full_name`, `company`, `job_title`, `text`, `status`, `created_on`, `profile_url` (null unless the name matched one connection) |
+| `linkedin_imports` | append-only audit of `scripts/import_linkedin.py` runs: `snapshot_at`, `source`, row counts, `matched_by_email`, `matched_by_name` |
 
 `last_interaction` (`GREATEST(last_seen, last_contacted)`) is derived, not
 stored — repeat the expression below rather than looking for a column.
@@ -105,4 +109,26 @@ SELECT automated, eligible, count(*) FROM people GROUP BY automated, eligible OR
 **Sync health:**
 ```sql
 SELECT key, last_run_at, last_status, (sync_token IS NOT NULL) AS has_token FROM sync_state;
+```
+
+**LinkedIn connections Ben talked with and let go quiet:**
+```sql
+SELECT full_name, company, position, message_count, my_message_count, last_message_at, person_email
+FROM linkedin_connections
+WHERE my_message_count > 0 AND last_message_at < now() - interval '1 year'
+ORDER BY last_message_at DESC
+LIMIT 50;
+```
+
+**Messages with one connection** (the expression matches the GIN index):
+```sql
+SELECT sent_at, from_me, sender_name, left(content, 200) AS content
+FROM linkedin_messages
+WHERE (recipient_profile_urls || ARRAY[sender_profile_url]) @> ARRAY['linkedin.com/in/<slug>']::text[]
+ORDER BY sent_at DESC;
+```
+
+**Snapshot age and match rates:**
+```sql
+SELECT * FROM linkedin_imports ORDER BY id DESC LIMIT 5;
 ```

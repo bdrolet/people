@@ -33,15 +33,18 @@ inbox-process CF ──publish email_classified/email_sent──▶ email-events
                                               Google Contacts (create/link)   HubSpot (bounded mirror)
                                                                   │
                                                                   ▼
-                                                     Cloud SQL db `people` (people, sync_state)
+                                                     Cloud SQL db `people` (people, sync_state, linkedin_*)
 
 Cloud Scheduler people-sync (4 AM ET, before inbox's 5 AM sweep)
         ──POST /sync (Bearer people-sync-token)──▶ people-sync CF (main.py sync)
                                                         Google Contacts incremental sync (sync token)
                                                         → HubSpot reconcile: adopt / heal / enforce / fill
 
+scripts/import_linkedin.py (local, manual) ──LinkedIn data export──▶ linkedin_* tables (snapshot, replaced per import)
+
 inbox-process, Claude Code skills ──Bearer people-api-token──▶ people-api (Cloud Run)
-                                                        GET/PATCH /people/{email}, POST /search, GET /people
+                                                        GET/PATCH /people/{email}, POST /search, GET /people,
+                                                        GET /linkedin/connections[/{slug}], GET /linkedin/imports/latest
 ```
 
 Full design: `docs/superpowers/specs/2026-09-03-people-service-extraction-design.md`.
@@ -76,6 +79,14 @@ last_contacted, message_count, my_response_count, relationship_label, notes,
 eligible, automated, google_resource_name, google_etag, google_deleted_at,
 hubspot_contact_id, hubspot_synced_at, updated_at) and `sync_state`
 (key/sync_token/last_run_at/last_status — one row, `key='google_contacts'`).
+
+LinkedIn snapshot tables — `linkedin_connections` (PK `profile_url`, soft link
+`person_email` → `people.email`, per-connection message stats),
+`linkedin_messages`, `linkedin_recommendations` — are fully replaced by each
+manual run of `scripts/import_linkedin.py`; `linkedin_imports` is its
+append-only audit. No foreign keys to `people`; nothing flows from LinkedIn to
+Google Contacts or HubSpot.
+
 `last_interaction` is derived as `GREATEST(last_seen, last_contacted)`, not
 stored. Schema: `repo/schema.sql`, applied via `scripts/migrate_db.py`. Prod
 connects through the Cloud SQL Python Connector with pg8000
