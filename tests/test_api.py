@@ -271,3 +271,44 @@ def test_linkedin_imports_latest(monkeypatch):
     )
     r = client.get("/linkedin/imports/latest")
     assert r.status_code == 200 and r.json()["connections"] == 6
+
+
+def test_get_person_linkedin_absent_is_null():
+    assert client.get("/people/alice@x.com").json()["linkedin"] is None
+
+
+def test_get_person_linkedin_present(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        linkedin_repo,
+        "connection_for_person",
+        lambda conn, email: (seen.setdefault("email", email), li_row())[1],
+    )
+    body = client.get("/people/Alice@X.com").json()
+    assert seen["email"] == "alice@x.com"
+    assert body["linkedin"]["profile_url"] == "linkedin.com/in/alice-example"
+    assert body["linkedin"]["my_message_count"] == 6
+    assert "full_name" not in body["linkedin"] and "person_email" not in body["linkedin"]
+
+
+def test_patch_person_includes_linkedin(monkeypatch):
+    monkeypatch.setattr(person_edit, "update", lambda conn, email, **kw: row(notes="hi"))
+    monkeypatch.setattr(linkedin_repo, "connection_for_person", lambda conn, email: li_row())
+    body = client.patch("/people/alice@x.com", json={"notes": "hi"}).json()
+    assert body["linkedin"]["company"] == "Example Health"
+
+
+def test_list_responses_have_null_linkedin(monkeypatch):
+    def fail(*a, **kw):
+        raise AssertionError("list responses must not look up linkedin per row")
+
+    monkeypatch.setattr(linkedin_repo, "connection_for_person", fail)
+    assert client.get("/people?recent=1").json()["results"][0]["linkedin"] is None
+    assert client.post("/search", json={"q": "ali"}).json()["results"][0]["linkedin"] is None
+
+
+def test_search_linkedin_results():
+    body = client.post("/search", json={"q": "ali", "limit": 5}).json()
+    assert body["results"][0]["email"] == "alice@x.com"
+    assert body["linkedin_results"][0]["full_name"] == "Alice Example"
+    assert client.post("/search", json={"q": "zzz"}).json()["linkedin_results"] == []
