@@ -8,6 +8,28 @@ resource "google_artifact_registry_repository" "people" {
   repository_id = "people"
   format        = "DOCKER"
   location      = var.region
+
+  # Cleanup policy — every Artifact Registry repo in the project carries one
+  # (infra D4). Each deploy pushes a new image and retags :latest, leaving the
+  # previous one untagged; without this the repo grows by an image per deploy.
+  cleanup_policy_dry_run = false
+
+  cleanup_policies {
+    id     = "delete-untagged-after-7d"
+    action = "DELETE"
+    condition {
+      tag_state  = "UNTAGGED"
+      older_than = "604800s"
+    }
+  }
+
+  cleanup_policies {
+    id     = "keep-3-most-recent"
+    action = "KEEP"
+    most_recent_versions {
+      keep_count = 3
+    }
+  }
 }
 
 locals {
