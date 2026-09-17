@@ -26,9 +26,10 @@ def test_normalize_profile_url(raw, expected):
         ("Élodie  Accent", "elodie accent"),
         ("Alice E.", "alice e"),
         ("Mary-Jane O'Brien", "mary-jane o'brien"),
-        ("Mary-Jane O’Brien", "mary-jane o'brien"),  # U+2019 right single quotation mark
-        ("O’Brien", "o'brien"),  # U+2019
-        ("OʼBrien", "o'brien"),  # U+02BC modifier letter apostrophe
+        ("Mary-Jane O’Brien", "mary-jane o\x27brien"),  # U+2019 right single quotation mark
+        ("O’Brien", "o\x27brien"),  # U+2019
+        ("O‘Brien", "o\x27brien"),  # U+2018 left single quotation mark
+        ("OʼBrien", "o\x27brien"),  # U+02BC modifier letter apostrophe
         ("  BOB   sample ", "bob sample"),
         (None, ""),
     ],
