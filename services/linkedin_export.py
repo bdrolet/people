@@ -21,9 +21,9 @@ _URL_PREFIX = re.compile(r"^(https?://)?(www\.)?")
 _DATE_FORMATS = ("%d %b %Y", "%m/%d/%y %I:%M %p", "%m/%d/%y, %I:%M %p", "%m/%d/%Y", "%Y-%m-%d")
 _APOSTROPHE_MAP = str.maketrans(
     {
-        "’": "'",  # U+2019 RIGHT SINGLE QUOTATION MARK
-        "‘": "'",  # U+2018 LEFT SINGLE QUOTATION MARK
-        "ʼ": "'",  # U+02BC MODIFIER LETTER APOSTROPHE
+        "’": "\x27",  # U+2019 RIGHT SINGLE QUOTATION MARK -> ASCII apostrophe
+        "‘": "\x27",  # U+2018 LEFT SINGLE QUOTATION MARK -> ASCII apostrophe
+        "ʼ": "\x27",  # U+02BC MODIFIER LETTER APOSTROPHE -> ASCII apostrophe
     }
 )
 
