@@ -217,3 +217,8 @@ def eligible_not_in_hubspot(conn: Any, limit: int) -> list[dict]:
         """,
         (limit,),
     ).fetchall()
+
+
+def names_for_matching(conn: Any) -> list[dict]:
+    """Every row's email and display_name, for scripts/import_linkedin.py's soft link."""
+    return conn.execute("SELECT email, display_name FROM people").fetchall()

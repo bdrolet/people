@@ -41,6 +41,43 @@ curl -s -X POST "$BASE/search" \
 `display_name`; results are ordered by `last_interaction` (the more recent
 of `last_seen`/`last_contacted`) descending. `limit` defaults to 20, max 100.
 
+The response also carries `linkedin_results`: LinkedIn connections whose
+name, company, or position match `q` (substring or trigram), ordered by last
+LinkedIn message, same `limit`. `results` entries always have `linkedin: null`
+— fetch the person for their LinkedIn summary.
+
+## Search LinkedIn connections
+
+```
+GET $BASE/linkedin/connections
+```
+
+```bash
+curl -s "$BASE/linkedin/connections?company=<company>&replied=true&quiet_since=2025-01-01&limit=50" \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+```
+
+Filters (all optional, combined with AND): `q` (name substring), `company`,
+`position` (case-insensitive substrings), `min_messages` (int),
+`replied` (`true` = Ben has sent at least one message), `quiet_since`
+(date — last message before it; never-messaged connections are excluded),
+`unmatched` (`true` = not linked to a `people` row), `limit` (default 50,
+max 500). Ordered by `last_message_at` desc (nulls last), then
+`connected_on` desc.
+
+Examples: "former colleagues at X who went quiet" →
+`company=X&replied=true&quiet_since=<a year ago>`; "LinkedIn people I've never
+emailed" → `unmatched=true&min_messages=1`.
+
+Each result: `profile_url`, `full_name`, `email`, `company`, `position`,
+`connected_on`, `person_email` (linked people row, if any), `match_method`
+(`email`/`name`/null), `message_count`, `my_message_count`,
+`last_message_at`, `last_my_message_at`, `snapshot_at`.
+
+This is a snapshot from Ben's last manual export — check its age with
+`GET $BASE/linkedin/imports/latest` before claiming something is current.
+Open one with `GET $BASE/linkedin/connections/{slug}` (see **fetching-person**).
+
 ## List recent people
 
 ```

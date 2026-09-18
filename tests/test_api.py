@@ -1,9 +1,10 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from fastapi.testclient import TestClient
 
 import clients.db as db
+import repo.linkedin as linkedin_repo
 import repo.people as people_repo
 import services.google_contacts_sync as gsync
 import services.person_edit as person_edit
@@ -37,6 +38,43 @@ def row(email="alice@x.com", **kw):
     return base
 
 
+def li_row(slug="alice-example", **kw):
+    base = {
+        "profile_url": f"linkedin.com/in/{slug}",
+        "full_name": "Alice Example",
+        "email": None,
+        "company": "Example Health",
+        "position": "CTO",
+        "connected_on": date(2021, 4, 2),
+        "person_email": "alice@x.com",
+        "match_method": "name",
+        "message_count": 14,
+        "my_message_count": 6,
+        "last_message_at": TS,
+        "last_my_message_at": TS,
+        "snapshot_at": TS,
+    }
+    base.update(kw)
+    return base
+
+
+def msg_row(conversation_id, sent_at, content="hi", **kw):
+    base = {
+        "conversation_id": conversation_id,
+        "conversation_title": None,
+        "sender_name": "Alice Example",
+        "sender_profile_url": "linkedin.com/in/alice-example",
+        "recipient_names": "Me Example",
+        "sent_at": sent_at,
+        "subject": None,
+        "content": content,
+        "folder": "INBOX",
+        "from_me": False,
+    }
+    base.update(kw)
+    return base
+
+
 class Conn:
     def __enter__(self):
         return self
@@ -60,6 +98,19 @@ def _wire(monkeypatch):
     monkeypatch.setattr(
         people_repo, "recent", lambda conn, limit, eligible_only=True: [row()][:limit]
     )
+    monkeypatch.setattr(linkedin_repo, "connection_for_person", lambda conn, email: None)
+    monkeypatch.setattr(
+        linkedin_repo, "search_connections", lambda conn, q, limit: [li_row()] if "ali" in q else []
+    )
+    monkeypatch.setattr(linkedin_repo, "list_connections", lambda conn, **kw: [li_row()])
+    monkeypatch.setattr(
+        linkedin_repo,
+        "get_connection",
+        lambda conn, url: li_row() if url == "linkedin.com/in/alice-example" else None,
+    )
+    monkeypatch.setattr(linkedin_repo, "messages_for", lambda conn, url, limit: [])
+    monkeypatch.setattr(linkedin_repo, "recommendations_for", lambda conn, url: [])
+    monkeypatch.setattr(linkedin_repo, "latest_import", lambda conn: None)
 
 
 client = TestClient(app)
@@ -136,3 +187,141 @@ def test_auth_bearer(monkeypatch):
         client.get("/people/alice@x.com", headers={"Authorization": "Bearer t0k"}).status_code
         == 200
     )
+
+
+def test_linkedin_connections_passes_filters(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        linkedin_repo, "list_connections", lambda conn, **kw: (seen.update(kw), [li_row()])[1]
+    )
+    r = client.get(
+        "/linkedin/connections?company=Example&min_messages=3&replied=false"
+        "&quiet_since=2026-01-01&unmatched=true&limit=10"
+    )
+    assert r.status_code == 200
+    assert seen == {
+        "q": None,
+        "company": "Example",
+        "position": None,
+        "min_messages": 3,
+        "replied": False,
+        "quiet_since": date(2026, 1, 1),
+        "unmatched": True,
+        "limit": 10,
+    }
+    body = r.json()["results"][0]
+    assert body["profile_url"] == "linkedin.com/in/alice-example"
+    assert body["person_email"] == "alice@x.com" and body["message_count"] == 14
+
+
+def test_linkedin_connections_limit_bounds():
+    assert client.get("/linkedin/connections?limit=501").status_code == 422
+    assert client.get("/linkedin/connections?limit=0").status_code == 422
+
+
+def test_linkedin_connection_detail_groups_conversations(monkeypatch):
+    t1, t2, t3 = (datetime(2026, 1, d, tzinfo=UTC) for d in (1, 2, 3))
+    seen = {}
+
+    def messages_for(conn, url, limit):
+        seen["args"] = (url, limit)
+        return [
+            msg_row("c2", t3, "newest"),
+            msg_row("c1", t2, "middle"),
+            msg_row("c2", t1, "oldest"),
+        ]
+
+    monkeypatch.setattr(linkedin_repo, "messages_for", messages_for)
+    monkeypatch.setattr(
+        linkedin_repo,
+        "recommendations_for",
+        lambda conn, url: [
+            {"direction": "given", "full_name": "Alice Example", "company": None,
+             "job_title": None, "text": "Great.", "status": "VISIBLE", "created_on": date(2025, 6, 1)}
+        ],
+    )  # fmt: skip
+    r = client.get("/linkedin/connections/Alice-Example?messages_limit=5")
+    assert r.status_code == 200
+    assert seen["args"] == ("linkedin.com/in/alice-example", 5)
+    body = r.json()
+    assert body["full_name"] == "Alice Example" and body["recommendations"][0]["text"] == "Great."
+    assert [c["conversation_id"] for c in body["conversations"]] == ["c2", "c1"]
+    assert [m["content"] for m in body["conversations"][0]["messages"]] == ["newest", "oldest"]
+
+
+def test_linkedin_connection_detail_404():
+    assert client.get("/linkedin/connections/nobody").status_code == 404
+
+
+def test_linkedin_connection_detail_percent_encoded_non_ascii_slug(monkeypatch):
+    seen = {}
+
+    def get_connection(conn, url):
+        seen["url"] = url
+        return None
+
+    monkeypatch.setattr(linkedin_repo, "get_connection", get_connection)
+    r = client.get("/linkedin/connections/J%C3%B6rg-Example")
+    assert r.status_code == 404
+    assert seen["url"] == "linkedin.com/in/jörg-example"
+
+
+def test_linkedin_imports_latest(monkeypatch):
+    assert client.get("/linkedin/imports/latest").status_code == 404
+    monkeypatch.setattr(
+        linkedin_repo,
+        "latest_import",
+        lambda conn: {
+            "snapshot_at": TS,
+            "source": "Basic_Export",
+            "connections": 6,
+            "messages": 7,
+            "recommendations_given": 2,
+            "recommendations_received": 1,
+            "matched_by_email": 1,
+            "matched_by_name": 1,
+        },
+    )
+    r = client.get("/linkedin/imports/latest")
+    assert r.status_code == 200 and r.json()["connections"] == 6
+
+
+def test_get_person_linkedin_absent_is_null():
+    assert client.get("/people/alice@x.com").json()["linkedin"] is None
+
+
+def test_get_person_linkedin_present(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        linkedin_repo,
+        "connection_for_person",
+        lambda conn, email: (seen.setdefault("email", email), li_row())[1],
+    )
+    body = client.get("/people/Alice@X.com").json()
+    assert seen["email"] == "alice@x.com"
+    assert body["linkedin"]["profile_url"] == "linkedin.com/in/alice-example"
+    assert body["linkedin"]["my_message_count"] == 6
+    assert "full_name" not in body["linkedin"] and "person_email" not in body["linkedin"]
+
+
+def test_patch_person_includes_linkedin(monkeypatch):
+    monkeypatch.setattr(person_edit, "update", lambda conn, email, **kw: row(notes="hi"))
+    monkeypatch.setattr(linkedin_repo, "connection_for_person", lambda conn, email: li_row())
+    body = client.patch("/people/alice@x.com", json={"notes": "hi"}).json()
+    assert body["linkedin"]["company"] == "Example Health"
+
+
+def test_list_responses_have_null_linkedin(monkeypatch):
+    def fail(*a, **kw):
+        raise AssertionError("list responses must not look up linkedin per row")
+
+    monkeypatch.setattr(linkedin_repo, "connection_for_person", fail)
+    assert client.get("/people?recent=1").json()["results"][0]["linkedin"] is None
+    assert client.post("/search", json={"q": "ali"}).json()["results"][0]["linkedin"] is None
+
+
+def test_search_linkedin_results():
+    body = client.post("/search", json={"q": "ali", "limit": 5}).json()
+    assert body["results"][0]["email"] == "alice@x.com"
+    assert body["linkedin_results"][0]["full_name"] == "Alice Example"
+    assert client.post("/search", json={"q": "zzz"}).json()["linkedin_results"] == []

@@ -35,7 +35,7 @@ This overrides the default "commit or push only when asked" behavior for code ch
 | **Events CF** | `people-process` — Pub/Sub trigger on the inbox-owned `email-events` topic (data source), entry point `process` in `main.py`; handles `email_classified` and `email_sent`, ignores everything else |
 | **Sync CF** | `people-sync` — HTTP trigger, entry point `sync`; POST with `Authorization: Bearer <people-sync-token>`; Cloud Scheduler `people-sync` at `0 4 * * *` America/New_York (before inbox's 5 AM sweep) — Google Contacts incremental sync, then HubSpot reconcile |
 | **API** | `people-api` — Cloud Run FastAPI service (`api/`); bearer auth via `people-api-token`; image in Artifact Registry repo `people`, deployed by `.github/workflows/deploy-api.yml`; `https://people-api.drolet.cloud` (Cloud Run domain mapping in `terraform/api.tf`; the CNAME lives in `~/src/infra` `cloudflare/drolet-cloud.tf`); the raw run.app URL is `terraform output -raw people_api_url` |
-| **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people`, `sync_state`; schema in `repo/schema.sql` |
+| **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people`, `sync_state`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`; schema in `repo/schema.sql` |
 | **Google Contacts** | People API v1 via `clients/google_contacts.py` — OAuth refresh-token creds, scope `https://www.googleapis.com/auth/contacts`; reuses schedule's OAuth client (`google-calendar-client-id`/`-secret`, data sources), a people-owned refresh token (`google-contacts-refresh-token`) |
 | **HubSpot** | `clients/hubspot.py` (ported from inbox) — contacts search/create/update/archive, email engagement create; bounded mirror, see §HubSpot below |
 | **Local Graph import** | `clients/graph_local.py` — device-code MSAL auth for `scripts/import_contacts.py` only; people's Cloud Functions never call Graph |
@@ -53,6 +53,7 @@ main.py                     CF entry points: process (Pub/Sub → email_classifi
                              and sync (HTTP, bearer-auth, nightly)
 models/
   events.py                 EmailClassifiedEvent / EmailSentEvent TypedDicts — mirror inbox's payload
+  linkedin.py               LinkedInConnection/Message/Recommendation/Snapshot dataclasses
   types.py                  IngestResult dataclass
 clients/
   db.py                     Cloud SQL connector (pg8000) / local psycopg3
@@ -64,6 +65,7 @@ repo/
   schema.sql                people, sync_state tables
   people.py                 all reads/writes on people — takes an open connection
   sync_state.py             google_contacts sync token + status
+  linkedin.py               linkedin_* snapshot: replace_snapshot + API read queries
 services/
   eligibility.py            is_automated / inbound_eligible (spec §5) — pure functions over env
   ingest.py                 record_inbound / record_outbound — counters + eligibility, shared by
@@ -72,6 +74,7 @@ services/
   hubspot_mirror.py         ensure_contact, log_email, reconcile (adopt/heal/enforce/fill)
   person_edit.py            PATCH: write Google first, then refresh DB
   sync_auth.py              bearer check for POST /sync
+  linkedin_export.py        parse a LinkedIn data export (dir/zip) → snapshot; match_people
 handlers/
   email_classified.py       ingest → eligible? → Google + HubSpot side effects → log_email
   email_sent.py             per-recipient ingest (To+Cc, Bcc excluded) → side effects
@@ -82,6 +85,7 @@ api/
   routers/
     people.py                GET /people?recent=, GET/PATCH/POST-sync /people/{email}
     search.py                 POST /search
+    linkedin.py              GET /linkedin/connections[/{slug}], GET /linkedin/imports/latest
 scripts/
   import_contacts.py        bulk backfill (spec §12) — --dry-run, --reset-counters
   get_google_contacts_token.py  mint the Google refresh token (contacts scope)
@@ -89,13 +93,14 @@ scripts/
   fetch-env.sh               populate .env from Secret Manager + terraform.tfvars
   test-api-local.py          smoke test people-api
   link-skills.sh             symlink searching-people/fetching-person/editing-person into ~/.claude/skills/
+  import_linkedin.py        load a LinkedIn export snapshot — --dry-run, --me
 terraform/                  main, variables, secrets, cloudsql, pubsub, cloud_functions, iam, api, scheduler
 tests/                      one test module per unit
 .github/workflows/          ci.yml, deploy.yml (Functions), deploy-api.yml (Cloud Run)
 .claude/skills/             people-architecture, deploy-people, fetch-people-logs, querying-people-db,
                              adding-people-secret, adding-observability, querying-grafana-metrics,
                              testing-people-handlers, verifying-pr-locally, importing-contacts,
-                             searching-people, fetching-person, editing-person
+                             searching-people, fetching-person, editing-person, importing-linkedin
 ```
 
 ## Event schema
@@ -130,9 +135,11 @@ exactly as tasks and schedule do.
 | counters (`message_count`, `my_response_count`), timestamps, `eligible`, `automated` | DB | Written only by the event handlers and `scripts/import_contacts.py`. |
 | `google_deleted_at` | Google | Set by `people-sync` when a linked `resourceName` comes back deleted. Never recreated. |
 | `hubspot_contact_id` | DB (people manages) | Set on create/adopt, cleared on evict/heal. |
+| `linkedin_*` tables | LinkedIn data export | Export → DB on manual import (`scripts/import_linkedin.py`). Never written back anywhere; LinkedIn is not a source for any `people` field. |
 
 If the DB is lost, everything except the counters rebuilds from Google
 Contacts plus a full sync; counters rebuild via `scripts/import_contacts.py`.
+The LinkedIn snapshot rebuilds by re-running `scripts/import_linkedin.py` on the latest export.
 
 ### Eligibility (spec §5)
 
@@ -225,6 +232,9 @@ scripts/fetch-env.sh                 # .env from Secret Manager + terraform.tfva
 Handler smoke tests against the real DB: see `testing-people-handlers`.
 Local API: `(set -a; source .env; set +a; .venv/bin/uvicorn api.main:app --port 8080)`,
 then `.venv/bin/python scripts/test-api-local.py`.
+
+LinkedIn snapshot (see `importing-linkedin`):
+`.venv/bin/python scripts/import_linkedin.py <export-dir-or-zip> --dry-run`, then without `--dry-run`.
 
 ## Deployment
 
