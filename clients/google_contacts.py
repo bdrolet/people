@@ -4,6 +4,7 @@ vars). Built WITHOUT scopes — google-auth would send them on refresh and the
 token server rejects scopes it did not explicitly grant (see schedule's
 google_calendar.py)."""
 
+import json
 import logging
 import os
 import threading
@@ -137,8 +138,25 @@ def modify_group_members(group_resource_name: str, add: list[str], remove: list[
         ).execute()
 
 
+def _is_expired_sync_token(e: HttpError) -> bool:
+    """The People API signals an expired syncToken with HTTP 400 and
+    reason=EXPIRED_SYNC_TOKEN, not the 410 GONE that the Calendar API uses for
+    the same condition. Accept both: 410 costs nothing and only ever means
+    this."""
+    if e.resp.status == 410:
+        return True
+    if e.resp.status != 400:
+        return False
+    try:
+        details = json.loads(e.content)["error"].get("details", [])
+    except (ValueError, KeyError, TypeError):
+        return False
+    return any(d.get("reason") == "EXPIRED_SYNC_TOKEN" for d in details)
+
+
 def list_connections(sync_token: str | None) -> tuple[list[dict], str]:
-    """Full or incremental listing. Raises SyncTokenExpired on 410."""
+    """Full or incremental listing. Raises SyncTokenExpired when the token has
+    aged out, which run_sync recovers from by retrying with no token."""
     people_out: list[dict] = []
     page_token = None
     next_sync = ""
@@ -156,7 +174,7 @@ def list_connections(sync_token: str | None) -> tuple[list[dict], str]:
         try:
             resp = _svc().people().connections().list(**kwargs).execute()
         except HttpError as e:
-            if e.resp.status == 410:
+            if _is_expired_sync_token(e):
                 raise SyncTokenExpired() from e
             raise
         people_out.extend(resp.get("connections", []))
