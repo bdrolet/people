@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # people-api — Cloud Run FastAPI service
-# Mirrors inbox-api / tasks-api. Public with app-level bearer auth; the token
-# lives in the people-api-token secret owned in secrets.tf.
+# Mirrors inbox-api / tasks-api. Cloud Run IAM authenticates callers; there is
+# no app-level token (see api_invoker_* below).
 # ---------------------------------------------------------------------------
 
 resource "google_artifact_registry_repository" "people" {
@@ -44,12 +44,6 @@ resource "google_service_account" "people_api" {
 resource "google_secret_manager_secret_iam_member" "api_shared" {
   for_each  = data.google_secret_manager_secret.shared
   secret_id = each.value.secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.people_api.email}"
-}
-
-resource "google_secret_manager_secret_iam_member" "api_token" {
-  secret_id = google_secret_manager_secret.people_api_token.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.people_api.email}"
 }
