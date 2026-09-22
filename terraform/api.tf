@@ -83,6 +83,9 @@ resource "google_cloud_run_v2_service" "api" {
   name     = "people-api"
   location = var.region
 
+  # Service-to-service callers mint ID tokens for the hostname they call.
+  custom_audiences = ["https://people-api.drolet.cloud"]
+
   template {
     service_account = google_service_account.people_api.email
     timeout         = "60s"
@@ -124,15 +127,6 @@ resource "google_cloud_run_v2_service" "api" {
       env {
         name  = "GOOGLE_CONTACT_GROUP"
         value = var.google_contact_group
-      }
-      env {
-        name = "PEOPLE_API_TOKEN"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.people_api_token.secret_id
-            version = "latest"
-          }
-        }
       }
       env {
         name = "POSTGRES_PASSWORD"
@@ -199,13 +193,39 @@ resource "google_cloud_run_v2_service" "api" {
   depends_on = [google_artifact_registry_repository.people]
 }
 
-# Public — bearer-token auth enforced in app code (api/auth.py)
-resource "google_cloud_run_v2_service_iam_member" "api_public" {
+# Callers of people-api. Cloud Run IAM is the only authentication: there is
+# no app-level token. inbox-process looks up sender context at classify time
+# (inbox/clients/people_api.py); its SA lives in inbox's terraform, so it is
+# resolved by account id rather than by cross-state reference.
+data "google_service_account" "inbox_process_cf" {
+  account_id = "inbox-process-cf"
+  project    = var.project_id
+}
+
+resource "google_cloud_run_v2_service_iam_member" "api_invoker_users" {
+  for_each = toset(var.api_invoker_users)
   project  = var.project_id
   location = var.region
   name     = google_cloud_run_v2_service.api.name
   role     = "roles/run.invoker"
-  member   = "allUsers"
+  member   = "user:${each.value}"
+}
+
+resource "google_cloud_run_v2_service_iam_member" "api_invoker_inbox_process" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.api.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${data.google_service_account.inbox_process_cf.email}"
+}
+
+# deploy-api.yml's smoke test calls the deployed service as the deployer SA.
+resource "google_cloud_run_v2_service_iam_member" "api_invoker_deployer" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.api.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${var.deployer_sa}"
 }
 
 resource "google_artifact_registry_repository_iam_member" "deployer_ar_writer" {
