@@ -3,14 +3,13 @@
 
 from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from api.auth import verify_token
 from clients import db
 from repo import linkedin
 
-router = APIRouter(dependencies=[Depends(verify_token)])
+router = APIRouter()
 
 
 class LinkedInSummary(BaseModel):

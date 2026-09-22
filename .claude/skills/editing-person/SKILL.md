@@ -21,7 +21,7 @@ person — see "No creation" below.
 
 ```bash
 BASE=https://people-api.drolet.cloud
-TOKEN=$(gcloud secrets versions access latest --secret people-api-token --project bens-project-462804)
+TOKEN=$(gcloud auth print-identity-token)   # Cloud Run IAM; your gcloud login is the credential
 ```
 
 ## Update notes and/or relationship label

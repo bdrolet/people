@@ -67,7 +67,7 @@ sets at the top of `services/linkedin_export.py` and the fixtures in
 ## 4. Check snapshot age
 
 ```bash
-TOKEN=$(gcloud secrets versions access latest --secret people-api-token --project bens-project-462804)
+TOKEN=$(gcloud auth print-identity-token)   # Cloud Run IAM; your gcloud login is the credential
 curl -s https://people-api.drolet.cloud/linkedin/imports/latest -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 ```
 

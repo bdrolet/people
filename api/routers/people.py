@@ -1,9 +1,8 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, field_validator
 
-from api.auth import verify_token
 from api.routers.linkedin import LinkedInSummary
 from clients import db
 from repo import linkedin as linkedin_repo
@@ -11,7 +10,7 @@ from repo import people
 from services import google_contacts_sync, person_edit
 from services.eligibility import normalize
 
-router = APIRouter(dependencies=[Depends(verify_token)])
+router = APIRouter()
 
 
 class PersonOut(BaseModel):

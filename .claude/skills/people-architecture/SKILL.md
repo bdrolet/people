@@ -42,7 +42,7 @@ Cloud Scheduler people-sync (4 AM ET, before inbox's 5 AM sweep)
 
 scripts/import_linkedin.py (local, manual) ──LinkedIn data export──▶ linkedin_* tables (snapshot, replaced per import)
 
-inbox-process, Claude Code skills ──Bearer people-api-token──▶ people-api (Cloud Run)
+inbox-process, Claude Code skills ──Google ID token (Cloud Run IAM)──▶ people-api (Cloud Run)
                                                         GET/PATCH /people/{email}, POST /search, GET /people,
                                                         GET /linkedin/connections[/{slug}], GET /linkedin/imports/latest
 ```
@@ -56,7 +56,7 @@ Full design: `docs/superpowers/specs/2026-09-03-people-service-extraction-design
 | Pub/Sub topic | `email-events` | **owned by INBOX terraform** (producer owns); data source here |
 | CF gen2 | `people-process` | Pub/Sub trigger on `email-events`, entry point `process`, repo-root source |
 | CF gen2 | `people-sync` | HTTP, entry point `sync`; public invoker + app-level bearer auth (`people-sync-token`) — Cloud Scheduler `people-sync` at `0 4 * * *` America/New_York |
-| Cloud Run | `people-api` | FastAPI (`api/`), bearer auth via `people-api-token`; image in Artifact Registry repo `people`; deployed by `.github/workflows/deploy-api.yml` |
+| Cloud Run | `people-api` | FastAPI (`api/`), Cloud Run IAM (`roles/run.invoker` per caller, see terraform/api.tf); image in Artifact Registry repo `people`; deployed by `.github/workflows/deploy-api.yml` |
 | Cloud SQL | database `people`, user `people` on instance `inbox` (`bens-project-462804:us-central1:inbox`) | instance owned by inbox terraform; tables `people`, `sync_state` |
 | GCS | `bens-project-462804-people-cf-source` | CF source zip |
 | SA | `people-process-cf@`, `people-sync-cf@`, `people-api@` | secretAccessor on owned + shared secrets, `cloudsql.client` |
@@ -64,7 +64,7 @@ Full design: `docs/superpowers/specs/2026-09-03-people-service-extraction-design
 Shared Secret Manager secrets (`grafana-otlp-endpoint`, `grafana-otlp-token`,
 `google-calendar-client-id`, `google-calendar-client-secret`) are data
 sources — owned elsewhere (platform state / schedule). `hubspot-token`,
-`google-contacts-refresh-token`, `people-db-password`, `people-api-token`,
+`google-contacts-refresh-token`, `people-db-password`,
 `people-sync-token` are owned here. See `adding-people-secret` for the wiring
 checklist.
 

@@ -1,13 +1,12 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from api.auth import verify_token
 from api.routers.linkedin import LinkedInConnectionOut
 from api.routers.people import PersonList, to_out
 from clients import db
 from repo import linkedin, people
 
-router = APIRouter(dependencies=[Depends(verify_token)])
+router = APIRouter()
 
 
 class SearchRequest(BaseModel):
