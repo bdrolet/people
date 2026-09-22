@@ -50,7 +50,6 @@ Then smoke it:
 
 ```bash
 URL=$(cd terraform && terraform output -raw people_api_url)
-PEOPLE_API_TOKEN=$(gcloud secrets versions access latest --secret people-api-token) \
   .venv/bin/python scripts/test-api-local.py --base "$URL"
 ```
 

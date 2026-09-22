@@ -38,7 +38,7 @@ flowchart TD
     PS -->|adopt/heal/enforce/fill| HS
     PS --> DB
 
-    IB -->|classify-time lookup\nbearer people-api-token| API[people-api]
+    IB -->|classify-time lookup\nGoogle ID token| API[people-api]
     SK[Claude Code skills] -->|search/fetch/edit| API
     API --> DB
     API -->|PATCH writes through| GC
@@ -147,8 +147,7 @@ Google refresh token and HubSpot secret both need a human step. In order:
 7. **Smoke test the API**:
    ```bash
    API=$(cd terraform && terraform output -raw people_api_url)
-   PEOPLE_API_TOKEN=$(gcloud secrets versions access latest --secret people-api-token) \
-     .venv/bin/python scripts/test-api-local.py --base "$API"
+   .venv/bin/python scripts/test-api-local.py --base "$API"
    ```
 
 After that, send a real email to confirm Gate A: a fresh inbound email

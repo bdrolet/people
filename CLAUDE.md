@@ -34,7 +34,7 @@ This overrides the default "commit or push only when asked" behavior for code ch
 | **GCP project** | `bens-project-462804`, `us-central1` |
 | **Events CF** | `people-process` — Pub/Sub trigger on the inbox-owned `email-events` topic (data source), entry point `process` in `main.py`; handles `email_classified` and `email_sent`, ignores everything else |
 | **Sync CF** | `people-sync` — HTTP trigger, entry point `sync`; POST with `Authorization: Bearer <people-sync-token>`; Cloud Scheduler `people-sync` at `0 4 * * *` America/New_York (before inbox's 5 AM sweep) — Google Contacts incremental sync, then HubSpot reconcile |
-| **API** | `people-api` — Cloud Run FastAPI service (`api/`); bearer auth via `people-api-token`; image in Artifact Registry repo `people`, deployed by `.github/workflows/deploy-api.yml`; `https://people-api.drolet.cloud` (Cloud Run domain mapping in `terraform/api.tf`; the CNAME lives in `~/src/infra` `cloudflare/drolet-cloud.tf`); the raw run.app URL is `terraform output -raw people_api_url` |
+| **API** | `people-api` — Cloud Run FastAPI service (`api/`); auth is Cloud Run IAM — `roles/run.invoker` granted per caller in `terraform/api.tf`; callers send `gcloud auth print-identity-token`; image in Artifact Registry repo `people`, deployed by `.github/workflows/deploy-api.yml`; `https://people-api.drolet.cloud` (Cloud Run domain mapping in `terraform/api.tf`; the CNAME lives in `~/src/infra` `cloudflare/drolet-cloud.tf`); the raw run.app URL is `terraform output -raw people_api_url` |
 | **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people`, `sync_state`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`; schema in `repo/schema.sql` |
 | **Google Contacts** | People API v1 via `clients/google_contacts.py` — OAuth refresh-token creds, scope `https://www.googleapis.com/auth/contacts`; reuses schedule's OAuth client (`google-calendar-client-id`/`-secret`, data sources), a people-owned refresh token (`google-contacts-refresh-token`) |
 | **HubSpot** | `clients/hubspot.py` (ported from inbox) — contacts search/create/update/archive, email engagement create; bounded mirror, see §HubSpot below |
@@ -81,7 +81,7 @@ handlers/
   sync.py                   nightly: google_contacts_sync.run_sync, then hubspot_mirror.reconcile
 api/
   main.py                   FastAPI app, /health, OTel request-metrics middleware
-  auth.py                   bearer verify_token() — no-op locally, 503 fail-closed on Cloud Run
+  caller.py                 logs the IAM-authenticated caller (email claim) per request; no-op off Cloud Run
   routers/
     people.py                GET /people?recent=, GET/PATCH/POST-sync /people/{email}
     search.py                 POST /search
