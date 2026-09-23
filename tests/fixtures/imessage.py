@@ -152,3 +152,48 @@ def build_chat_db(tmp_path: Path) -> Path:
     db.commit()
     db.close()
     return path
+
+
+def build_mixed_sender_chat_db(tmp_path: Path) -> Path:
+    """A single chat with one valid participant and one short-code participant,
+    covering the case where a chat survives (not all participants dropped) but an
+    individual inbound message's sender handle doesn't. Separate from build_chat_db
+    so its fixed message/guid counts (relied on by tests/test_imessage_local.py)
+    stay untouched."""
+    path = tmp_path / "chat.db"
+    db = sqlite3.connect(path)
+    db.executescript(DDL)
+    db.executemany(
+        "INSERT INTO handle (ROWID, id, service) VALUES (?, ?, ?)",
+        [
+            (1, "+15550100001", "iMessage"),
+            (2, "262966", "SMS"),
+        ],
+    )
+    db.executemany(
+        "INSERT INTO chat (ROWID, guid, display_name, style) VALUES (?, ?, ?, ?)",
+        [(1, "iMessage;+;chat11", "Mixed Group", 43)],
+    )
+    db.executemany(
+        "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (?, ?)",
+        [(1, 1), (1, 2)],
+    )
+    rows = [
+        # (rowid, guid, text, attr, handle_id, from_me, date, edited, retracted,
+        #  service, attach, assoc, chat)
+        (1, "m1", "Hello valid", None, 1, 0, apple_ns(1_750_001_000), 0, 0, "iMessage", 0, 0, 1),
+        (2, "m2", "Hello short code", None, 2, 0, apple_ns(1_750_001_060), 0, 0, "SMS", 0, 0, 1),
+    ]
+    db.executemany(
+        "INSERT INTO message (ROWID, guid, text, attributedBody, handle_id, is_from_me, date,"
+        " date_edited, date_retracted, service, cache_has_attachments, associated_message_type)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        [r[:-1] for r in rows],
+    )
+    db.executemany(
+        "INSERT INTO chat_message_join (chat_id, message_id) VALUES (?, ?)",
+        [(r[-1], r[0]) for r in rows],
+    )
+    db.commit()
+    db.close()
+    return path

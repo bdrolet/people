@@ -50,6 +50,7 @@ class IMessageBatch:
     retracted: int = 0
     short_codes_dropped: int = 0
     reactions_skipped: int = 0
+    senderless_dropped: int = 0
     matched_by_email: int = 0
     matched_by_google: int = 0
     linked_to_people: int = 0

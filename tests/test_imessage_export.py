@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from clients import imessage_local
 from models.imessage import IMessageBatch, IMessageHandle
 from services import imessage_export as ex
-from tests.fixtures.imessage import ATTR_BODY, apple_ns, build_chat_db
+from tests.fixtures.imessage import ATTR_BODY, apple_ns, build_chat_db, build_mixed_sender_chat_db
 
 
 def test_apple_ts_handles_nanoseconds():
@@ -60,13 +60,25 @@ def test_build_batch_skips_reactions_and_short_codes(tmp_path):
 
 
 def test_build_batch_decodes_and_flags(tmp_path):
-    by_guid = {m.guid: m for m in batch(tmp_path).messages}
+    b = batch(tmp_path)
+    by_guid = {m.guid: m for m in b.messages}
     assert by_guid["g3"].text == "Attr only body"
     assert by_guid["g4"].text is None  # undecodable
     assert by_guid["g6"].edited_at is not None
     assert by_guid["g7"].retracted and by_guid["g7"].text is None
     assert by_guid["g10"].has_attachments
     assert by_guid["g2"].from_me and by_guid["g2"].sender_handle is None
+    assert b.undecoded == 1  # g4 only
+    assert b.retracted == 1  # g7 only
+
+
+def test_build_batch_drops_senderless_inbound_messages(tmp_path):
+    raw = imessage_local.read(build_mixed_sender_chat_db(tmp_path), full=True)
+    b = ex.build_batch(raw, mode="full")
+    guids = {m.guid for m in b.messages}
+    assert "m1" in guids  # valid participant in the mixed chat survives
+    assert "m2" not in guids  # short-code sender in the same chat is dropped
+    assert b.senderless_dropped == 1
 
 
 def test_build_batch_classifies_chats(tmp_path):

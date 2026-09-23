@@ -106,8 +106,10 @@ def build_batch(raw: RawChatDb, *, mode: str) -> IMessageBatch:
     """Turn a RawChatDb into an IMessageBatch (spec §5.2-5.3).
 
     Normalizes every handle, drops chats whose participants all normalize
-    away (e.g. short-code-only chats) along with their messages, and decodes
-    each surviving message's text.
+    away (e.g. short-code-only chats) along with their messages, drops any
+    remaining inbound message whose own sender handle didn't survive
+    normalization (counted in senderless_dropped), and decodes each
+    surviving message's text.
     """
     batch = IMessageBatch(
         mode=mode,
@@ -159,6 +161,16 @@ def build_batch(raw: RawChatDb, *, mode: str) -> IMessageBatch:
 
         is_from_me = bool(row["is_from_me"])
         sender_handle = None if is_from_me else normalized_by_rowid.get(row["handle_id"])
+
+        # sender_handle=None is documented (spec §4.3) to mean from_me. An inbound
+        # message whose sender handle didn't survive normalization (short code, or a
+        # handle_id missing from the map) would be indistinguishable from a message
+        # Ben sent if kept, so it's dropped rather than stored — matching spec §5.3's
+        # treatment of dropped handles ("their messages are not imported") and
+        # preserving the §4.3 invariant for the stats recompute downstream.
+        if not is_from_me and sender_handle is None:
+            batch.senderless_dropped += 1
+            continue
 
         text = row["text"]
         if text is None:
