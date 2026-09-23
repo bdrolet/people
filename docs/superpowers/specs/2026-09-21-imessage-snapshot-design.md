@@ -78,12 +78,38 @@ New dependency: `phonenumbers` (E.164 normalization).
 
 ## 4. Data model
 
-No foreign keys to `people`, as in the LinkedIn snapshot. `people` is
-rebuildable from Google Contacts plus `scripts/import_contacts.py`, and a
-foreign key would make that rebuild either blocked (`RESTRICT`) or destructive
-to this snapshot (`CASCADE`). `person_email` is also a best-guess match
-recomputed on every run (§5.4), not an invariant: a constraint would prove the
-address exists, not that it is the right person.
+`person_email` is `REFERENCES people(email) ON DELETE SET NULL`. Nothing in the
+service deletes `people` rows today (a contact deleted in Google gets
+`google_deleted_at` set, parent spec §4.3), so the constraint costs nothing in
+normal operation and catches an import writing an address that is not in
+`people` — a normalization mismatch or a stale match. When a row is deleted,
+the link is cleared and the next import refills it.
+
+`ON DELETE SET NULL` is chosen over `RESTRICT` (which would block a delete) and
+`CASCADE` (which would destroy snapshot rows over an advisory link). The
+constraint proves the address exists, not that it is the right person; matching
+accuracy still comes from re-matching every run (§5.4).
+
+**Operational note:** with the constraint in place, a full `people` rebuild must
+use `DELETE FROM people`, which clears links, not `TRUNCATE`, which fails on a
+referenced table and, with `CASCADE`, would truncate the snapshot tables too.
+
+**Migration:** `linkedin_connections.person_email` gets the same constraint, so
+the two snapshots behave alike. `repo/schema.sql` adds it idempotently:
+
+```sql
+DO $$ BEGIN
+    ALTER TABLE linkedin_connections
+        ADD CONSTRAINT linkedin_connections_person_email_fkey
+        FOREIGN KEY (person_email) REFERENCES people(email) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+```
+
+The table is small (about 1,300 rows), so the validation scan and lock are
+brief. Existing values were matched from `people`, so the constraint should
+validate as-is; if any row fails, `scripts/migrate_db.py` reports it and the fix
+is to re-run `import_linkedin.py`, which re-matches from scratch.
 
 ### 4.1 `imessage_handles`
 
@@ -92,7 +118,7 @@ CREATE TABLE IF NOT EXISTS imessage_handles (
     handle                 TEXT PRIMARY KEY,   -- E.164 phone or lowercased email, see §5.3
     display_name           TEXT,               -- from the matched Google Contact
     google_resource_name   TEXT,
-    person_email           TEXT,               -- soft link to people.email
+    person_email           TEXT REFERENCES people(email) ON DELETE SET NULL,
     match_method           TEXT,               -- 'email' | 'google' | NULL
     message_count          INT NOT NULL DEFAULT 0,   -- 1:1 chats only
     my_message_count       INT NOT NULL DEFAULT 0,   -- 1:1 chats only
@@ -276,6 +302,10 @@ INSERT INTO imessage_imports ...
 COMMIT
 ```
 
+`people` rows are read inside the same transaction as the handle upsert, so the
+`person_email` foreign key (§4) cannot fail on a row deleted mid-run; if it does
+fail, the run rolls back rather than writing a dangling link.
+
 Any error rolls back; the watermark does not advance, so the next run retries
 the same range. `--dry-run` reads `chat.db`, builds the Google index, matches,
 and prints the counts it would write, without writing.
@@ -387,6 +417,11 @@ request-metrics middleware in `api/main.py`.
 - `tests/test_repo_imessage.py` — `FakeConn` pattern: upsert SQL, `--full`
   deletes, stats recompute, import row; filter SQL/params for
   `/imessage/handles`.
+- `tests/test_schema.py` (new, skipped without a local Postgres) — against a
+  scratch database created from `repo/schema.sql`: inserting a handle with an
+  unknown `person_email` raises, deleting a `people` row nulls the links in
+  both `imessage_handles` and `linkedin_connections`, and applying the schema
+  twice is a no-op (the `DO $$` block is idempotent).
 - `tests/test_import_imessage.py` — dry-run writes nothing; error leaves the
   watermark unchanged; authorization-denied exits 2 with the Full Disk Access
   message.
@@ -402,8 +437,10 @@ request-metrics middleware in `api/main.py`.
 ## 11. Rollout
 
 1. Grant Full Disk Access to the terminal used for the import.
-2. Run `scripts/migrate_db.py` from the branch before merging (all statements
-   are `IF NOT EXISTS`; safe against the running service).
+2. Run `scripts/migrate_db.py` from the branch before merging. The new tables
+   are `IF NOT EXISTS` and the `linkedin_connections` foreign key is added in an
+   idempotent `DO $$` block (§4); both are safe against the running service. If
+   the constraint fails to validate, re-run `import_linkedin.py` and repeat.
 3. Merge; CI deploys `people-api`.
 4. `import_imessage.py --full --dry-run`, then `--full`, then incremental runs.
 
@@ -415,7 +452,8 @@ No Terraform, secrets, Cloud Functions, or inbox changes.
 |---|---|---|
 | Scope | Chats, handles, messages with text; no attachments, no reactions | Full context kept for direct DB queries; attachments and tapbacks add bulk without signal. |
 | Text exposure | Stored in Cloud SQL, never served by `people-api` | Ben wants stats via the API only; text stays reachable by direct query. |
-| Identity | Separate tables keyed by normalized handle, soft link via Google Contacts phone numbers | Phone numbers live in Google Contacts; keeps `people`, eligibility, and HubSpot untouched. |
+| Identity | Separate tables keyed by normalized handle, linked via Google Contacts phone numbers | Phone numbers live in Google Contacts; keeps `people`, eligibility, and HubSpot untouched. |
+| `person_email` integrity | FK to `people(email)` `ON DELETE SET NULL`, backfilled onto `linkedin_connections` | `people` rows are not deleted in practice, so it is free and catches a bad link at write time; a rebuild uses `DELETE`, not `TRUNCATE`. |
 | Refresh | Incremental upsert by GUID from a ROWID watermark + 14-day re-scan; `--full` reconciles deletions | `chat.db` changes daily; full replace would rewrite all history each run. |
 | Group chats | Stored; separate `group_message_count` stats | Large groups would otherwise inflate every member's 1:1 ranking. |
 | Matching | Email handle exact, then phone on exactly one Google contact | Wrong links are worse than missing ones. |
