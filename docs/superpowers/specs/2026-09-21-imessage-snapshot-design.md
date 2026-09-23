@@ -78,8 +78,12 @@ New dependency: `phonenumbers` (E.164 normalization).
 
 ## 4. Data model
 
-No foreign keys to `people`: the `people` table is rebuildable and the link is
-advisory.
+No foreign keys to `people`, as in the LinkedIn snapshot. `people` is
+rebuildable from Google Contacts plus `scripts/import_contacts.py`, and a
+foreign key would make that rebuild either blocked (`RESTRICT`) or destructive
+to this snapshot (`CASCADE`). `person_email` is also a best-guess match
+recomputed on every run (§5.4), not an invariant: a constraint would prove the
+address exists, not that it is the right person.
 
 ### 4.1 `imessage_handles`
 
