@@ -75,7 +75,7 @@ def run(get_conn: Callable[[], Any], path: Path, *, full: bool, dry_run: bool) -
     return batch
 
 
-def summary(batch: IMessageBatch, *, dry_run: bool, deleted: int) -> str:
+def summary(batch: IMessageBatch, *, dry_run: bool, deleted: int, watermark_before: int) -> str:
     unmatched = len(batch.handles) - batch.matched_by_email - batch.matched_by_google
     group_chats = sum(1 for c in batch.chats if c.is_group)
     lines = ["DRY RUN — nothing written"] if dry_run else []
@@ -86,7 +86,7 @@ def summary(batch: IMessageBatch, *, dry_run: bool, deleted: int) -> str:
         f"google {batch.matched_by_google:,} [linked to people {batch.linked_to_people:,}], "
         f"unmatched {unmatched:,}; short codes dropped {batch.short_codes_dropped:,})",
         f"chats {len(batch.chats):,} (group {group_chats:,})   "
-        f"watermark {batch.max_rowid:,}   mode {batch.mode}",
+        f"watermark {watermark_before:,} → {batch.max_rowid:,}   mode {batch.mode}",
     ]
     if batch.reactions_skipped or batch.senderless_dropped:
         lines.append(
@@ -103,6 +103,13 @@ def main_with(argv: list[str], get_conn: Callable[[], Any]) -> None:
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
 
+    # For the summary's "old → new" line only — read before run() so a transient
+    # failure here (unlikely, since it's the same DB run() is about to use) can't
+    # be blamed on a run that hasn't happened yet.
+    watermark_before = 0
+    with get_conn() as conn:
+        watermark_before = imessage_repo.latest_watermark(conn)
+
     try:
         batch = run(get_conn, args.db.expanduser(), full=args.full, dry_run=args.dry_run)
     except imessage_local.FullDiskAccessError:
@@ -112,14 +119,26 @@ def main_with(argv: list[str], get_conn: Callable[[], Any]) -> None:
         print(f"chat.db schema error: {e}", file=sys.stderr)
         sys.exit(2)
 
+    # The import already committed by this point (or, for --dry-run, there was
+    # nothing to commit). A failure in this reporting-only re-read must never
+    # be mistaken for the import itself failing, so it's swallowed here and
+    # reported as a missing count, not a crash.
     deleted = 0
     if not args.dry_run:
-        with get_conn() as conn:
-            latest = imessage_repo.latest_import(conn)
-            if latest is not None:
-                deleted = latest["messages_deleted"]
+        try:
+            with get_conn() as conn:
+                latest = imessage_repo.latest_import(conn)
+                if latest is not None:
+                    deleted = latest["messages_deleted"]
+        except Exception:
+            print(
+                "note: import committed, but the deleted-messages count could not "
+                "be read back for this summary",
+                file=sys.stderr,
+            )
+            deleted = 0
 
-    print(summary(batch, dry_run=args.dry_run, deleted=deleted))
+    print(summary(batch, dry_run=args.dry_run, deleted=deleted, watermark_before=watermark_before))
 
 
 def main() -> None:
