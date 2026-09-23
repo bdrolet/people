@@ -99,3 +99,60 @@ def test_list_connections_propagates_unrelated_400(raising_svc):
     with pytest.raises(HttpError) as exc:
         gc.list_connections("stale-token")
     assert not isinstance(exc.value, gc.SyncTokenExpired)
+
+
+def test_list_phone_index_groups_contacts_by_normalized_number(monkeypatch):
+    pages = [
+        {
+            "connections": [
+                {
+                    "resourceName": "people/c1",
+                    "names": [{"displayName": "Alice Example"}],
+                    "phoneNumbers": [{"value": "(555) 010-0001"}, {"value": "+1 555 010 0003"}],
+                },
+                {
+                    "resourceName": "people/c2",
+                    "names": [{"displayName": "Alias Example"}],
+                    "phoneNumbers": [{"value": "555-010-0001"}],
+                },
+            ],
+            "nextPageToken": "p2",
+        },
+        {
+            "connections": [
+                {"resourceName": "people/c3", "names": [{"displayName": "No Phone"}]},
+            ]
+        },
+    ]
+    calls = []
+
+    class FakeReq:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def execute(self):
+            return self._payload
+
+    class FakeConnections:
+        def list(self, **kw):
+            calls.append(kw)
+            return FakeReq(pages[len(calls) - 1])
+
+    class FakePeople:
+        def connections(self):
+            return FakeConnections()
+
+    class FakeService:
+        def people(self):
+            return FakePeople()
+
+    monkeypatch.setattr(gc, "_svc", lambda: FakeService())
+
+    index = gc.list_phone_index()
+    assert sorted(e["resource_name"] for e in index["+15550100001"]) == ["people/c1", "people/c2"]
+    assert index["+15550100003"] == [
+        {"resource_name": "people/c1", "display_name": "Alice Example"}
+    ]
+    assert all("syncToken" not in c and not c.get("requestSyncToken") for c in calls)
+    assert calls[0]["personFields"] == "names,phoneNumbers,metadata"
+    assert calls[1]["pageToken"] == "p2"

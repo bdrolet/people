@@ -154,6 +154,48 @@ def _is_expired_sync_token(e: HttpError) -> bool:
     return any(d.get("reason") == "EXPIRED_SYNC_TOKEN" for d in details)
 
 
+_PHONE_FIELDS = "names,phoneNumbers,metadata"
+
+
+def list_phone_index(region: str = "US") -> dict[str, list[dict]]:
+    """Every contact's phone numbers, E.164-normalized, for the iMessage import
+    (spec §5.4). Deliberately does NOT request or use a sync token: the nightly
+    sync in repo/sync_state.py owns that token. This is a full listing every
+    time, on its own field mask, independent of list_connections."""
+    # Layer-rule exception, adjudicated: clients/ normally never imports
+    # services/, but duplicating E.164 normalization here would be worse than
+    # this one function-local import.
+    from services.imessage_export import normalize_handle
+
+    index: dict[str, list[dict]] = {}
+    page_token = None
+    while True:
+        resp = (
+            _svc()
+            .people()
+            .connections()
+            .list(
+                resourceName="people/me",
+                personFields=_PHONE_FIELDS,
+                pageSize=1000,
+                pageToken=page_token,
+            )
+            .execute()
+        )
+        for person in resp.get("connections", []):
+            entry = {
+                "resource_name": person["resourceName"],
+                "display_name": (person.get("names") or [{}])[0].get("displayName"),
+            }
+            for number in person.get("phoneNumbers", []):
+                e164 = normalize_handle(number.get("value", ""), region=region)
+                if e164:
+                    index.setdefault(e164, []).append(entry)
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            return index
+
+
 def list_connections(sync_token: str | None) -> tuple[list[dict], str]:
     """Full or incremental listing. Raises SyncTokenExpired when the token has
     aged out, which run_sync recovers from by retrying with no token."""
