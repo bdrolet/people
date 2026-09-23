@@ -58,6 +58,10 @@ connection paths (Cloud SQL connector and local direct psycopg3).
 | `linkedin_messages` | `conversation_id`, `sender_name`, `sender_profile_url`, `recipient_names`, `recipient_profile_urls` (text[]), `sent_at`, `subject`, `content`, `folder`, `from_me` |
 | `linkedin_recommendations` | `direction` (`given`/`received`), `full_name`, `company`, `job_title`, `text`, `status`, `created_on`, `profile_url` (null unless the name matched one connection) |
 | `linkedin_imports` | append-only audit of `scripts/import_linkedin.py` runs: `snapshot_at`, `source`, row counts, `matched_by_email`, `matched_by_name` |
+| `imessage_handles` | iMessage snapshot, PK `handle` (E.164 phone or lowercased email): `display_name`, `google_resource_name`, `person_email` (soft link to `people.email`, FK `ON DELETE SET NULL`), `match_method` (`email`/`google`/null), `message_count`/`my_message_count` (1:1 chats only), `last_message_at`, `last_my_message_at`, `group_message_count`, `last_group_message_at`, `updated_at` |
+| `imessage_chats` | PK `chat_guid`: `display_name` (group name, if set), `is_group`, `participant_handles` (text[], excludes Ben), `last_message_at` |
+| `imessage_messages` | PK `guid`: `chat_guid`, `sender_handle` (NULL when `from_me`), `from_me`, `sent_at`, **`text`** (NULL if undecodable or retracted), `service` (`iMessage`/`SMS`/`RCS`), `has_attachments`, `edited_at`, `retracted` — **message text lives only here; `people-api` never serves it, by design (spec §6)** |
+| `imessage_imports` | append-only audit of `scripts/import_imessage.py` runs: `ran_at`, `mode` (`incremental`/`full`), `max_rowid` (watermark), row counts, `matched_by_email`, `matched_by_google`, `linked_to_people` |
 
 `last_interaction` (`GREATEST(last_seen, last_contacted)`) is derived, not
 stored — repeat the expression below rather than looking for a column.
@@ -131,4 +135,31 @@ ORDER BY sent_at DESC;
 **Snapshot age and match rates:**
 ```sql
 SELECT * FROM linkedin_imports ORDER BY id DESC LIMIT 5;
+```
+
+**iMessage handles Ben talked with and let go quiet:**
+```sql
+SELECT handle, display_name, message_count, my_message_count, last_message_at, person_email
+FROM imessage_handles
+WHERE my_message_count > 0 AND last_message_at < now() - interval '6 months'
+ORDER BY last_message_at DESC
+LIMIT 50;
+```
+
+**Message text with one handle** (the only way to read it — `people-api`
+never serves it):
+```sql
+SELECT sent_at, from_me, left(text, 200) AS text
+FROM imessage_messages
+WHERE chat_guid IN (
+  SELECT chat_guid FROM imessage_chats
+  WHERE is_group = false AND '+15550100001' = ANY(participant_handles)
+)
+ORDER BY sent_at DESC
+LIMIT 50;
+```
+
+**iMessage snapshot age:**
+```sql
+SELECT * FROM imessage_imports ORDER BY id DESC LIMIT 5;
 ```

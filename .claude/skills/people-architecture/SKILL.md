@@ -12,7 +12,10 @@ Inbox owns mail: receiving, classifying, tagging, and the `email_classified` /
 canonical Google Contact, the derived `people` index, the HubSpot mirror, and
 `people-api`. Inbox never talks to Google Contacts or HubSpot again. People's
 Cloud Functions never talk to Microsoft Graph — only the local
-`scripts/import_contacts.py` does.
+`scripts/import_contacts.py` does. Likewise, people's Cloud Functions never
+read `chat.db` — only the local `scripts/import_imessage.py` does, and
+iMessage is not a source of truth for any `people` field (it doesn't affect
+counters, eligibility, or HubSpot ranking).
 
 ## Event flow
 
@@ -42,9 +45,12 @@ Cloud Scheduler people-sync (4 AM ET, before inbox's 5 AM sweep)
 
 scripts/import_linkedin.py (local, manual) ──LinkedIn data export──▶ linkedin_* tables (snapshot, replaced per import)
 
+scripts/import_imessage.py (local, manual, needs Full Disk Access) ──chat.db──▶ imessage_* tables (incremental upsert)
+
 inbox-process, Claude Code skills ──Bearer people-api-token──▶ people-api (Cloud Run)
                                                         GET/PATCH /people/{email}, POST /search, GET /people,
-                                                        GET /linkedin/connections[/{slug}], GET /linkedin/imports/latest
+                                                        GET /linkedin/connections[/{slug}], GET /linkedin/imports/latest,
+                                                        GET /imessage/handles[/{handle}], GET /imessage/imports/latest
 ```
 
 Full design: `docs/superpowers/specs/2026-09-03-people-service-extraction-design.md`.
@@ -81,11 +87,19 @@ hubspot_contact_id, hubspot_synced_at, updated_at) and `sync_state`
 (key/sync_token/last_run_at/last_status — one row, `key='google_contacts'`).
 
 LinkedIn snapshot tables — `linkedin_connections` (PK `profile_url`, soft link
-`person_email` → `people.email`, per-connection message stats),
-`linkedin_messages`, `linkedin_recommendations` — are fully replaced by each
-manual run of `scripts/import_linkedin.py`; `linkedin_imports` is its
-append-only audit. No foreign keys to `people`; nothing flows from LinkedIn to
+`person_email` → `people.email` FK `ON DELETE SET NULL`, per-connection
+message stats), `linkedin_messages`, `linkedin_recommendations` — are fully
+replaced by each manual run of `scripts/import_linkedin.py`;
+`linkedin_imports` is its append-only audit. Nothing flows from LinkedIn to
 Google Contacts or HubSpot.
+
+iMessage snapshot tables — `imessage_handles` (PK `handle`, soft link
+`person_email` → `people.email` FK `ON DELETE SET NULL`, per-handle 1:1 and
+group message stats), `imessage_chats`, `imessage_messages` (text lives only
+here — never served by `people-api`) — are incrementally upserted by each
+manual run of `scripts/import_imessage.py`; `imessage_imports` is its
+append-only audit. Nothing flows from iMessage to Google Contacts, HubSpot,
+or `people`'s counters/eligibility.
 
 `last_interaction` is derived as `GREATEST(last_seen, last_contacted)`, not
 stored. Schema: `repo/schema.sql`, applied via `scripts/migrate_db.py`. Prod

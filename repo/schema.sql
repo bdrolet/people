@@ -33,7 +33,12 @@ CREATE TABLE IF NOT EXISTS sync_state (
 
 -- LinkedIn snapshot (docs/superpowers/specs/2026-09-16-linkedin-snapshot-design.md §4).
 -- connections/messages/recommendations are fully replaced by scripts/import_linkedin.py;
--- linkedin_imports is an append-only audit. No foreign keys to people: the link is advisory.
+-- linkedin_imports is an append-only audit. person_email is a soft link to people,
+-- backed by an FK (ON DELETE SET NULL, added below) that proves the address exists
+-- without guaranteeing it is the right person; matching accuracy still comes from
+-- re-matching every import. A full people rebuild must use DELETE FROM people, not
+-- TRUNCATE, which fails on a referenced table (or, with CASCADE, would wipe this
+-- snapshot too).
 
 CREATE TABLE IF NOT EXISTS linkedin_connections (
     profile_url         TEXT PRIMARY KEY,
