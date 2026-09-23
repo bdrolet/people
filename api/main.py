@@ -10,7 +10,7 @@ import os
 from fastapi import FastAPI, Request
 
 import clients.otel as otel
-from api.routers import linkedin, people, search
+from api.routers import imessage, linkedin, people, search
 
 otel.setup_telemetry(os.environ.get("K_SERVICE", "people-api-local"))
 
@@ -18,6 +18,7 @@ app = FastAPI(title="people-api")
 app.include_router(people.router)
 app.include_router(search.router)
 app.include_router(linkedin.router)
+app.include_router(imessage.router)
 
 
 @app.middleware("http")
