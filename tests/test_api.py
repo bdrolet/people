@@ -88,7 +88,6 @@ class Conn:
 
 @pytest.fixture(autouse=True)
 def _wire(monkeypatch):
-    monkeypatch.delenv("PEOPLE_API_TOKEN", raising=False)
     monkeypatch.delenv("K_SERVICE", raising=False)
     monkeypatch.setattr(db, "get_conn", lambda: Conn())
     monkeypatch.setattr(

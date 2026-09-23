@@ -44,21 +44,6 @@ resource "google_secret_manager_secret_version" "people_db_password" {
   secret_data = random_password.people_db_password.result
 }
 
-resource "random_password" "people_api_token" {
-  length  = 64
-  special = false
-}
-resource "google_secret_manager_secret" "people_api_token" {
-  secret_id = "people-api-token"
-  replication {
-    auto {}
-  }
-}
-resource "google_secret_manager_secret_version" "people_api_token" {
-  secret      = google_secret_manager_secret.people_api_token.id
-  secret_data = random_password.people_api_token.result
-}
-
 resource "random_password" "people_sync_token" {
   length  = 64
   special = false
