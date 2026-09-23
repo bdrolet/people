@@ -101,3 +101,74 @@ CREATE TABLE IF NOT EXISTS linkedin_imports (
     matched_by_email         INT NOT NULL,
     matched_by_name          INT NOT NULL
 );
+
+-- iMessage snapshot (docs/superpowers/specs/2026-09-21-imessage-snapshot-design.md §4).
+-- Upserted incrementally by scripts/import_imessage.py; message text is stored here
+-- but is never served by people-api.
+
+CREATE TABLE IF NOT EXISTS imessage_handles (
+    handle                 TEXT PRIMARY KEY,   -- E.164 phone or lowercased email, see §5.3
+    display_name           TEXT,               -- from the matched Google Contact
+    google_resource_name   TEXT,
+    person_email           TEXT REFERENCES people(email) ON DELETE SET NULL,
+    match_method           TEXT,               -- 'email' | 'google' | NULL
+    message_count          INT NOT NULL DEFAULT 0,   -- 1:1 chats only
+    my_message_count       INT NOT NULL DEFAULT 0,   -- 1:1 chats only
+    last_message_at        TIMESTAMPTZ,
+    last_my_message_at     TIMESTAMPTZ,
+    group_message_count    INT NOT NULL DEFAULT 0,   -- all messages in group chats this handle is in
+    last_group_message_at  TIMESTAMPTZ,
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS imessage_handles_person_email_idx ON imessage_handles (person_email);
+CREATE INDEX IF NOT EXISTS imessage_handles_google_idx ON imessage_handles (google_resource_name);
+CREATE INDEX IF NOT EXISTS imessage_handles_name_trgm_idx ON imessage_handles USING gin (display_name gin_trgm_ops);
+
+CREATE TABLE IF NOT EXISTS imessage_chats (
+    chat_guid            TEXT PRIMARY KEY,
+    display_name         TEXT,               -- group name, if set
+    is_group             BOOLEAN NOT NULL,
+    participant_handles  TEXT[] NOT NULL DEFAULT '{}',   -- normalized, excluding Ben
+    last_message_at      TIMESTAMPTZ,
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS imessage_chats_participants_idx ON imessage_chats USING gin (participant_handles);
+
+CREATE TABLE IF NOT EXISTS imessage_messages (
+    guid             TEXT PRIMARY KEY,     -- chat.db message.guid; upsert key
+    chat_guid        TEXT NOT NULL,
+    sender_handle    TEXT,                 -- normalized; NULL when from_me
+    from_me          BOOLEAN NOT NULL,
+    sent_at          TIMESTAMPTZ NOT NULL,
+    text             TEXT,                 -- NULL if undecodable or retracted; never served by people-api
+    service          TEXT,                 -- 'iMessage' | 'SMS' | 'RCS'
+    has_attachments  BOOLEAN NOT NULL DEFAULT FALSE,
+    edited_at        TIMESTAMPTZ,
+    retracted        BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS imessage_messages_chat_idx ON imessage_messages (chat_guid, sent_at);
+CREATE INDEX IF NOT EXISTS imessage_messages_sender_idx ON imessage_messages (sender_handle);
+
+CREATE TABLE IF NOT EXISTS imessage_imports (
+    id                  BIGSERIAL PRIMARY KEY,
+    ran_at              TIMESTAMPTZ NOT NULL,
+    mode                TEXT NOT NULL CHECK (mode IN ('incremental', 'full')),
+    max_rowid           BIGINT NOT NULL,     -- chat.db message.ROWID watermark for the next run
+    messages_upserted   INT NOT NULL,
+    messages_deleted    INT NOT NULL,        -- --full only
+    undecoded           INT NOT NULL,
+    handles             INT NOT NULL,
+    matched_by_email    INT NOT NULL,
+    matched_by_google   INT NOT NULL,
+    linked_to_people    INT NOT NULL,
+    chats               INT NOT NULL
+);
+
+-- Backfill the same constraint onto the LinkedIn snapshot (spec §4, Migration).
+DO $$ BEGIN
+    ALTER TABLE linkedin_connections
+        ADD CONSTRAINT linkedin_connections_person_email_fkey
+        FOREIGN KEY (person_email) REFERENCES people(email) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
