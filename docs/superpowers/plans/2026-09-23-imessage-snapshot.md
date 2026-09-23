@@ -509,8 +509,6 @@ def test_missing_file_raises_full_disk_access_error(tmp_path):
         imessage_local.read(tmp_path / "nope.db")
 ```
 
-Fix the deliberately convoluted expression in `test_window_start_pulls_older_rows_back_in` while writing it: the assertion is simply that all ten GUIDs come back.
-
 - [ ] **Step 3: Run it to verify it fails**
 
 ```bash
@@ -1091,8 +1089,6 @@ def test_handles_include_groups_changes_ordering():
     imessage.handles(conn, include_groups=True)
     assert "GREATEST" in conn.calls[0][0]
 ```
-
-Fix `test_record_import_writes_audit_row` while writing it — pass `conn` as the first argument and assert `"INSERT INTO imessage_imports" in conn.calls[0][0]` and that `mode` and `max_rowid` appear in the params.
 
 - [ ] **Step 2: Run to verify failure**
 
