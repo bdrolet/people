@@ -37,9 +37,11 @@ curl -s -X POST "$BASE/search" \
   -d '{"q": "<query>", "limit": 20}' | python3 -m json.tool
 ```
 
-`q` matches a case-insensitive email substring or trigram similarity on
-`display_name`; results are ordered by `last_interaction` (the more recent
-of `last_seen`/`last_contacted`) descending. `limit` defaults to 20, max 100.
+`q` matches a case-insensitive email substring, trigram similarity on
+`display_name`, or a case-insensitive substring of `company` — so "who works
+at Acme" is one call; results are ordered by `last_interaction` (the more
+recent of `last_seen`/`last_contacted`) descending. `limit` defaults to 20,
+max 100.
 
 The response also carries `linkedin_results`: LinkedIn connections whose
 name, company, or position match `q` (substring or trigram), ordered by last
@@ -137,9 +139,17 @@ Both endpoints return `{"results": [...]}` of:
   "message_count": 12, "my_response_count": 4,
   "relationship_label": "colleague", "notes": "…",
   "eligible": true, "automated": false,
-  "in_google_contacts": true, "in_hubspot": true
+  "in_google_contacts": true, "in_hubspot": true,
+  "phone_numbers": ["+15550100001"], "company": "Example Corp", "job_title": "Engineer",
+  "contact": null
 }
 ```
+
+`phone_numbers` (E.164), `company`, and `job_title` are populated from the
+three typed columns, which list/search queries already have on the row.
+`contact` — the full Google field blob — is **always `null` in list and
+search results**; it's only filled on a single-person fetch
+(**fetching-person**, `GET /people/{email}`), to keep listings one query.
 
 ## Presenting results
 
