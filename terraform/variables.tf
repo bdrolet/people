@@ -33,8 +33,9 @@ variable "google_contact_group" {
   type    = string
   default = "Inbox"
 }
-variable "inbox_process_sa" {
-  description = "inbox-process CF service account — granted accessor on people-api-token so inbox can call people-api"
-  type        = string
-  default     = "inbox-process-cf@bens-project-462804.iam.gserviceaccount.com"
+
+variable "api_invoker_users" {
+  description = "Google accounts granted roles/run.invoker on people-api (laptop skills, scripts)"
+  type        = list(string)
+  default     = ["ben@drolet.cloud"]
 }

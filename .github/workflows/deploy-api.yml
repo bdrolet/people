@@ -49,12 +49,25 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Resolve service URL
+        run: |
+          echo "SERVICE_URL=$(gcloud run services describe people-api \
+            --region us-central1 --project bens-project-462804 \
+            --format='value(status.url)')" >> "$GITHUB_ENV"
+
+      # The service is behind Cloud Run IAM; mint an ID token as the deployer SA.
+      - id: id_token
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOYER_SA }}
+          token_format: id_token
+          id_token_audience: ${{ env.SERVICE_URL }}
+          id_token_include_email: true
+
       - name: Smoke test deployed service
         env:
-          PEOPLE_API_TOKEN: ${{ secrets.PEOPLE_API_TOKEN }}
+          API_ID_TOKEN: ${{ steps.id_token.outputs.id_token }}
         run: |
           pip install httpx python-dotenv
-          URL=$(gcloud run services describe people-api \
-            --region us-central1 --project bens-project-462804 \
-            --format='value(status.url)')
-          python scripts/test-api-local.py --base "$URL"
+          python scripts/test-api-local.py --base "$SERVICE_URL"

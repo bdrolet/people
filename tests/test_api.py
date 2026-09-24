@@ -134,7 +134,6 @@ class Conn:
 
 @pytest.fixture(autouse=True)
 def _wire(monkeypatch):
-    monkeypatch.delenv("PEOPLE_API_TOKEN", raising=False)
     monkeypatch.delenv("K_SERVICE", raising=False)
     monkeypatch.setattr(db, "get_conn", lambda: Conn())
     monkeypatch.setattr(
@@ -231,20 +230,6 @@ def test_sync_one(monkeypatch):
     monkeypatch.setattr(gsync, "sync_one", lambda conn, r: row(display_name="Alice Updated"))
     r = client.post("/people/alice@x.com/sync")
     assert r.status_code == 200 and r.json()["display_name"] == "Alice Updated"
-
-
-def test_auth_fails_closed_on_cloud_run(monkeypatch):
-    monkeypatch.setenv("K_SERVICE", "people-api")
-    assert client.get("/people/alice@x.com").status_code == 503
-
-
-def test_auth_bearer(monkeypatch):
-    monkeypatch.setenv("PEOPLE_API_TOKEN", "t0k")
-    assert client.get("/people/alice@x.com").status_code == 401
-    assert (
-        client.get("/people/alice@x.com", headers={"Authorization": "Bearer t0k"}).status_code
-        == 200
-    )
 
 
 def test_linkedin_connections_passes_filters(monkeypatch):

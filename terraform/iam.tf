@@ -52,11 +52,3 @@ resource "google_project_iam_member" "cf_cloudsql" {
   role     = "roles/cloudsql.client"
   member   = "serviceAccount:${each.value}"
 }
-
-# Inbox calls people-api at classify time (companion plan Task 4). The secret
-# owner grants; inbox references the secret as a data source.
-resource "google_secret_manager_secret_iam_member" "inbox_process_api_token" {
-  secret_id = google_secret_manager_secret.people_api_token.secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${var.inbox_process_sa}"
-}

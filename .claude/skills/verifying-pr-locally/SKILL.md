@@ -67,11 +67,9 @@ export DYLD_LIBRARY_PATH=/opt/homebrew/opt/libpq/lib   # macOS: libpq is keg-unl
   group membership) before updating the DB — any change touching
   `services/person_edit.py` needs a real PATCH against a real linked contact
   to prove it, not just the mocked unit test.
-- **Auth is a no-op locally** — `.env` from `fetch-env.sh` sets
-  `PEOPLE_API_TOKEN`, so requests need `Authorization: Bearer $PEOPLE_API_TOKEN`;
-  unsetting the env var before starting uvicorn disables the check entirely
-  (off Cloud Run, `verify_token` allows all when the token is unset — it only
-  fails closed with 503 when `K_SERVICE` is set).
+- **No auth locally** — authentication is Cloud Run IAM, which is not in the
+  container, so a local server has no auth at all and requests need no header.
+  Against the deployed service, send `Authorization: Bearer $(gcloud auth print-identity-token)`.
 - Health path is `/health` (**not** `/healthz` — GFE reserves that on Cloud Run).
 - Live API for comparison: `terraform output -raw people_api_url` (no custom
   domain is mapped yet).

@@ -27,7 +27,6 @@ CLOUD_SQL_CONNECTION_NAME=bens-project-462804:us-central1:inbox
 POSTGRES_USER=people
 POSTGRES_DB=people
 POSTGRES_PASSWORD=$(secret people-db-password 2>/dev/null || echo "")
-PEOPLE_API_TOKEN=$(secret people-api-token 2>/dev/null || echo "")
 PEOPLE_SYNC_TOKEN=$(secret people-sync-token 2>/dev/null || echo "")
 EOF
 echo ".env written"

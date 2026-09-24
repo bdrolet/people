@@ -6,14 +6,13 @@ metadata only. tests/test_api.py enforces this with a guard test."""
 
 from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from api.auth import verify_token
 from clients import db
 from repo import imessage
 
-router = APIRouter(dependencies=[Depends(verify_token)])
+router = APIRouter()
 
 
 class IMessageSummary(BaseModel):
