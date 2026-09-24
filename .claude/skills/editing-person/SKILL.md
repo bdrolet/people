@@ -103,12 +103,19 @@ A few things worth knowing before sending one of these:
   this person row is keyed by — otherwise it's a `409`. Removing or changing
   an email address goes through the Google UI, not this endpoint.
 - Fields not sent in `contact` are left untouched on the Google contact.
-- The writable field names (besides `notes`/`relationship_label`, which are
-  out) include `addresses`, `birthdays`, `emailAddresses`, `events`,
-  `names`, `organizations`, `phoneNumbers`, `urls`, and more — any key
-  Google's People API accepts in `updatePersonFields` except `biographies`,
-  `memberships`, `metadata`, and `photos`. An unknown or excluded key is
-  rejected with a `400` naming it.
+- `contact` accepts exactly this curated set of keys — not "any Google
+  field minus a few": `addresses`, `birthdays`, `calendarUrls`,
+  `clientData`, `emailAddresses`, `events`, `externalIds`, `genders`,
+  `imClients`, `interests`, `locales`, `locations`, `miscKeywords`, `names`,
+  `nicknames`, `occupations`, `organizations`, `phoneNumbers`, `relations`,
+  `sipAddresses`, `urls`, `userDefined`. `biographies` and `memberships` are
+  deliberately excluded from this set — `notes` and `relationship_label`
+  already own them as dedicated PATCH fields, and having a second writer for
+  the same field is how they'd drift. Anything else — including real Google
+  person fields not in this set, like `ageRanges` or `skills` — is rejected
+  with a `400` naming the offending key. The list above is copied from
+  `services/contact_fields.py::WRITABLE_FIELDS`; treat that constant as the
+  authority if the two ever disagree.
 
 ## Errors
 
