@@ -1,4 +1,7 @@
+import json
+
 import pytest
+from googleapiclient.errors import HttpError
 
 import clients.google_contacts as gc
 import repo.people as people_repo
@@ -143,3 +146,124 @@ def test_partial_failure_still_resyncs_and_reraises(wire, monkeypatch):
         person_edit.update(None, "a@x.com", notes="n", relationship_label="colleague")
     assert ("sync", "a@x.com") in wire
     assert any(c[0] == "bio" for c in wire)
+
+
+class FakeResp:
+    def __init__(self, status):
+        self.status = status
+        self.reason = "error"
+
+
+def http_error(status, message):
+    return HttpError(FakeResp(status), json.dumps({"error": {"message": message}}).encode())
+
+
+@pytest.fixture
+def contact_gc(monkeypatch):
+    """Fake clients.google_contacts as person_edit sees it, for the
+    contact-field write path."""
+
+    class GC:
+        def __init__(self):
+            self.updates = []
+            self.live = {
+                "etag": "etag-1",
+                "emailAddresses": [{"value": "alice@example.com"}],
+                "memberships": [],
+            }
+            self.raise_on_update = None
+
+        def get_person(self, rn):
+            return self.live
+
+        def update_fields(self, rn, etag, fields):
+            if self.raise_on_update:
+                raise self.raise_on_update
+            self.updates.append((rn, etag, fields))
+            return self.live
+
+    fake = GC()
+    monkeypatch.setattr(person_edit, "gc", fake)
+    monkeypatch.setattr(person_edit.gsync, "sync_one", lambda conn, row: row)
+    return fake
+
+
+CONTACT_ROW = {"email": "alice@example.com", "google_resource_name": "people/c1"}
+
+
+@pytest.fixture
+def contact_repo(monkeypatch):
+    monkeypatch.setattr(person_edit.people, "get", lambda conn, email: dict(CONTACT_ROW))
+
+
+def test_contact_and_notes_go_in_one_update(contact_gc, contact_repo):
+    person_edit.update(
+        None,
+        "alice@example.com",
+        notes="hi",
+        contact={"phoneNumbers": [{"value": "+15550100001"}]},
+    )
+    assert len(contact_gc.updates) == 1
+    _, etag, fields = contact_gc.updates[0]
+    assert etag == "etag-1"
+    assert set(fields) == {"biographies", "phoneNumbers"}
+
+
+def test_contact_absent_writes_nothing(contact_gc, contact_repo):
+    # Review Focus 3.
+    person_edit.update(None, "alice@example.com")
+    assert contact_gc.updates == []
+
+
+def test_contact_empty_dict_writes_nothing(contact_gc, contact_repo):
+    # Review Focus 3: present but empty is a no-op, not an error.
+    person_edit.update(None, "alice@example.com", contact={})
+    assert contact_gc.updates == []
+
+
+def test_empty_list_clears_a_field(contact_gc, contact_repo):
+    # Review Focus 1.
+    person_edit.update(None, "alice@example.com", contact={"phoneNumbers": []})
+    assert contact_gc.updates[0][2] == {"phoneNumbers": []}
+
+
+def test_rejected_field_raises_invalid_without_writing(contact_gc, contact_repo):
+    with pytest.raises(person_edit.Invalid):
+        person_edit.update(None, "alice@example.com", contact={"biographies": [{"value": "x"}]})
+    assert contact_gc.updates == []
+
+
+def test_email_removal_raises_conflict_without_writing(contact_gc, contact_repo):
+    with pytest.raises(person_edit.Conflict):
+        person_edit.update(
+            None,
+            "alice@example.com",
+            contact={"emailAddresses": [{"value": "other@example.com"}]},
+        )
+    assert contact_gc.updates == []
+
+
+def test_stale_etag_raises_conflict(contact_gc, contact_repo):
+    # Review Focus 5.
+    contact_gc.raise_on_update = http_error(400, "FAILED_PRECONDITION: etag mismatch")
+    with pytest.raises(person_edit.Conflict):
+        person_edit.update(None, "alice@example.com", contact={"names": [{"givenName": "A"}]})
+
+
+def test_other_google_4xx_raises_invalid_carrying_the_message(contact_gc, contact_repo):
+    contact_gc.raise_on_update = http_error(400, "Invalid birthday")
+    with pytest.raises(person_edit.Invalid, match="Invalid birthday"):
+        person_edit.update(
+            None,
+            "alice@example.com",
+            contact={"birthdays": [{"date": {"month": 13}}]},
+        )
+
+
+def test_resync_still_runs_after_a_failed_write(contact_gc, contact_repo, monkeypatch):
+    seen = []
+    monkeypatch.setattr(person_edit.gsync, "sync_one", lambda conn, row: seen.append(1) or row)
+    contact_gc.raise_on_update = http_error(400, "Invalid birthday")
+    with pytest.raises(person_edit.Invalid):
+        person_edit.update(None, "alice@example.com", contact={"birthdays": [{}]})
+    assert seen == [1]
