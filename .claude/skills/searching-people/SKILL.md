@@ -46,6 +46,11 @@ name, company, or position match `q` (substring or trigram), ordered by last
 LinkedIn message, same `limit`. `results` entries always have `linkedin: null`
 — fetch the person for their LinkedIn summary.
 
+It also carries `imessage_results`: iMessage handles whose display name or
+handle match `q` (substring or trigram similarity > 0.3), ordered by
+`last_message_at` desc nulls last, same `limit`. `results` entries always
+have `imessage: null` — fetch the person for their iMessage summary.
+
 ## Search LinkedIn connections
 
 ```
@@ -77,6 +82,31 @@ Each result: `profile_url`, `full_name`, `email`, `company`, `position`,
 This is a snapshot from Ben's last manual export — check its age with
 `GET $BASE/linkedin/imports/latest` before claiming something is current.
 Open one with `GET $BASE/linkedin/connections/{slug}` (see **fetching-person**).
+
+## Search iMessage handles
+
+```
+GET $BASE/imessage/handles
+```
+
+```bash
+curl -s "$BASE/imessage/handles?min_messages=10&replied=true&quiet_since=2025-01-01&limit=50" \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+```
+
+Filters (all optional, combined with AND): `q` (display name or handle
+substring), `min_messages` (int, 1:1 messages only), `replied` (`true` = Ben
+has sent at least one message), `quiet_since` (date — `last_message_at`
+before it), `unmatched` (`true` = no `google_resource_name` and no
+`person_email`), `include_groups` (bool, default `false` — ranks by the
+later of `last_message_at`/`last_group_message_at` instead of 1:1 only),
+`limit` (default 50, max 500). Ordered by `last_message_at` desc nulls last.
+
+Example: "who have I stopped texting" →
+`replied=true&quiet_since=<a year ago>`. Open one with
+`GET $BASE/imessage/handles/{handle}` — URL-encode a `+` in a phone handle as
+`%2B` (e.g. `%2B15550100001`). Message text is never in this response — see
+**querying-people-db** for that.
 
 ## List recent people
 

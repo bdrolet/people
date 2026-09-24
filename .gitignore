@@ -43,3 +43,7 @@ context/*
 # LinkedIn data exports — personal data, never committed (LinkedIn snapshot spec §6)
 *LinkedInDataExport*
 linkedin-export*/
+
+# Local Messages database copies — personal data, never committed (iMessage spec §6)
+chat.db*
+imessage-export*/

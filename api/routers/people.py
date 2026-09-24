@@ -3,8 +3,10 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, field_validator
 
+from api.routers.imessage import IMessageSummary
 from api.routers.linkedin import LinkedInSummary
 from clients import db
+from repo import imessage as imessage_repo
 from repo import linkedin as linkedin_repo
 from repo import people
 from services import google_contacts_sync, person_edit
@@ -28,6 +30,7 @@ class PersonOut(BaseModel):
     in_google_contacts: bool
     in_hubspot: bool
     linkedin: LinkedInSummary | None = None
+    imessage: IMessageSummary | None = None
 
 
 class PersonList(BaseModel):
@@ -49,7 +52,9 @@ class PersonPatch(BaseModel):
         return v
 
 
-def to_out(row: dict, linkedin_row: dict | None = None) -> PersonOut:
+def to_out(
+    row: dict, linkedin_row: dict | None = None, imessage_row: dict | None = None
+) -> PersonOut:
     return PersonOut(
         email=row["email"],
         display_name=row.get("display_name"),
@@ -65,6 +70,7 @@ def to_out(row: dict, linkedin_row: dict | None = None) -> PersonOut:
         in_google_contacts=bool(row.get("google_resource_name")),
         in_hubspot=bool(row.get("hubspot_contact_id")),
         linkedin=LinkedInSummary.model_validate(linkedin_row) if linkedin_row else None,
+        imessage=IMessageSummary.model_validate(imessage_row) if imessage_row else None,
     )
 
 
@@ -82,9 +88,10 @@ def get_person(email: str) -> PersonOut:
     with db.get_conn() as conn:
         row = people.get(conn, email)
         linkedin_row = linkedin_repo.connection_for_person(conn, email) if row else None
+        imessage_row = imessage_repo.summary_for_person(conn, email) if row else None
     if row is None:
         raise HTTPException(status_code=404)
-    return to_out(row, linkedin_row)
+    return to_out(row, linkedin_row, imessage_row)
 
 
 @router.patch("/people/{email}", response_model=PersonOut)
@@ -97,11 +104,12 @@ def patch_person(email: str, body: PersonPatch) -> PersonOut:
             )
             conn.commit()
             linkedin_row = linkedin_repo.connection_for_person(conn, email)
+            imessage_row = imessage_repo.summary_for_person(conn, email)
     except person_edit.NotFound:
         raise HTTPException(status_code=404)
     except person_edit.NotLinked:
         raise HTTPException(status_code=409, detail="person has no Google contact")
-    return to_out(row, linkedin_row)
+    return to_out(row, linkedin_row, imessage_row)
 
 
 @router.post("/people/{email}/sync", response_model=PersonOut)

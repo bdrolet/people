@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import clients.db as db
+import repo.imessage as imessage_repo
 import repo.linkedin as linkedin_repo
 import repo.people as people_repo
 import services.google_contacts_sync as gsync
@@ -75,6 +76,51 @@ def msg_row(conversation_id, sent_at, content="hi", **kw):
     return base
 
 
+def imessage_summary_row(**kw):
+    base = {
+        "handles": ["+15550100001"],
+        "message_count": 212,
+        "my_message_count": 98,
+        "last_message_at": TS,
+        "last_my_message_at": TS,
+        "group_message_count": 40,
+        "last_group_message_at": TS,
+        "imported_at": TS,
+    }
+    base.update(kw)
+    return base
+
+
+def handle_row(handle="+15550100001", **kw):
+    base = {
+        "handle": handle,
+        "display_name": "Alice",
+        "google_resource_name": None,
+        "person_email": "alice@x.com",
+        "match_method": "email",
+        "message_count": 212,
+        "my_message_count": 98,
+        "last_message_at": TS,
+        "last_my_message_at": TS,
+        "group_message_count": 40,
+        "last_group_message_at": TS,
+    }
+    base.update(kw)
+    return base
+
+
+def group_row(**kw):
+    base = {
+        "chat_guid": "chat1",
+        "display_name": "Fixture Group",
+        "participant_count": 4,
+        "message_count": 30,
+        "last_message_at": TS,
+    }
+    base.update(kw)
+    return base
+
+
 class Conn:
     def __enter__(self):
         return self
@@ -110,6 +156,18 @@ def _wire(monkeypatch):
     monkeypatch.setattr(linkedin_repo, "messages_for", lambda conn, url, limit: [])
     monkeypatch.setattr(linkedin_repo, "recommendations_for", lambda conn, url: [])
     monkeypatch.setattr(linkedin_repo, "latest_import", lambda conn: None)
+    monkeypatch.setattr(imessage_repo, "summary_for_person", lambda conn, email: None)
+    monkeypatch.setattr(
+        imessage_repo, "search_handles", lambda conn, q, limit: [handle_row()] if "ali" in q else []
+    )
+    monkeypatch.setattr(imessage_repo, "handles", lambda conn, **kw: [handle_row()])
+    monkeypatch.setattr(
+        imessage_repo,
+        "handle",
+        lambda conn, handle: handle_row(handle) if handle == "+15550100001" else None,
+    )
+    monkeypatch.setattr(imessage_repo, "handle_groups", lambda conn, handle: [group_row()])
+    monkeypatch.setattr(imessage_repo, "latest_import", lambda conn: None)
 
 
 client = TestClient(app)
@@ -310,3 +368,101 @@ def test_search_linkedin_results():
     assert body["results"][0]["email"] == "alice@x.com"
     assert body["linkedin_results"][0]["full_name"] == "Alice Example"
     assert client.post("/search", json={"q": "zzz"}).json()["linkedin_results"] == []
+
+
+def test_person_includes_imessage_summary(monkeypatch):
+    monkeypatch.setattr(
+        imessage_repo, "summary_for_person", lambda conn, email: imessage_summary_row()
+    )
+    body = client.get("/people/alice@x.com").json()
+    assert body["imessage"]["message_count"] == 212
+    assert body["imessage"]["handles"] == ["+15550100001"]
+
+
+def test_person_imessage_is_null_when_unlinked():
+    assert client.get("/people/alice@x.com").json()["imessage"] is None
+
+
+def test_list_people_omits_imessage(monkeypatch):
+    def fail(*a, **kw):
+        raise AssertionError("list responses must not look up imessage per row")
+
+    monkeypatch.setattr(imessage_repo, "summary_for_person", fail)
+    assert client.get("/people?recent=5").json()["results"][0]["imessage"] is None
+    assert client.post("/search", json={"q": "ali"}).json()["results"][0]["imessage"] is None
+
+
+def test_patch_person_includes_imessage(monkeypatch):
+    monkeypatch.setattr(person_edit, "update", lambda conn, email, **kw: row(notes="hi"))
+    monkeypatch.setattr(
+        imessage_repo, "summary_for_person", lambda conn, email: imessage_summary_row()
+    )
+    body = client.patch("/people/alice@x.com", json={"notes": "hi"}).json()
+    assert body["imessage"]["message_count"] == 212
+
+
+def test_search_returns_imessage_results():
+    body = client.post("/search", json={"q": "ali"}).json()
+    assert body["imessage_results"][0]["handle"] == "+15550100001"
+    assert client.post("/search", json={"q": "zzz"}).json()["imessage_results"] == []
+
+
+def test_handles_endpoint_applies_filters(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        imessage_repo, "handles", lambda conn, **kw: (seen.update(kw), [handle_row()])[1]
+    )
+    r = client.get("/imessage/handles?replied=true&min_messages=3")
+    assert r.status_code == 200
+    assert seen["replied"] is True and seen["min_messages"] == 3
+    assert r.json()["results"][0]["handle"] == "+15550100001"
+
+
+def test_handles_limit_bounds():
+    assert client.get("/imessage/handles?limit=501").status_code == 422
+    assert client.get("/imessage/handles?limit=0").status_code == 422
+
+
+def test_handle_detail_returns_groups_and_404s():
+    body = client.get("/imessage/handles/%2B15550100001").json()
+    assert body["groups"][0]["display_name"] == "Fixture Group"
+    assert client.get("/imessage/handles/%2B15550100002").status_code == 404
+
+
+def test_imports_latest_404s_when_never_imported():
+    assert client.get("/imessage/imports/latest").status_code == 404
+
+
+def test_imports_latest(monkeypatch):
+    monkeypatch.setattr(
+        imessage_repo,
+        "latest_import",
+        lambda conn: {
+            "ran_at": TS,
+            "mode": "incremental",
+            "max_rowid": 999,
+            "messages_upserted": 10,
+            "messages_deleted": 0,
+            "undecoded": 0,
+            "handles": 5,
+            "matched_by_email": 2,
+            "matched_by_google": 1,
+            "linked_to_people": 3,
+            "chats": 4,
+        },
+    )
+    r = client.get("/imessage/imports/latest")
+    assert r.status_code == 200 and r.json()["messages_upserted"] == 10
+
+
+def test_no_imessage_response_model_exposes_message_text():
+    """Spec §6: people-api never serves iMessage content."""
+    from pydantic import BaseModel
+
+    import api.routers.imessage as mod
+
+    banned = {"text", "content", "body", "message", "messages"}
+    for name in dir(mod):
+        obj = getattr(mod, name)
+        if isinstance(obj, type) and issubclass(obj, BaseModel):
+            assert not (set(obj.model_fields) & banned), f"{name} exposes message content"

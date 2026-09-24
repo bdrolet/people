@@ -24,3 +24,4 @@ opentelemetry-sdk>=1.24
 opentelemetry-exporter-otlp-proto-http>=1.24
 python-dotenv>=1.0.0
 fastapi>=0.111
+phonenumbers>=8.13

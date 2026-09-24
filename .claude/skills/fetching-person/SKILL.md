@@ -44,7 +44,10 @@ replies), `relationship_label`, `notes`, `eligible`, `automated`,
 `in_google_contacts`, `in_hubspot`, `linkedin` (null, or the linked LinkedIn
 connection's `profile_url`, `company`, `position`, `connected_on`,
 `message_count`, `my_message_count`, `last_message_at`, `last_my_message_at`,
-`snapshot_at`).
+`snapshot_at`), `imessage` (null, or an aggregate over every iMessage handle
+linked to this person: `handles`, `message_count`, `my_message_count`,
+`last_message_at`, `last_my_message_at`, `group_message_count`,
+`last_group_message_at`, `imported_at`).
 
 ## Presenting
 
@@ -55,6 +58,7 @@ messages: <message_count> received / <my_response_count> replied
 notes: <notes, if set — this is the Google contact's biography>
 Google Contacts: <yes/no>   HubSpot: <yes/no>
 LinkedIn: <company> · <position> · <message_count> msgs / <my_message_count> from Ben · last <last_message_at> (snapshot <snapshot_at date>)   ← only if linkedin is set
+iMessage: <message_count> msgs / <my_message_count> from Ben · last <last_message_at> · groups <group_message_count>   ← only if imessage is set
 ```
 
 `notes` is the Google contact's **biography** field — `relationship_label`
@@ -76,3 +80,16 @@ Returns the connection fields plus `recommendations` (given/received) and
 `conversations` (newest first, each with `messages` newest first). `404` =
 not in the current snapshot. Message bodies are private — quote only what the
 user asks for.
+
+## iMessage detail
+
+`imessage.handles` lists the phone numbers/Apple ID emails linked to this
+person. Fetch one for its link fields and the group chats it's in:
+
+```bash
+curl -s "$BASE/imessage/handles/<handle>" -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+```
+
+URL-encode a `+` in a phone handle as `%2B` (e.g. `%2B15550100001`). `404` =
+unknown handle. This response, like the `imessage` summary above, never
+carries message text — only direct DB queries do (**querying-people-db**).

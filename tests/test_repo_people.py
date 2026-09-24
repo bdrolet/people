@@ -86,3 +86,11 @@ def test_mark_google_deleted_clears_resource_name():
     sql, params = conn.calls[0]
     assert "google_deleted_at = now()" in sql and "google_resource_name = NULL" in sql
     assert params == ("people/c1",)
+
+
+def test_rows_for_imessage_matching_selects_google_link():
+    conn = FakeConn(results=[[]])
+    people.rows_for_imessage_matching(conn)
+    sql, _ = conn.calls[0]
+    assert "email" in sql and "display_name" in sql and "google_resource_name" in sql
+    assert "FROM people" in sql
