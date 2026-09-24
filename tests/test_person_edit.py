@@ -32,7 +32,9 @@ def wire(monkeypatch):
         ],
     )
     monkeypatch.setattr(
-        gc, "update_biography", lambda rn, etag, text: log.append(("bio", rn, etag, text))
+        gc,
+        "update_fields",
+        lambda rn, etag, fields: log.append(("bio", rn, etag, fields["biographies"][0]["value"])),
     )
     monkeypatch.setattr(
         gc, "modify_group_members", lambda g, add, remove: log.append(("group", g, add, remove))

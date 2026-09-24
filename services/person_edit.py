@@ -55,7 +55,11 @@ def update(
     live = gc.get_person(rn)  # fresh etag + memberships: Google rejects a stale etag
     try:
         if notes is not None:
-            gc.update_biography(rn, live.get("etag") or "", notes)
+            gc.update_fields(
+                rn,
+                live.get("etag") or "",
+                {"biographies": [{"value": notes, "contentType": "TEXT_PLAIN"}]},
+            )
         if relationship_label is not None:
             _set_label(rn, live, relationship_label)
     finally:
