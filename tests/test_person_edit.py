@@ -154,8 +154,11 @@ class FakeResp:
         self.reason = "error"
 
 
-def http_error(status, message):
-    return HttpError(FakeResp(status), json.dumps({"error": {"message": message}}).encode())
+def http_error(status, message, error_status=None):
+    body: dict = {"message": message}
+    if error_status is not None:
+        body["status"] = error_status
+    return HttpError(FakeResp(status), json.dumps({"error": body}).encode())
 
 
 @pytest.fixture
@@ -267,3 +270,49 @@ def test_resync_still_runs_after_a_failed_write(contact_gc, contact_repo, monkey
     with pytest.raises(person_edit.Invalid):
         person_edit.update(None, "alice@example.com", contact={"birthdays": [{}]})
     assert seen == [1]
+
+
+# --- Fix round 1: stale-etag detection must key off error.status, not the
+# message substring (the live API's message doesn't reliably say "etag"). ---
+
+
+def test_failed_precondition_status_with_no_etag_wording_raises_conflict(contact_gc, contact_repo):
+    # This is the case that fails without the error.status check: a real
+    # FAILED_PRECONDITION response whose message never says "etag".
+    contact_gc.raise_on_update = http_error(
+        400, "Precondition failed, try again.", error_status="FAILED_PRECONDITION"
+    )
+    with pytest.raises(person_edit.Conflict):
+        person_edit.update(None, "alice@example.com", contact={"names": [{"givenName": "A"}]})
+
+
+def test_http_412_raises_conflict(contact_gc, contact_repo):
+    contact_gc.raise_on_update = http_error(412, "Precondition Failed")
+    with pytest.raises(person_edit.Conflict):
+        person_edit.update(None, "alice@example.com", contact={"names": [{"givenName": "A"}]})
+
+
+def test_malformed_error_body_does_not_raise_a_parse_error(contact_gc, contact_repo):
+    # Guarded parse (same style as _is_expired_sync_token): unparsable content
+    # must fall through to Invalid, never raise from inside the mapping.
+    contact_gc.raise_on_update = HttpError(FakeResp(400), b"not json at all")
+    with pytest.raises(person_edit.Invalid):
+        person_edit.update(None, "alice@example.com", contact={"names": [{"givenName": "A"}]})
+
+
+def test_real_message_substring_case_still_raises_conflict(contact_gc, contact_repo):
+    # The actual live-API message: no error.status in this fixture, so this
+    # exercises the last-resort "etag" substring fallback.
+    contact_gc.raise_on_update = http_error(
+        400,
+        "Request person.etag is different than the current person.etag. "
+        "Clear local cache and get the latest person.",
+    )
+    with pytest.raises(person_edit.Conflict):
+        person_edit.update(None, "alice@example.com", contact={"names": [{"givenName": "A"}]})
+
+
+def test_5xx_propagates_untouched(contact_gc, contact_repo):
+    contact_gc.raise_on_update = http_error(500, "Internal error")
+    with pytest.raises(HttpError):
+        person_edit.update(None, "alice@example.com", contact={"names": [{"givenName": "A"}]})

@@ -1,6 +1,7 @@
 """PATCH /people/{email}: write to Google Contacts first (it is the truth),
 then refresh the DB row from Google. Spec §9, contact fields design §5.4."""
 
+import json
 import logging
 from typing import Any
 
@@ -29,6 +30,27 @@ class Conflict(Exception):
 
 class Invalid(Exception):
     """Validation failure, or a Google 4xx (message carried verbatim). -> 400."""
+
+
+def _is_stale_etag(e: HttpError) -> bool:
+    """A stale etag is Google's `error.status == "FAILED_PRECONDITION"`
+    (HTTP 400) — confirmed against the live API, where the message text is
+    NOT guaranteed to mention "etag" at all. HTTP 412 is the same condition.
+    Same defensive-parse shape as `_is_expired_sync_token` in
+    clients/google_contacts.py: a guarded parse of `e.content`, falling
+    through rather than raising on malformed/empty content. The old
+    message-substring check is kept only as a last-resort fallback."""
+    if e.resp.status == 412:
+        return True
+    if e.resp.status != 400:
+        return False
+    try:
+        error_status = json.loads(e.content)["error"].get("status")
+    except (ValueError, KeyError, TypeError):
+        error_status = None
+    if error_status == "FAILED_PRECONDITION":
+        return True
+    return "etag" in (e.reason or "").lower()
 
 
 def _set_label(person_rn: str, live: dict, label: str) -> None:
@@ -92,14 +114,11 @@ def update(
             if fields:
                 gc.update_fields(rn, live.get("etag") or "", fields)
         except HttpError as e:
+            if _is_stale_etag(e):
+                raise Conflict(e.reason or "") from e
             status = e.resp.status
-            message = e.reason or ""
-            if status in (400, 412) and (
-                "FAILED_PRECONDITION" in message or "etag" in message.lower()
-            ):
-                raise Conflict(message) from e
             if 400 <= status < 500:
-                raise Invalid(message) from e
+                raise Invalid(e.reason or "") from e
             raise
         if relationship_label is not None:
             _set_label(rn, live, relationship_label)
