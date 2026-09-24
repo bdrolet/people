@@ -94,3 +94,28 @@ def test_rows_for_imessage_matching_selects_google_link():
     sql, _ = conn.calls[0]
     assert "email" in sql and "display_name" in sql and "google_resource_name" in sql
     assert "FROM people" in sql
+
+
+def test_update_from_google_persists_contact_fields():
+    conn = FakeConn()
+    people.update_from_google(
+        conn,
+        "people/c1",
+        etag="e1",
+        display_name="Alice",
+        notes=None,
+        relationship_label=None,
+        phone_numbers=["+15550100001"],
+        company="Example Health",
+        job_title="CTO",
+        google_fields={"names": [{"givenName": "Alice"}]},
+    )
+    sql, params = conn.calls[0]
+    assert "phone_numbers = %s::text[]" in sql and "google_fields = %s::jsonb" in sql
+    assert ["+15550100001"] in params
+    assert "Example Health" in params and "CTO" in params
+    assert {"names": [{"givenName": "Alice"}]} in params
+
+
+def test_columns_include_contact_fields():
+    assert "phone_numbers" in people._COLUMNS and "google_fields" in people._COLUMNS
