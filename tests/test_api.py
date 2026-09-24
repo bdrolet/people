@@ -39,6 +39,20 @@ def row(email="alice@x.com", **kw):
     return base
 
 
+def person_row_with_contact_fields(**kw):
+    base = row(
+        phone_numbers=["+15550100001"],
+        company="Example Health",
+        job_title="CTO",
+        google_fields={
+            "names": [{"givenName": "Alice"}],
+            "phoneNumbers": [{"value": "+15550100001"}],
+        },
+    )
+    base.update(kw)
+    return base
+
+
 def li_row(slug="alice-example", **kw):
     base = {
         "profile_url": f"linkedin.com/in/{slug}",
@@ -209,7 +223,8 @@ def test_patch_write_through(monkeypatch):
         lambda conn, email, **kw: (seen.update(kw), row(notes=kw.get("notes")))[1],
     )
     r = client.patch("/people/alice@x.com", json={"notes": "hi"})
-    assert r.status_code == 200 and seen == {"notes": "hi", "relationship_label": None}
+    assert r.status_code == 200
+    assert seen == {"notes": "hi", "relationship_label": None, "contact": None}
     assert r.json()["notes"] == "hi"
 
 
@@ -224,6 +239,78 @@ def test_patch_not_linked_is_409(monkeypatch):
 
     monkeypatch.setattr(person_edit, "update", raise_unlinked)
     assert client.patch("/people/alice@x.com", json={"notes": "hi"}).status_code == 409
+
+
+def test_patch_accepts_contact_fields(monkeypatch):
+    monkeypatch.setattr(
+        person_edit,
+        "update",
+        lambda conn, email, **kw: person_row_with_contact_fields(),
+    )
+    body = client.patch(
+        "/people/alice@x.com", json={"contact": {"phoneNumbers": [{"value": "+15550100001"}]}}
+    ).json()
+    assert body["phone_numbers"] == ["+15550100001"]
+    assert body["company"] == "Example Health"
+    assert body["contact"]["phoneNumbers"][0]["value"] == "+15550100001"
+
+
+def test_patch_rejected_field_is_400(monkeypatch):
+    def raise_invalid(conn, email, **kw):
+        raise person_edit.Invalid("unknown or unwritable field(s): photos")
+
+    monkeypatch.setattr(person_edit, "update", raise_invalid)
+    r = client.patch("/people/alice@x.com", json={"contact": {"photos": []}})
+    assert r.status_code == 400
+    assert "photos" in r.text
+
+
+def test_patch_email_removal_is_409(monkeypatch):
+    def raise_conflict(conn, email, **kw):
+        raise person_edit.Conflict("removals and changes go through the Google UI")
+
+    monkeypatch.setattr(person_edit, "update", raise_conflict)
+    r = client.patch(
+        "/people/alice@x.com", json={"contact": {"emailAddresses": [{"value": "other@x.com"}]}}
+    )
+    assert r.status_code == 409
+
+
+def test_stale_etag_is_409(monkeypatch):
+    # Review Focus 5 at the transport layer.
+    def raise_conflict(conn, email, **kw):
+        raise person_edit.Conflict("contact changed meanwhile; retry")
+
+    monkeypatch.setattr(person_edit, "update", raise_conflict)
+    r = client.patch("/people/alice@x.com", json={"contact": {"names": [{"givenName": "A"}]}})
+    assert r.status_code == 409
+
+
+def test_person_detail_carries_contact_fields(monkeypatch):
+    monkeypatch.setattr(people_repo, "get", lambda conn, email: person_row_with_contact_fields())
+    body = client.get("/people/alice@x.com").json()
+    assert body["phone_numbers"] == ["+15550100001"]
+    assert body["job_title"] == "CTO"
+    assert body["contact"]["names"][0]["givenName"] == "Alice"
+
+
+def test_list_omits_the_contact_blob_but_keeps_typed_columns(monkeypatch):
+    monkeypatch.setattr(
+        people_repo,
+        "recent",
+        lambda conn, limit, eligible_only=True: [person_row_with_contact_fields()],
+    )
+    row_out = client.get("/people?recent=5").json()["results"][0]
+    assert row_out["contact"] is None
+    assert row_out["company"] == "Example Health"
+
+
+def test_search_matches_on_company(monkeypatch):
+    monkeypatch.setattr(
+        people_repo, "search", lambda conn, q, limit: [person_row_with_contact_fields()]
+    )
+    body = client.post("/search", json={"q": "Example Health"}).json()
+    assert body["results"][0]["company"] == "Example Health"
 
 
 def test_sync_one(monkeypatch):

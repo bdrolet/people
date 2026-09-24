@@ -79,11 +79,11 @@ def search(conn: Any, q: str, limit: int) -> list[dict]:
     return conn.execute(
         f"""
         SELECT {_COLUMNS} FROM people
-        WHERE email ILIKE %s OR similarity(display_name, %s) > 0.3
+        WHERE email ILIKE %s OR similarity(display_name, %s) > 0.3 OR company ILIKE %s
         ORDER BY {_LAST_INTERACTION} DESC
         LIMIT %s
         """,
-        (like, q.strip(), limit),
+        (like, q.strip(), like, limit),
     ).fetchall()
 
 

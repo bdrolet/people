@@ -31,6 +31,10 @@ class PersonOut(BaseModel):
     in_hubspot: bool
     linkedin: LinkedInSummary | None = None
     imessage: IMessageSummary | None = None
+    phone_numbers: list[str] = []
+    company: str | None = None
+    job_title: str | None = None
+    contact: dict | None = None
 
 
 class PersonList(BaseModel):
@@ -40,6 +44,7 @@ class PersonList(BaseModel):
 class PersonPatch(BaseModel):
     notes: str | None = None
     relationship_label: str | None = None
+    contact: dict | None = None
 
     @field_validator("relationship_label")
     @classmethod
@@ -53,7 +58,10 @@ class PersonPatch(BaseModel):
 
 
 def to_out(
-    row: dict, linkedin_row: dict | None = None, imessage_row: dict | None = None
+    row: dict,
+    linkedin_row: dict | None = None,
+    imessage_row: dict | None = None,
+    include_contact: bool = False,
 ) -> PersonOut:
     return PersonOut(
         email=row["email"],
@@ -71,6 +79,10 @@ def to_out(
         in_hubspot=bool(row.get("hubspot_contact_id")),
         linkedin=LinkedInSummary.model_validate(linkedin_row) if linkedin_row else None,
         imessage=IMessageSummary.model_validate(imessage_row) if imessage_row else None,
+        phone_numbers=row.get("phone_numbers") or [],
+        company=row.get("company"),
+        job_title=row.get("job_title"),
+        contact=row.get("google_fields") if include_contact else None,
     )
 
 
@@ -91,7 +103,7 @@ def get_person(email: str) -> PersonOut:
         imessage_row = imessage_repo.summary_for_person(conn, email) if row else None
     if row is None:
         raise HTTPException(status_code=404)
-    return to_out(row, linkedin_row, imessage_row)
+    return to_out(row, linkedin_row, imessage_row, include_contact=True)
 
 
 @router.patch("/people/{email}", response_model=PersonOut)
@@ -100,7 +112,11 @@ def patch_person(email: str, body: PersonPatch) -> PersonOut:
     try:
         with db.get_conn() as conn:
             row = person_edit.update(
-                conn, email, notes=body.notes, relationship_label=body.relationship_label
+                conn,
+                email,
+                notes=body.notes,
+                relationship_label=body.relationship_label,
+                contact=body.contact,
             )
             conn.commit()
             linkedin_row = linkedin_repo.connection_for_person(conn, email)
@@ -109,7 +125,11 @@ def patch_person(email: str, body: PersonPatch) -> PersonOut:
         raise HTTPException(status_code=404)
     except person_edit.NotLinked:
         raise HTTPException(status_code=409, detail="person has no Google contact")
-    return to_out(row, linkedin_row, imessage_row)
+    except person_edit.Invalid as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except person_edit.Conflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return to_out(row, linkedin_row, imessage_row, include_contact=True)
 
 
 @router.post("/people/{email}/sync", response_model=PersonOut)
