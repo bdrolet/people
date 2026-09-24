@@ -83,9 +83,9 @@ def validate(contact: dict) -> dict:
 def check_email_addition(live: dict, submitted: list[dict], keyed_email: str) -> None:
     """Raises EmailRuleError if any existing address, or the keyed address,
     is missing from `submitted`."""
-    existing = {normalize(e.get("value", "")) for e in live.get("emailAddresses", [])}
+    existing = {normalize(str(e.get("value") or "")) for e in live.get("emailAddresses", [])}
     existing.add(normalize(keyed_email))
-    submitted_normalized = {normalize(e.get("value", "")) for e in submitted}
+    submitted_normalized = {normalize(str(e.get("value") or "")) for e in submitted}
     missing = existing - submitted_normalized
     if missing:
         raise EmailRuleError(

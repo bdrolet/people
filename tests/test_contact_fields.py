@@ -80,6 +80,13 @@ def test_email_addition_rejects_dropping_the_keyed_address():
         cf.check_email_addition(live, [{"value": "other@example.com"}], "alice@example.com")
 
 
+def test_email_addition_coerces_a_non_string_value_instead_of_raising():
+    # Review Focus: a non-string `value` (e.g. an int) must be normalized
+    # into a harmless string, not raise AttributeError from .strip().
+    with pytest.raises(cf.EmailRuleError):
+        cf.check_email_addition(LIVE, [{"value": 12345}], "alice@example.com")
+
+
 # --- derive ---------------------------------------------------------------
 
 

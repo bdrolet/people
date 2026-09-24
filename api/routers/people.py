@@ -140,4 +140,4 @@ def sync_person(email: str) -> PersonOut:
             raise HTTPException(status_code=404)
         row = google_contacts_sync.sync_one(conn, row)
         conn.commit()
-    return to_out(row)
+    return to_out(row, include_contact=True)

@@ -319,6 +319,15 @@ def test_sync_one(monkeypatch):
     assert r.status_code == 200 and r.json()["display_name"] == "Alice Updated"
 
 
+def test_sync_carries_the_contact_blob(monkeypatch):
+    monkeypatch.setattr(gsync, "sync_one", lambda conn, r: person_row_with_contact_fields())
+    r = client.post("/people/alice@x.com/sync")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["contact"] is not None
+    assert body["contact"]["names"][0]["givenName"] == "Alice"
+
+
 def test_linkedin_connections_passes_filters(monkeypatch):
     seen = {}
     monkeypatch.setattr(
