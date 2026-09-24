@@ -83,8 +83,16 @@ No custom domain is mapped for `people-api` yet — call it via
 pg_trgm). Tables: `people` (email PK, display_name, first_seen, last_seen,
 last_contacted, message_count, my_response_count, relationship_label, notes,
 eligible, automated, google_resource_name, google_etag, google_deleted_at,
-hubspot_contact_id, hubspot_synced_at, updated_at) and `sync_state`
+hubspot_contact_id, hubspot_synced_at, phone_numbers, company, job_title,
+google_fields, updated_at) and `sync_state`
 (key/sync_token/last_run_at/last_status — one row, `key='google_contacts'`).
+
+`phone_numbers` (text[], E.164), `company`, and `job_title` are a derived
+index over `google_fields` (JSONB, the full allowlisted Google contact
+payload) — not a separate source. All four are Google-owned: written on
+link, nightly sync, and after every `PATCH /people/{email}` edit to a
+`contact` field (contact-field-edits design §4). See `querying-people-db`
+for JSONB query examples.
 
 LinkedIn snapshot tables — `linkedin_connections` (PK `profile_url`, soft link
 `person_email` → `people.email` FK `ON DELETE SET NULL`, per-connection
@@ -117,9 +125,28 @@ connects through the Cloud SQL Python Connector with pg8000
 | counters, timestamps, `eligible`, `automated` | DB | Written only by the event handlers and `scripts/import_contacts.py`. |
 | `google_deleted_at` | Google | Set by sync when a linked `resourceName` comes back deleted. Never recreated. |
 | `hubspot_contact_id` | DB (people manages) | Set on create/adopt, cleared on evict/heal. |
+| `phone_numbers`, `company`, `job_title`, `google_fields` | Google Contacts | Google → DB on link, nightly sync, and after every `PATCH`. Event data never writes them; never pushed to HubSpot (contact-field-edits design §4.1). |
 
 If the DB is lost, everything except the counters rebuilds from Google
 Contacts plus a full sync; counters rebuild via `scripts/import_contacts.py`.
+
+**Editing beyond `notes`/`relationship_label`:** `PATCH /people/{email}`
+also takes a `contact` map — arbitrary Google People API fields (phone
+numbers, name, organization, birthday, addresses, ...), validated against an
+allowlist in `services/contact_fields.py` and written to Google in one
+`updateContact` call. `biographies` and `memberships` are rejected inside
+`contact` since `notes`/`relationship_label` already own them. Email
+addresses are add-only — a submission that would drop an existing or keyed
+address gets a `409`. See **editing-person** for the caller-facing detail.
+
+**Read mask widened, one resync expected.** Reading these fields back
+required widening `PERSON_FIELDS` (the People API read mask) in
+`clients/google_contacts.py`. `connections.list` treats a changed
+`personFields` as incompatible with an existing sync token, so **the first
+nightly `people-sync` run after this shipped performed one full resync**
+instead of an incremental one — expected, self-healing
+(`_is_expired_sync_token`), not a fault. If a full resync shows up in the
+logs again unexpectedly, check whether `PERSON_FIELDS` changed.
 
 ## Eligibility (spec §5)
 
@@ -162,7 +189,9 @@ mail are counted; Bcc is excluded (`services/ingest.py::record_outbound`).
 `clients/` I/O only (Google Contacts, HubSpot, Cloud SQL, OTel, local Graph
 import) · `repo/` DB read/write on an open connection, never opens its own ·
 `services/` one concern per file (`eligibility`, `ingest`,
-`google_contacts_sync`, `hubspot_mirror`, `person_edit`, `sync_auth`) ·
+`google_contacts_sync`, `hubspot_mirror`, `person_edit`, `contact_fields`
+(pure — allowlist validation, email add-only rule, Google-payload
+derivation), `sync_auth`) ·
 `handlers/` orchestrate clients + repo + services, called only from
 `main.py` (`api/routers/` play the same role for `people-api`, called only
 from `api/main.py`) · `models/` pure types, no imports from other layers ·

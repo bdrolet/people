@@ -47,13 +47,19 @@ connection's `profile_url`, `company`, `position`, `connected_on`,
 `snapshot_at`), `imessage` (null, or an aggregate over every iMessage handle
 linked to this person: `handles`, `message_count`, `my_message_count`,
 `last_message_at`, `last_my_message_at`, `group_message_count`,
-`last_group_message_at`, `imported_at`).
+`last_group_message_at`, `imported_at`), `phone_numbers` (list of E.164
+strings), `company`, `job_title` (both from the contact's primary — or
+first — organization, null if none), `contact` (the full allowlisted Google
+field blob this response was derived from, e.g. `addresses`, `birthdays`,
+`urls` — present here since this is a single-person fetch).
 
 ## Presenting
 
 ```
 **<display_name or email>** <mailto:<email>>
 <relationship_label, if set> · first seen <first_seen> · last interaction <max(last_seen, last_contacted)>
+<job_title, if set> at <company, if set>   ← only if either is set
+phone: <phone_numbers, comma-joined, if any>
 messages: <message_count> received / <my_response_count> replied
 notes: <notes, if set — this is the Google contact's biography>
 Google Contacts: <yes/no>   HubSpot: <yes/no>

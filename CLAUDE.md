@@ -35,7 +35,7 @@ This overrides the default "commit or push only when asked" behavior for code ch
 | **Events CF** | `people-process` — Pub/Sub trigger on the inbox-owned `email-events` topic (data source), entry point `process` in `main.py`; handles `email_classified` and `email_sent`, ignores everything else |
 | **Sync CF** | `people-sync` — HTTP trigger, entry point `sync`; POST with `Authorization: Bearer <people-sync-token>`; Cloud Scheduler `people-sync` at `0 4 * * *` America/New_York (before inbox's 5 AM sweep) — Google Contacts incremental sync, then HubSpot reconcile |
 | **API** | `people-api` — Cloud Run FastAPI service (`api/`); auth is Cloud Run IAM — `roles/run.invoker` granted per caller in `terraform/api.tf`; callers send `gcloud auth print-identity-token`; image in Artifact Registry repo `people`, deployed by `.github/workflows/deploy-api.yml`; `https://people-api.drolet.cloud` (Cloud Run domain mapping in `terraform/api.tf`; the CNAME lives in `~/src/infra` `cloudflare/drolet-cloud.tf`); the raw run.app URL is `terraform output -raw people_api_url` |
-| **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people`, `sync_state`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`, `imessage_handles`, `imessage_chats`, `imessage_messages`, `imessage_imports`; schema in `repo/schema.sql` |
+| **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people` (incl. editable-contact-field columns `phone_numbers`, `company`, `job_title`, `google_fields` — see the source-of-truth table below), `sync_state`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`, `imessage_handles`, `imessage_chats`, `imessage_messages`, `imessage_imports`; schema in `repo/schema.sql` |
 | **Google Contacts** | People API v1 via `clients/google_contacts.py` — OAuth refresh-token creds, scope `https://www.googleapis.com/auth/contacts`; reuses schedule's OAuth client (`google-calendar-client-id`/`-secret`, data sources), a people-owned refresh token (`google-contacts-refresh-token`) |
 | **HubSpot** | `clients/hubspot.py` (ported from inbox) — contacts search/create/update/archive, email engagement create; bounded mirror, see §HubSpot below |
 | **Local Graph import** | `clients/graph_local.py` — device-code MSAL auth for `scripts/import_contacts.py` only; people's Cloud Functions never call Graph |
@@ -64,7 +64,7 @@ clients/
   imessage_local.py         read-only chat.db access for scripts/import_imessage.py only
   otel.py                   OTel setup + counters (people.* instruments)
 repo/
-  schema.sql                people, sync_state tables
+  schema.sql                people (incl. contact-field columns), sync_state tables
   people.py                 all reads/writes on people — takes an open connection
   sync_state.py             google_contacts sync token + status
   linkedin.py               linkedin_* snapshot: replace_snapshot + API read queries
@@ -76,6 +76,9 @@ services/
   google_contacts_sync.py   ensure_contact (link/create), run_sync (nightly), sync_one (PATCH refresh)
   hubspot_mirror.py         ensure_contact, log_email, reconcile (adopt/heal/enforce/fill)
   person_edit.py            PATCH: write Google first, then refresh DB
+  contact_fields.py         pure: WRITABLE_FIELDS allowlist + shape validation, email
+                             add-only rule, derive() of phone_numbers/company/job_title/
+                             google_fields from a Google person payload
   sync_auth.py              bearer check for POST /sync
   linkedin_export.py        parse a LinkedIn data export (dir/zip) → snapshot; match_people
   imessage_export.py        pure chat.db logic: timestamps, attributedBody decode, handle
@@ -145,11 +148,37 @@ exactly as tasks and schedule do.
 | `hubspot_contact_id` | DB (people manages) | Set on create/adopt, cleared on evict/heal. |
 | `linkedin_*` tables | LinkedIn data export | Export → DB on manual import (`scripts/import_linkedin.py`). Never written back anywhere; LinkedIn is not a source for any `people` field. |
 | `imessage_*` tables | `chat.db` on Ben's Mac | chat.db → DB on local import (`scripts/import_imessage.py`). Never written back anywhere; iMessage is not a source for any `people` field. |
+| `phone_numbers`, `company`, `job_title`, `google_fields` | Google Contacts | Google → DB on link, nightly sync, and after every `PATCH`. Event data never writes them; never pushed to HubSpot (contact-field-edits design §4.1). |
 
 If the DB is lost, everything except the counters rebuilds from Google
 Contacts plus a full sync; counters rebuild via `scripts/import_contacts.py`.
 The LinkedIn snapshot rebuilds by re-running `scripts/import_linkedin.py` on the latest export.
 The iMessage snapshot rebuilds by re-running `scripts/import_imessage.py --full` against `chat.db`.
+
+### Editable contact fields (2026-09-24 design)
+
+`PATCH /people/{email}` also takes a `contact` map: arbitrary Google People
+API fields (phone numbers, name, organization, birthday, addresses, and
+more), validated against the allowlist in `services/contact_fields.py` and
+written to Google in one `updateContact` call, alongside `biographies` when
+`notes` was also given. `biographies` and `memberships` are rejected inside
+`contact` with a `400` — they're owned by the dedicated `notes` and
+`relationship_label` fields. Email addresses are add-only: a submission
+missing an existing or keyed address is a `409`. Reads are served from three
+typed columns (`phone_numbers`, `company`, `job_title`) plus `google_fields`
+(JSONB, the full allowlisted payload); the API's `PersonOut` carries all
+four, with `contact` (the JSONB blob) `null` on list/search responses and
+filled only on a single-person fetch. `POST /search` also matches on
+`company`. See `.claude/skills/editing-person/SKILL.md` and
+`docs/superpowers/specs/2026-09-24-contact-field-edits-design.md`.
+
+Reading these fields required widening the People API read mask
+(`PERSON_FIELDS` in `clients/google_contacts.py`), which Google treats as
+incompatible with an existing sync token — so the first nightly
+`people-sync` run after this shipped performed **one full resync** instead
+of an incremental one. Expected and self-healing
+(`_is_expired_sync_token`); don't read a full-resync log line as a fault
+unless it recurs.
 
 ### Eligibility (spec §5)
 

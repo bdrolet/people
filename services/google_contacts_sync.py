@@ -9,6 +9,7 @@ from typing import Any
 import clients.google_contacts as gc
 import clients.otel as otel
 from repo import people, sync_state
+from services import contact_fields
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ def _link(conn: Any, email: str, person: dict, groups: dict[str, dict]) -> None:
         display_name=display_name(person),
         notes=notes(person),
         relationship_label=relationship_label(person, groups),
+        **contact_fields.derive(person),
     )
 
 
@@ -105,6 +107,7 @@ def apply_person(conn: Any, person: dict, groups: dict[str, dict]) -> str | None
             display_name=display_name(person),
             notes=notes(person),
             relationship_label=label,
+            **contact_fields.derive(person),
         )
         return "updated"
     email = primary_email(person)
@@ -123,6 +126,7 @@ def apply_person(conn: Any, person: dict, groups: dict[str, dict]) -> str | None
             etag=person.get("etag"),
             notes=notes(person),
             relationship_label=label,
+            **contact_fields.derive(person),
         )
         return "created"
     return None

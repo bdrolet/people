@@ -53,3 +53,51 @@ def test_deleting_person_nulls_links(conn):
     conn.execute("DELETE FROM people WHERE email = 'alice@example.com'")
     assert conn.execute("SELECT person_email FROM imessage_handles").fetchone()[0] is None
     assert conn.execute("SELECT person_email FROM linkedin_connections").fetchone()[0] is None
+
+
+def test_people_has_contact_field_columns(conn):
+    cols = {
+        r[0]: r[1]
+        for r in conn.execute(
+            "select column_name, data_type from information_schema.columns"
+            " where table_name = 'people'"
+        ).fetchall()
+    }
+    assert cols["phone_numbers"] == "ARRAY"
+    assert cols["company"] == "text"
+    assert cols["job_title"] == "text"
+    assert cols["google_fields"] == "jsonb"
+
+
+def test_contact_field_defaults_and_jsonb_roundtrip(conn):
+    conn.execute("INSERT INTO people (email, first_seen) VALUES ('alice@example.com', now())")
+    row = conn.execute(
+        "select phone_numbers, company, job_title, google_fields from people"
+    ).fetchone()
+    assert row[0] == [] and row[1] is None and row[2] is None and row[3] == {}
+
+    conn.execute(
+        "UPDATE people SET phone_numbers = %s, google_fields = %s WHERE email = %s",
+        (
+            ["+15550100001"],
+            '{"birthdays": [{"date": {"month": 4, "day": 2}}]}',
+            "alice@example.com",
+        ),
+    )
+    row = conn.execute("select phone_numbers, google_fields from people").fetchone()
+    assert row[0] == ["+15550100001"]
+    assert row[1]["birthdays"][0]["date"]["month"] == 4
+
+
+def test_contact_field_indexes_exist(conn):
+    idx = {
+        r[0]
+        for r in conn.execute(
+            "select indexname from pg_indexes where tablename = 'people'"
+        ).fetchall()
+    }
+    assert {
+        "people_phone_numbers_idx",
+        "people_google_fields_idx",
+        "people_company_trgm_idx",
+    } <= idx

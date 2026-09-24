@@ -52,7 +52,7 @@ connection paths (Cloud SQL connector and local direct psycopg3).
 
 | Table | Contents |
 |---|---|
-| `people` | `email` (PK), `display_name`, `first_seen`, `last_seen`, `last_contacted`, `message_count`, `my_response_count`, `relationship_label`, `notes`, `eligible`, `automated`, `google_resource_name`, `google_etag`, `google_deleted_at`, `hubspot_contact_id`, `hubspot_synced_at`, `updated_at` |
+| `people` | `email` (PK), `display_name`, `first_seen`, `last_seen`, `last_contacted`, `message_count`, `my_response_count`, `relationship_label`, `notes`, `eligible`, `automated`, `google_resource_name`, `google_etag`, `google_deleted_at`, `hubspot_contact_id`, `hubspot_synced_at`, `phone_numbers` (text[], E.164, GIN), `company`, `job_title` (both from the primary/first `organizations` entry), `google_fields` (JSONB, the full allowlisted Google contact payload, GIN), `updated_at` |
 | `sync_state` | one row, `key='google_contacts'`: `sync_token`, `last_run_at`, `last_status` |
 | `linkedin_connections` | LinkedIn snapshot, PK `profile_url` (`linkedin.com/in/<slug>`): `full_name`, `email`, `company`, `position`, `connected_on`, `person_email` (soft link to `people.email`), `match_method`, `message_count`, `my_message_count`, `last_message_at`, `last_my_message_at`, `snapshot_at` |
 | `linkedin_messages` | `conversation_id`, `sender_name`, `sender_profile_url`, `recipient_names`, `recipient_profile_urls` (text[]), `sent_at`, `subject`, `content`, `folder`, `from_me` |
@@ -94,6 +94,33 @@ LIMIT 20;
 `reconcile()`'s `enforce`/`heal` phases operate on):
 ```sql
 SELECT count(*) FROM people WHERE hubspot_contact_id IS NOT NULL;
+```
+
+**People by phone number** (`phone_numbers` is `text[]`, E.164-normalized;
+matches the GIN index):
+```sql
+SELECT email, display_name, phone_numbers
+FROM people
+WHERE '+15550100001' = ANY(phone_numbers);
+```
+
+**Birthdays this month** (`google_fields->'birthdays'` is the raw Google
+People API array, e.g. `[{"date": {"month": 4, "day": 2}}]`; `jsonb_array_elements`
+unnests it since a contact can carry more than one):
+```sql
+SELECT email, display_name, elem->'date'->>'month' AS month, elem->'date'->>'day' AS day
+FROM people, jsonb_array_elements(google_fields->'birthdays') AS elem
+WHERE (elem->'date'->>'month')::int = EXTRACT(MONTH FROM now())::int
+ORDER BY (elem->'date'->>'day')::int;
+```
+
+**People at a given company** (`company` is one of the two typed columns
+derived from `organizations`; prefer this over `google_fields` for company/
+title lookups):
+```sql
+SELECT email, display_name, company, job_title
+FROM people
+WHERE company ILIKE '%example corp%';
 ```
 
 **Linked to Google Contacts vs. not, among eligible people:**

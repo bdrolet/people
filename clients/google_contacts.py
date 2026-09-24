@@ -14,9 +14,11 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from services.contact_fields import WRITABLE_FIELDS
+
 logger = logging.getLogger(__name__)
 
-PERSON_FIELDS = "names,emailAddresses,memberships,biographies,metadata"
+PERSON_FIELDS = ",".join(sorted(WRITABLE_FIELDS | {"memberships", "biographies", "metadata"}))
 _READ_MASK = PERSON_FIELDS
 
 
@@ -89,15 +91,20 @@ def get_person(resource_name: str) -> dict:
     return _svc().people().get(resourceName=resource_name, personFields=PERSON_FIELDS).execute()
 
 
-def update_biography(resource_name: str, etag: str, text: str) -> dict:
+def update_fields(resource_name: str, etag: str, fields: dict) -> dict:
+    """One updateContact for every field being changed (spec §5.4). Google
+    rejects a stale etag, so callers pass the etag from a fresh get_person."""
+    if not fields:
+        return {}
+    body: dict[str, Any] = {"etag": etag, **fields}
     return (
         _svc()
         .people()
         .updateContact(
             resourceName=resource_name,
-            updatePersonFields="biographies",
+            updatePersonFields=",".join(sorted(fields)),
             personFields=PERSON_FIELDS,
-            body={"etag": etag, "biographies": [{"value": text, "contentType": "TEXT_PLAIN"}]},
+            body=body,
         )
         .execute()
     )

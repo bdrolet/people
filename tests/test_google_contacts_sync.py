@@ -319,3 +319,30 @@ def test_run_sync_commits_error_status(wire, monkeypatch):
     with pytest.raises(RuntimeError):
         sync.run_sync(conn)
     assert conn.commits == 1
+
+
+def test_sync_one_derives_contact_fields(monkeypatch):
+    """The row written back carries what derive() produced from the Google payload."""
+    p = {
+        "resourceName": "people/c1",
+        "etag": "e1",
+        "names": [{"displayName": "Alice Example"}],
+        "phoneNumbers": [{"value": "(555) 010-0001"}],
+        "organizations": [{"name": "Example Health", "title": "CTO"}],
+        "memberships": [],
+        "metadata": {"deleted": False},
+    }
+    captured = {}
+    monkeypatch.setattr(sync.gc, "get_person", lambda rn: p)
+    monkeypatch.setattr(sync.gc, "list_groups", lambda: GROUPS)
+    monkeypatch.setattr(
+        sync.people, "get_by_google_resource", lambda conn, rn: {"email": "alice@example.com"}
+    )
+    monkeypatch.setattr(
+        sync.people, "update_from_google", lambda conn, rn, **kw: captured.update(kw)
+    )
+    monkeypatch.setattr(sync.people, "get", lambda conn, email: {"email": "alice@example.com"})
+    sync.sync_one(None, {"email": "alice@example.com", "google_resource_name": "people/c1"})
+    assert captured["phone_numbers"] == ["+15550100001"]
+    assert captured["company"] == "Example Health"
+    assert captured["google_fields"]["organizations"][0]["title"] == "CTO"

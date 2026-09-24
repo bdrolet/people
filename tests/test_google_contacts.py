@@ -156,3 +156,50 @@ def test_list_phone_index_groups_contacts_by_normalized_number(monkeypatch):
     assert all("syncToken" not in c and not c.get("requestSyncToken") for c in calls)
     assert calls[0]["personFields"] == "names,phoneNumbers,metadata"
     assert calls[1]["pageToken"] == "p2"
+
+
+def test_person_fields_covers_the_writable_allowlist():
+    from services.contact_fields import OWNED_ELSEWHERE, WRITABLE_FIELDS
+
+    mask = set(gc.PERSON_FIELDS.split(","))
+    assert WRITABLE_FIELDS <= mask
+    assert {"memberships", "biographies", "metadata"} <= mask  # still read
+    assert "photos" not in mask
+    assert "biographies" in OWNED_ELSEWHERE
+
+
+def test_update_fields_sends_one_call_with_a_joined_mask(monkeypatch):
+    calls = []
+
+    class FakeReq:
+        def execute(self):
+            return {"resourceName": "people/c1"}
+
+    class FakePeople:
+        def updateContact(self, **kw):
+            calls.append(kw)
+            return FakeReq()
+
+    class FakeService:
+        def people(self):
+            return FakePeople()
+
+    monkeypatch.setattr(gc, "_svc", lambda: FakeService())
+    gc.update_fields(
+        "people/c1",
+        "etag-1",
+        {"phoneNumbers": [{"value": "+15550100001"}], "names": [{"givenName": "Alice"}]},
+    )
+    assert len(calls) == 1
+    assert calls[0]["updatePersonFields"] == "names,phoneNumbers"  # sorted, comma-joined
+    assert calls[0]["body"]["etag"] == "etag-1"
+    assert calls[0]["body"]["names"] == [{"givenName": "Alice"}]
+    assert calls[0]["personFields"] == gc.PERSON_FIELDS
+
+
+def test_update_fields_with_no_fields_does_not_call_google(monkeypatch):
+    def boom():
+        raise AssertionError("must not call Google")
+
+    monkeypatch.setattr(gc, "_svc", boom)
+    assert gc.update_fields("people/c1", "etag-1", {}) == {}
