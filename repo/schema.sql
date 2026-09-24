@@ -24,6 +24,20 @@ CREATE INDEX IF NOT EXISTS people_last_interaction_idx
     ON people (GREATEST(COALESCE(last_seen, 'epoch'::timestamptz), COALESCE(last_contacted, 'epoch'::timestamptz)) DESC);
 CREATE INDEX IF NOT EXISTS people_display_name_trgm_idx ON people USING gin (display_name gin_trgm_ops);
 
+-- Editable Google contact fields
+-- (docs/superpowers/specs/2026-09-24-contact-field-edits-design.md §4).
+-- All four are Google-owned and refreshed from it; the three typed columns are a
+-- derived index over google_fields, not a separate source.
+ALTER TABLE people
+  ADD COLUMN IF NOT EXISTS phone_numbers TEXT[] NOT NULL DEFAULT '{}',
+  ADD COLUMN IF NOT EXISTS company       TEXT,
+  ADD COLUMN IF NOT EXISTS job_title     TEXT,
+  ADD COLUMN IF NOT EXISTS google_fields JSONB NOT NULL DEFAULT '{}';
+
+CREATE INDEX IF NOT EXISTS people_phone_numbers_idx ON people USING gin (phone_numbers);
+CREATE INDEX IF NOT EXISTS people_google_fields_idx ON people USING gin (google_fields);
+CREATE INDEX IF NOT EXISTS people_company_trgm_idx  ON people USING gin (company gin_trgm_ops);
+
 CREATE TABLE IF NOT EXISTS sync_state (
     key         TEXT PRIMARY KEY,
     sync_token  TEXT,
