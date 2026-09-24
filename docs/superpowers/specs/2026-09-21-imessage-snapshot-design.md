@@ -281,10 +281,33 @@ and `people` rows' `email` and `google_resource_name`
 2. **google** — a phone handle maps to **exactly one** Google contact.
    `google_resource_name` and `display_name` set from it; `person_email` set if
    a `people` row has that `google_resource_name`.
+3. **google, duplicate contact** — a phone handle maps to **two or more**
+   Google contacts whose display names all normalize (same casing/accent/
+   punctuation/whitespace folding as `services/linkedin_export.py::normalize_name`)
+   to the same **non-empty** string. Real-world check: of the ambiguous numbers
+   in Ben's data, every one turned out to be duplicate Google contacts for the
+   same person, not different people — refusing to match them was pure loss.
+   Treated as one person: `google_resource_name` and `display_name` are set
+   from the candidate with the lexicographically **lowest `resource_name`**
+   (a stable Google Contact identifier, so the choice doesn't depend on
+   API response order). `match_method = "google"`, counted in
+   `matched_by_google`, same as the single-candidate case.
+   For `person_email`: look up the `people` rows matching *any* of the
+   candidates' resource names. If they resolve to exactly **one** distinct
+   `person_email`, set it and count `linked_to_people`. If they resolve to
+   **two or more different** `person_email`s, that's a genuine identity
+   conflict (not a duplicate-contact artifact) — `person_email` stays NULL,
+   even though the google/display fields are set and `match_method` is
+   `"google"`.
 
-Otherwise all link fields stay NULL. A number on two or more Google contacts is
-not matched. Matching runs over **every** handle each run (not just those in
-the selected messages), so links refresh as Google Contacts and `people` change.
+Otherwise (names don't all normalize to the same non-empty string — including
+when every candidate's display name is empty, which carries no evidence
+they're the same person) all link fields stay NULL. This is exact-equality
+only: no fuzzy, prefix, or edit-distance matching, and no attempt to catch
+the remaining ambiguous numbers whose candidate names genuinely differ — those
+are left to Ben de-duplicating in Google Contacts (§12). Matching runs over
+**every** handle each run (not just those in the selected messages), so links
+refresh as Google Contacts and `people` change.
 
 ### 5.5 Write
 
@@ -415,7 +438,13 @@ request-metrics middleware in `api/main.py`.
   `attributedBody` decoding and the undecodable case, E.164 and email
   normalization, short-code and reaction filtering, 1:1 vs group, email match,
   unique Google phone match, ambiguous number (two contacts) → no match, Google
-  match linked and not linked to `people`.
+  match linked and not linked to `people`; duplicate-contact matching — two
+  and three candidates with identical normalized names match deterministically
+  (lowest `resource_name`), `person_email` links when the candidates resolve
+  to one person and stays NULL on a genuine two-person conflict, candidates
+  with empty names or names differing after normalization stay unmatched,
+  and names that differ only cosmetically (case/accents/punctuation/
+  whitespace) are treated as identical.
 - `tests/test_imessage_local.py` — read-only open, incremental selection
   (watermark + 14-day window), missing optional column → NULL, missing required
   column fails naming it.
@@ -461,6 +490,6 @@ No Terraform, secrets, Cloud Functions, or inbox changes.
 | `person_email` integrity | FK to `people(email)` `ON DELETE SET NULL`, backfilled onto `linkedin_connections` | `people` rows are not deleted in practice, so it is free and catches a bad link at write time; a rebuild uses `DELETE`, not `TRUNCATE`. |
 | Refresh | Incremental upsert by GUID from a ROWID watermark + 14-day re-scan; `--full` reconciles deletions | `chat.db` changes daily; full replace would rewrite all history each run. |
 | Group chats | Stored; separate `group_message_count` stats | Large groups would otherwise inflate every member's 1:1 ranking. |
-| Matching | Email handle exact, then phone on exactly one Google contact | Wrong links are worse than missing ones. |
+| Matching | Email handle exact, then phone on exactly one Google contact, or on several Google contacts whose names normalize to exactly the same string | Wrong links are worse than missing ones, but a number ambiguous only because Google has duplicate contact cards for the one person shouldn't be thrown away. Exact-name-equality duplicates are matched (deterministically, by lowest `resource_name`); fuzzy or partial name variants are deliberately left unmatched for Ben to de-duplicate by hand in Google Contacts rather than guessed at. |
 | Google read | Separate `list_phone_index()` without sync token | Leaves the nightly sync's token and `PERSON_FIELDS` untouched. |
 | Effect on `people` | None | iMessage is not a source of truth for any `people` field. |

@@ -13,6 +13,7 @@ import phonenumbers
 from clients.imessage_local import RawChatDb
 from models.imessage import IMessageBatch, IMessageChat, IMessageHandle, IMessageMessage
 from services.eligibility import normalize
+from services.linkedin_export import normalize_name
 
 EPOCH_2001 = 978307200
 NS = 1_000_000_000
@@ -203,6 +204,29 @@ def build_batch(raw: RawChatDb, *, mode: str) -> IMessageBatch:
     return batch
 
 
+def _resolve_duplicate_contacts(entries: list[dict[str, str]]) -> dict[str, str] | None:
+    """A phone number mapping to two-or-more Google contacts is normally left
+    unmatched (spec §5.4) because a wrong link is worse than a missing one.
+    But when every candidate's display name normalizes to the same non-empty
+    string, they're duplicate Google contacts for one person, not different
+    people, and refusing to match is pure loss.
+
+    Returns the entry to use, deterministically chosen as the one with the
+    lexicographically lowest `resource_name` — a stable, API-response-order-
+    independent tiebreak, since `resource_name` is a stable Google Contact
+    identifier (`people/cXXXXXXXXXXXXXXXXXX`) that doesn't change across
+    syncs. Returns None if the names don't all match, or all normalize to
+    empty (which carries no evidence they're the same person).
+    """
+    names = {normalize_name(entry.get("display_name")) for entry in entries}
+    if len(names) != 1:
+        return None
+    (name,) = names
+    if not name:
+        return None
+    return min(entries, key=lambda entry: entry["resource_name"])
+
+
 def match_handles(
     batch: IMessageBatch,
     phone_index: dict[str, list[dict[str, str]]],
@@ -235,15 +259,25 @@ def match_handles(
             continue
 
         entries = phone_index.get(handle.handle, [])
-        if len(entries) != 1:
+        if not entries:
             continue
-        entry = entries[0]
-        handle.google_resource_name = entry["resource_name"]
-        handle.display_name = entry["display_name"]
+        chosen: dict[str, str] | None
+        if len(entries) == 1:
+            chosen = entries[0]
+        else:
+            chosen = _resolve_duplicate_contacts(entries)
+        if chosen is None:
+            continue
+        handle.google_resource_name = chosen["resource_name"]
+        handle.display_name = chosen["display_name"]
         handle.match_method = "google"
         batch.matched_by_google += 1
 
-        person = people_by_resource.get(entry["resource_name"])
-        if person is not None:
-            handle.person_email = person["email"]
+        person_emails = {
+            people_by_resource[entry["resource_name"]]["email"]
+            for entry in entries
+            if entry["resource_name"] in people_by_resource
+        }
+        if len(person_emails) == 1:
+            handle.person_email = next(iter(person_emails))
             batch.linked_to_people += 1

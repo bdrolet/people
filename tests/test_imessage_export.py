@@ -172,3 +172,136 @@ def test_match_handles_skips_ambiguous_number():
     }
     ex.match_handles(b, index, [])
     assert b.handles[0].match_method is None and b.handles[0].google_resource_name is None
+
+
+def test_match_handles_duplicate_contacts_same_name_matches_deterministically():
+    # Entries deliberately listed with the higher resource_name first so a passing
+    # test can't be explained by "whatever came first in the list/dict".
+    b = IMessageBatch(mode="full", max_rowid=0, handles=[IMessageHandle("+15550100001")])
+    index = {
+        "+15550100001": [
+            {"resource_name": "people/c9", "display_name": "Jane Example"},
+            {"resource_name": "people/c2", "display_name": "Jane Example"},
+        ]
+    }
+    ex.match_handles(b, index, [])
+    h = b.handles[0]
+    assert h.match_method == "google"
+    assert h.google_resource_name == "people/c2"  # lowest by string sort
+    assert h.display_name == "Jane Example"
+    assert b.matched_by_google == 1
+
+
+def test_match_handles_duplicate_contacts_same_person_email_links():
+    b = IMessageBatch(mode="full", max_rowid=0, handles=[IMessageHandle("+15550100001")])
+    index = {
+        "+15550100001": [
+            {"resource_name": "people/c1", "display_name": "Jane Example"},
+            {"resource_name": "people/c2", "display_name": "Jane Example"},
+        ]
+    }
+    people_rows = [
+        {
+            "email": "jane@example.com",
+            "display_name": "Jane Example",
+            "google_resource_name": "people/c1",
+        },
+        {
+            "email": "jane@example.com",
+            "display_name": "Jane Example",
+            "google_resource_name": "people/c2",
+        },
+    ]
+    ex.match_handles(b, index, people_rows)
+    h = b.handles[0]
+    assert h.match_method == "google"
+    assert h.person_email == "jane@example.com"
+    assert b.matched_by_google == 1 and b.linked_to_people == 1
+
+
+def test_match_handles_duplicate_contacts_conflicting_person_emails_stay_unlinked():
+    b = IMessageBatch(mode="full", max_rowid=0, handles=[IMessageHandle("+15550100001")])
+    index = {
+        "+15550100001": [
+            {"resource_name": "people/c1", "display_name": "Jane Example"},
+            {"resource_name": "people/c2", "display_name": "Jane Example"},
+        ]
+    }
+    people_rows = [
+        {
+            "email": "jane1@example.com",
+            "display_name": "Jane Example",
+            "google_resource_name": "people/c1",
+        },
+        {
+            "email": "jane2@example.com",
+            "display_name": "Jane Example",
+            "google_resource_name": "people/c2",
+        },
+    ]
+    ex.match_handles(b, index, people_rows)
+    h = b.handles[0]
+    assert h.match_method == "google"
+    assert h.google_resource_name == "people/c1"
+    assert h.display_name == "Jane Example"
+    assert h.person_email is None
+    assert b.matched_by_google == 1 and b.linked_to_people == 0
+
+
+def test_match_handles_duplicate_contacts_different_names_still_unmatched():
+    b = IMessageBatch(mode="full", max_rowid=0, handles=[IMessageHandle("+15550100001")])
+    index = {
+        "+15550100001": [
+            {"resource_name": "people/c1", "display_name": "Jane Example"},
+            {"resource_name": "people/c2", "display_name": "John Example"},
+        ]
+    }
+    ex.match_handles(b, index, [])
+    h = b.handles[0]
+    assert h.match_method is None and h.google_resource_name is None
+    assert b.matched_by_google == 0
+
+
+def test_match_handles_duplicate_contacts_empty_names_stay_unmatched():
+    b = IMessageBatch(mode="full", max_rowid=0, handles=[IMessageHandle("+15550100001")])
+    index = {
+        "+15550100001": [
+            {"resource_name": "people/c1", "display_name": ""},
+            {"resource_name": "people/c2", "display_name": ""},
+        ]
+    }
+    ex.match_handles(b, index, [])
+    h = b.handles[0]
+    assert h.match_method is None and h.google_resource_name is None
+    assert b.matched_by_google == 0
+
+
+def test_match_handles_duplicate_contacts_names_differ_only_cosmetically():
+    b = IMessageBatch(mode="full", max_rowid=0, handles=[IMessageHandle("+15550100001")])
+    index = {
+        "+15550100001": [
+            {"resource_name": "people/c2", "display_name": "  JO-ANN O’NEIL  "},
+            {"resource_name": "people/c1", "display_name": "jo-ann o'neil"},
+        ]
+    }
+    ex.match_handles(b, index, [])
+    h = b.handles[0]
+    assert h.match_method == "google"
+    assert h.google_resource_name == "people/c1"
+    assert b.matched_by_google == 1
+
+
+def test_match_handles_three_duplicate_contacts_same_name_matches():
+    b = IMessageBatch(mode="full", max_rowid=0, handles=[IMessageHandle("+15550100001")])
+    index = {
+        "+15550100001": [
+            {"resource_name": "people/c3", "display_name": "Jane Example"},
+            {"resource_name": "people/c1", "display_name": "Jane Example"},
+            {"resource_name": "people/c2", "display_name": "Jane Example"},
+        ]
+    }
+    ex.match_handles(b, index, [])
+    h = b.handles[0]
+    assert h.match_method == "google"
+    assert h.google_resource_name == "people/c1"
+    assert b.matched_by_google == 1
