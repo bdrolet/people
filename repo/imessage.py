@@ -8,6 +8,14 @@ from models.imessage import IMessageBatch, IMessageChat, IMessageHandle, IMessag
 
 _CHAT_COLUMNS = ("chat_guid", "display_name", "is_group", "participant_handles", "last_message_at")
 _CHAT_UPDATE = ("display_name", "is_group", "participant_handles", "last_message_at")
+# build_batch (services/imessage_export.py) always emits every chat (spec §5.1), but on an
+# incremental run only sets last_message_at from messages in the current batch's window — most
+# chats carry None. A plain `last_message_at = EXCLUDED.last_message_at` would clobber the stored
+# value with that NULL. GREATEST ignores NULL arguments and returns NULL only when both are NULL,
+# so this keeps the newer of the two and never regresses a real value to NULL.
+_CHAT_SET_OVERRIDES = {
+    "last_message_at": "last_message_at = GREATEST(EXCLUDED.last_message_at, imessage_chats.last_message_at)"
+}
 
 _MESSAGE_COLUMNS = (
     "guid", "chat_guid", "sender_handle", "from_me", "sent_at", "text", "service",
@@ -45,9 +53,14 @@ def _upsert_many(
     update_cols: tuple[str, ...],
     rows: list[tuple],
     chunk: int,
+    set_overrides: dict[str, str] | None = None,
 ) -> None:
+    overrides = set_overrides or {}
     placeholder = "(" + ", ".join(f"%s{_CASTS.get(c, '')}" for c in columns) + ")"
-    set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols) + ", updated_at = now()"
+    set_clause = (
+        ", ".join(overrides.get(c, f"{c} = EXCLUDED.{c}") for c in update_cols)
+        + ", updated_at = now()"
+    )
     for i in range(0, len(rows), chunk):
         batch = rows[i : i + chunk]
         conn.execute(
@@ -84,6 +97,7 @@ def upsert_chats(conn: Any, chats: list[IMessageChat], chunk: int = 500) -> None
             for c in chats
         ],
         chunk,
+        set_overrides=_CHAT_SET_OVERRIDES,
     )
 
 

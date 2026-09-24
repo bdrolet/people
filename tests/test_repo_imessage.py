@@ -38,6 +38,25 @@ def test_upsert_chats_upserts_on_chat_guid():
     assert params[0] == "c1"
 
 
+def test_upsert_chats_last_message_at_is_null_safe_on_conflict():
+    # build_batch emits every chat every run (spec §5.1), but on an incremental run most
+    # carry last_message_at=None (no message in the batch's window). A plain
+    # `last_message_at = EXCLUDED.last_message_at` would clobber the stored value with
+    # that NULL, so the update must use a NULL-safe form (GREATEST) instead — and must
+    # not simply drop the column update, or a real update would never take effect.
+    conn = FakeConn()
+    imessage.upsert_chats(
+        conn,
+        [IMessageChat(chat_guid="c1", display_name=None, is_group=False, participant_handles=[])],
+    )
+    sql, _ = conn.calls[0]
+    assert "last_message_at = EXCLUDED.last_message_at" not in sql
+    assert (
+        "last_message_at = GREATEST(EXCLUDED.last_message_at, imessage_chats.last_message_at)"
+        in sql
+    )
+
+
 def test_upsert_chats_binds_empty_participants_as_text_array():
     conn = FakeConn()
     imessage.upsert_chats(

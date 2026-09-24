@@ -315,13 +315,18 @@ with a partial match set.
 
 ### 5.6 Output
 
-Counts only — never names, numbers, or message content:
+Counts only — never names, numbers, or message content (`scripts/import_imessage.py::summary()`
+is the source of truth for this format):
 
 ```
-messages 12,408 upserted (new 11,902, refreshed 506, undecoded 3, retracted 2)
+messages 12,408 upserted (undecoded 3, retracted 2, deleted 9)
 handles 412 (email 18, google 291 [linked to people 64], unmatched 103; short codes dropped 57)
 chats 530 (group 44)   watermark 1,284,110 → 1,296,518   mode incremental
+skipped: reactions 96, senderless 4
 ```
+
+The `skipped:` line only appears when reactions or senderless-dropped messages are
+nonzero. `--dry-run` prepends a `DRY RUN — nothing written` line.
 
 (Numbers illustrative.) Missing Full Disk Access (`sqlite3.OperationalError:
 authorization denied` / `unable to open`) exits 2 with:

@@ -13,6 +13,26 @@ ATTR_BODY = (
     b"NSObject\x00\x85\x92\x84\x84\x84\x08NSString\x01\x94\x84\x01+\x0eAttr only body\x86"
 )
 
+# Same header as ATTR_BODY up through the '+' length marker; used to build extended-length
+# NSString payloads (a length byte >127, i.e. the 0x81/0x82/0x84 marker forms) that ATTR_BODY
+# itself doesn't exercise.
+_ATTR_BODY_HEADER = ATTR_BODY[: ATTR_BODY.index(b"+") + 1]
+
+
+def build_extended_attr_body(marker: int, size: int, text: str) -> bytes:
+    """An NSString payload using the extended-length form: `marker` (0x81/0x82/0x84) followed
+    by a `size`-byte little-endian length, for a payload too long for the single-byte literal
+    length used by ATTR_BODY (>127 bytes)."""
+    payload = text.encode()
+    return (
+        _ATTR_BODY_HEADER
+        + bytes([marker])
+        + len(payload).to_bytes(size, "little")
+        + payload
+        + b"\x86"
+    )
+
+
 DDL = """
 CREATE TABLE message (ROWID INTEGER PRIMARY KEY, guid TEXT, text TEXT, attributedBody BLOB,
   handle_id INTEGER, is_from_me INTEGER, date INTEGER, date_edited INTEGER,

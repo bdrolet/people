@@ -51,7 +51,7 @@ def decode_attributed_body(blob: bytes | None) -> str | None:
         return None
     try:
         marker_idx = blob.index(NSSTRING_MARKER)
-        plus_idx = blob.index(b"+", marker_idx + len(NSSTRING_MARKER))
+        plus_idx = blob.index(bytes([LENGTH_MARKER]), marker_idx + len(NSSTRING_MARKER))
         length_idx = plus_idx + 1
         first_byte = blob[length_idx]
         if first_byte in EXTENDED_LENGTH_SIZES:

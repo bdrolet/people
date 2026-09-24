@@ -3,7 +3,20 @@ from datetime import UTC, datetime
 from clients import imessage_local
 from models.imessage import IMessageBatch, IMessageHandle
 from services import imessage_export as ex
-from tests.fixtures.imessage import ATTR_BODY, apple_ns, build_chat_db, build_mixed_sender_chat_db
+from tests.fixtures.imessage import (
+    ATTR_BODY,
+    apple_ns,
+    build_chat_db,
+    build_extended_attr_body,
+    build_mixed_sender_chat_db,
+)
+
+# Longer than 127 bytes so the literal single-byte length can't represent it — forces the
+# extended-length (0x81/0x82/0x84) branch.
+LONG_PAYLOAD = (
+    "Synthetic extended-length payload text padded out past the one hundred twenty seven "
+    "byte literal length boundary so the extended marker path is exercised for real."
+)
 
 
 def test_apple_ts_handles_nanoseconds():
@@ -24,6 +37,18 @@ def test_decode_attributed_body_extracts_text():
 
 def test_decode_attributed_body_returns_none_when_undecodable():
     assert ex.decode_attributed_body(b"\x04\x0bstreamtyped\xff\xff") is None
+
+
+def test_decode_attributed_body_extracts_extended_length_2_byte():
+    assert len(LONG_PAYLOAD) > 127
+    blob = build_extended_attr_body(0x81, 2, LONG_PAYLOAD)
+    assert ex.decode_attributed_body(blob) == LONG_PAYLOAD
+
+
+def test_decode_attributed_body_extracts_extended_length_3_byte():
+    assert len(LONG_PAYLOAD) > 127
+    blob = build_extended_attr_body(0x82, 3, LONG_PAYLOAD)
+    assert ex.decode_attributed_body(blob) == LONG_PAYLOAD
 
 
 def test_normalize_handle_formats_e164():
