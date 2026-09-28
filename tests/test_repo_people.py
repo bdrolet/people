@@ -150,3 +150,31 @@ def test_eligible_not_in_hubspot_excludes_people_without_an_email():
     people.eligible_not_in_hubspot(conn, 10)
     sql, _ = conn.calls[0]
     assert "email IS NOT NULL" in sql
+
+
+def test_norm_returns_none_for_missing_email():
+    # Review Focus 1: "" is not NULL — it passes the CHECK and collides on UNIQUE.
+    assert people._norm(None) is None
+    assert people._norm("   ") is None
+    assert people._norm(" Alice@Example.COM ") == "alice@example.com"
+
+
+def test_create_from_google_accepts_no_email():
+    conn = FakeConn(results=[[{"id": 5, "email": None}]])
+    row = people.create_from_google(
+        conn,
+        None,
+        display_name="Alice Example",
+        resource_name="people/c1",
+        etag="e1",
+        notes=None,
+        relationship_label=None,
+        phone_numbers=["+15550100001"],
+        company=None,
+        job_title=None,
+        google_fields={},
+    )
+    assert row["email"] is None
+    sql, params = conn.calls[0]
+    assert "INSERT INTO people" in sql
+    assert params[0] is None  # email bound as NULL, never ""

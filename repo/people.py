@@ -16,8 +16,12 @@ _COLUMNS = """
 _LAST_INTERACTION = "GREATEST(COALESCE(last_seen, 'epoch'::timestamptz), COALESCE(last_contacted, 'epoch'::timestamptz))"
 
 
-def _norm(email: str) -> str:
-    return (email or "").strip().lower()
+def _norm(email: str | None) -> str | None:
+    """None for a missing or blank address. NOT "" — an empty string passes the
+    people_has_an_identifier CHECK and then collides on the UNIQUE index, so the
+    second email-less adoption would abort the sync (spec §5.2.1)."""
+    normalized = (email or "").strip().lower()
+    return normalized or None
 
 
 def upsert_inbound(conn: Any, email: str, display_name: str | None, received_at: datetime) -> dict:
@@ -207,7 +211,7 @@ def mark_google_deleted(conn: Any, resource_name: str) -> None:
 
 def create_from_google(
     conn: Any,
-    email: str,
+    email: str | None,
     *,
     display_name: str | None,
     resource_name: str,

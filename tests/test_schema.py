@@ -140,6 +140,25 @@ def test_phone_only_people_coexist_with_null_emails(conn):
     assert conn.execute("select count(*) from people where email is null").fetchone()[0] == 2
 
 
+def test_two_emailless_people_coexist(conn):
+    """Review Focus 1: the case that fails if _norm(None) returns ''."""
+    for rn, phone in (("people/c1", "+15550100001"), ("people/c2", "+15550100002")):
+        conn.execute(
+            "INSERT INTO people (email, first_seen, eligible, automated,"
+            " google_resource_name, phone_numbers)"
+            " VALUES (NULL, now(), TRUE, FALSE, %s, %s)",
+            (rn, [phone]),
+        )
+    assert conn.execute("select count(*) from people where email is null").fetchone()[0] == 2
+
+
+def test_empty_string_email_would_collide(conn):
+    """Documents WHY NULL matters: two empty strings are not distinct."""
+    conn.execute("INSERT INTO people (email, first_seen) VALUES ('', now())")
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        conn.execute("INSERT INTO people (email, first_seen) VALUES ('', now())")
+
+
 def test_on_conflict_email_still_upserts(conn):
     # Review Focus 5: the event handlers depend on this.
     conn.execute("INSERT INTO people (email, first_seen) VALUES ('b@example.com', now())")
