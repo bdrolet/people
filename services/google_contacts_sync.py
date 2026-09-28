@@ -99,7 +99,12 @@ def apply_person(conn: Any, person: dict, groups: dict[str, dict]) -> str | None
             return "deleted"
         return None
     label = relationship_label(person, groups)
+    derived = contact_fields.derive(person)
     if linked:
+        if linked.get("email") is None and not derived["phone_numbers"]:
+            # An adopted (email-less) row's phone_numbers are its only
+            # identifier — never overwrite them with {} (people_has_an_identifier).
+            return "skipped"
         people.update_from_google(
             conn,
             rn,
@@ -107,11 +112,10 @@ def apply_person(conn: Any, person: dict, groups: dict[str, dict]) -> str | None
             display_name=display_name(person),
             notes=notes(person),
             relationship_label=label,
-            **contact_fields.derive(person),
+            **derived,
         )
         return "updated"
     email = primary_email(person)
-    derived = contact_fields.derive(person)
     if not email:
         # Adopt a contact that has no email address, provided it has a phone we
         # can normalize — people_has_an_identifier requires one or the other

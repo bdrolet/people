@@ -355,3 +355,35 @@ def test_update_works_for_a_person_with_no_email(contact_gc, monkeypatch):
     )
     person_edit.update(None, 7, contact={"phoneNumbers": [{"value": "+15550100002"}]})
     assert contact_gc.updates and "phoneNumbers" in contact_gc.updates[0][2]
+
+
+# --- Fix 2: clearing phoneNumbers must not strip a phone-only person's last
+# identifier (mirrors the email add-only rule; people_has_an_identifier). ---
+
+
+def test_clearing_phone_numbers_on_a_phone_only_person_raises_conflict(contact_gc, monkeypatch):
+    monkeypatch.setattr(
+        person_edit.people,
+        "get_by_id",
+        lambda conn, pid: {"id": 7, "email": None, "google_resource_name": "people/c1"},
+    )
+    with pytest.raises(person_edit.Conflict):
+        person_edit.update(None, 7, contact={"phoneNumbers": []})
+    assert contact_gc.updates == []
+
+
+def test_clearing_phone_numbers_on_a_person_with_an_email_is_allowed(contact_gc, contact_repo):
+    # CONTACT_ROW has an email, so losing every phone number still leaves an
+    # identifier — allowed, same as before this fix.
+    person_edit.update(None, 42, contact={"phoneNumbers": []})
+    assert contact_gc.updates and contact_gc.updates[0][2] == {"phoneNumbers": []}
+
+
+def test_replacing_the_phone_number_on_a_phone_only_person_is_allowed(contact_gc, monkeypatch):
+    monkeypatch.setattr(
+        person_edit.people,
+        "get_by_id",
+        lambda conn, pid: {"id": 7, "email": None, "google_resource_name": "people/c1"},
+    )
+    person_edit.update(None, 7, contact={"phoneNumbers": [{"value": "+15550100009"}]})
+    assert contact_gc.updates and "phoneNumbers" in contact_gc.updates[0][2]

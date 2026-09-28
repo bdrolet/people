@@ -58,6 +58,11 @@ class EmailRuleError(Exception):
     """A submitted `emailAddresses` list drops an existing or keyed address. -> 409."""
 
 
+class IdentifierRuleError(Exception):
+    """A submitted `phoneNumbers` list would leave a person with neither an
+    email address nor a phone number. -> 409."""
+
+
 def validate(contact: dict) -> dict:
     """Allowlist + shape check. Returns the normalized map (bare objects wrapped
     in a one-element list). Raises ValidationError."""
@@ -98,6 +103,23 @@ def check_email_addition(live: dict, submitted: list[dict], keyed_email: str | N
             f"(missing: {', '.join(sorted(missing))}); "
             "removals and changes go through the Google UI"
         )
+
+
+def check_phone_removal(email: str | None, submitted: list[dict]) -> None:
+    """Raises IdentifierRuleError if `email` is None (the person has no email
+    address — e.g. adopted by phone only) and the submitted `phoneNumbers`
+    list normalizes to zero usable numbers (people_has_an_identifier requires
+    at least one). A person with an email address is unaffected — they keep
+    an identifier either way."""
+    if email:
+        return
+    raw_numbers = [p.get("value", "") for p in submitted]
+    if any(normalize_handle(n) is not None for n in raw_numbers):
+        return
+    raise IdentifierRuleError(
+        "a person must keep an email address or a phone number; "
+        "removing the last phone number goes through the Google UI"
+    )
 
 
 def _primary_organization(organizations: list[dict]) -> dict | None:

@@ -107,6 +107,11 @@ def update(
                 contact_fields.check_email_addition(live, fields["emailAddresses"], row["email"])
             except contact_fields.EmailRuleError as e:
                 raise Conflict(str(e)) from e
+        if "phoneNumbers" in fields:
+            try:
+                contact_fields.check_phone_removal(row["email"], fields["phoneNumbers"])
+            except contact_fields.IdentifierRuleError as e:
+                raise Conflict(str(e)) from e
     if notes is not None:
         fields["biographies"] = [{"value": notes, "contentType": "TEXT_PLAIN"}]
 

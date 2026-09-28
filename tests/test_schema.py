@@ -1,11 +1,14 @@
 """Schema tests against a real Postgres (spec §4). Skipped unless TEST_DATABASE_URL
 is set, e.g. postgresql://localhost/people_schema_test."""
 
+import json
 import os
 from pathlib import Path
 
 import psycopg
 import pytest
+
+from repo import people as people_repo
 
 URL = os.environ.get("TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not URL, reason="TEST_DATABASE_URL not set")
@@ -141,13 +144,25 @@ def test_phone_only_people_coexist_with_null_emails(conn):
 
 
 def test_two_emailless_people_coexist(conn):
-    """Review Focus 1: the case that fails if _norm(None) returns ''."""
+    """Review Focus 1: the case that fails if _norm(None) returns ''. Driven
+    through repo.people.create_from_google (the real adoption write path) so
+    this actually exercises _norm, not just the schema's own tolerance for
+    two raw NULLs — a regression to _norm(None) == "" would collide the
+    second insert against the UNIQUE(email) constraint here, the same way
+    test_empty_string_email_would_collide demonstrates for a literal ''."""
     for rn, phone in (("people/c1", "+15550100001"), ("people/c2", "+15550100002")):
-        conn.execute(
-            "INSERT INTO people (email, first_seen, eligible, automated,"
-            " google_resource_name, phone_numbers)"
-            " VALUES (NULL, now(), TRUE, FALSE, %s, %s)",
-            (rn, [phone]),
+        people_repo.create_from_google(
+            conn,
+            None,
+            display_name=None,
+            resource_name=rn,
+            etag=None,
+            notes=None,
+            relationship_label=None,
+            phone_numbers=[phone],
+            company=None,
+            job_title=None,
+            google_fields=json.dumps({}),
         )
     assert conn.execute("select count(*) from people where email is null").fetchone()[0] == 2
 

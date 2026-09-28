@@ -406,6 +406,42 @@ def test_adopted_contact_updates_on_the_next_run(monkeypatch):
     assert updated["rn"] == "people/c1"
 
 
+def test_adopted_contact_losing_its_only_phone_is_skipped_not_updated(monkeypatch):
+    # Blocking fix: an already-linked, email-less row's phone_numbers are its
+    # only identifier (people_has_an_identifier). If Google's contact loses
+    # its last parseable phone — deleted outright, or replaced by a short
+    # code — update_from_google must NOT be called, since it would write
+    # phone_numbers = {} over a NULL email and abort the whole sync's
+    # transaction against a real Postgres CHECK constraint.
+    calls = []
+    monkeypatch.setattr(
+        sync.people,
+        "get_by_google_resource",
+        lambda conn, rn: {"id": 7, "email": None, "google_resource_name": rn},
+    )
+    monkeypatch.setattr(sync.people, "update_from_google", lambda conn, rn, **kw: calls.append(kw))
+
+    assert sync.apply_person(None, person(email=None, phones=[]), {}) == "skipped"
+    assert sync.apply_person(None, person(email=None, phones=["611"]), {}) == "skipped"
+    assert calls == []
+
+
+def test_adopted_contact_keeping_a_phone_still_updates(monkeypatch):
+    # Companion to the skip test above: a linked, email-less row with a
+    # still-usable phone must continue to update normally.
+    calls = []
+    monkeypatch.setattr(
+        sync.people,
+        "get_by_google_resource",
+        lambda conn, rn: {"id": 7, "email": None, "google_resource_name": rn},
+    )
+    monkeypatch.setattr(sync.people, "update_from_google", lambda conn, rn, **kw: calls.append(kw))
+
+    kind = sync.apply_person(None, person(email=None, phones=["+15550100003"]), {})
+    assert kind == "updated"
+    assert calls and calls[0]["phone_numbers"] == ["+15550100003"]
+
+
 def test_contact_with_an_email_behaves_exactly_as_before(monkeypatch):
     created = {}
     monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
