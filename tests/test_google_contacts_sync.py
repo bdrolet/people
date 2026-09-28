@@ -20,6 +20,7 @@ def person(
     bio=None,
     deleted=False,
     etag="e1",
+    phones=(),
 ):
     p = {
         "resourceName": rn,
@@ -31,6 +32,8 @@ def person(
         ],
         "metadata": {"deleted": deleted},
     }
+    if phones:
+        p["phoneNumbers"] = [{"value": v} for v in phones]
     if bio:
         p["biographies"] = [{"value": bio}]
     return p
@@ -268,7 +271,7 @@ def test_run_sync_updates_links_creates_deletes(wire):
     )
     saved = wire(fg, fr)
     counts = sync.run_sync(None)
-    assert counts == {"updated": 1, "linked": 1, "created": 1, "deleted": 1}
+    assert counts == {"updated": 1, "linked": 1, "created": 1, "deleted": 1, "skipped": 0}
     assert fr.rows["linked@x.com"]["relationship_label"] == "family"
     assert fr.rows["hand@x.com"]["google_resource_name"] == "people/h1"
     assert fr.rows["unknown@x.com"]["eligible"] is True
@@ -346,3 +349,77 @@ def test_sync_one_derives_contact_fields(monkeypatch):
     assert captured["phone_numbers"] == ["+15550100001"]
     assert captured["company"] == "Example Health"
     assert captured["google_fields"]["organizations"][0]["title"] == "CTO"
+
+
+def test_emailless_contact_with_a_phone_is_adopted(monkeypatch):
+    created = {}
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
+    monkeypatch.setattr(
+        sync.people,
+        "create_from_google",
+        lambda conn, email, **kw: created.update({"email": email, **kw}),
+    )
+    kind = sync.apply_person(None, person(email=None, phones=["(555) 010-0001"]), {})
+    assert kind == "created"
+    assert created["email"] is None
+    assert created["phone_numbers"] == ["+15550100001"]
+
+
+def test_emailless_contact_without_a_usable_phone_is_skipped(monkeypatch):
+    # Review Focus 4: a short code is not a usable phone; adopting would violate
+    # the CHECK constraint and abort the run.
+    calls = []
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
+    monkeypatch.setattr(sync.people, "create_from_google", lambda *a, **k: calls.append(1))
+    assert sync.apply_person(None, person(email=None, phones=["262966"]), {}) == "skipped"
+    assert sync.apply_person(None, person(email=None, phones=[]), {}) == "skipped"
+    assert calls == []
+
+
+def test_adopted_contact_updates_on_the_next_run(monkeypatch):
+    # Review Focus 5: only google_resource_name can find it — no email exists.
+    updated = {}
+    monkeypatch.setattr(
+        sync.people,
+        "get_by_google_resource",
+        lambda conn, rn: {"id": 7, "email": None, "google_resource_name": rn},
+    )
+    monkeypatch.setattr(
+        sync.people, "update_from_google", lambda conn, rn, **kw: updated.update({"rn": rn, **kw})
+    )
+    assert sync.apply_person(None, person(email=None, phones=["+15550100001"]), {}) == "updated"
+    assert updated["rn"] == "people/c1"
+
+
+def test_contact_with_an_email_behaves_exactly_as_before(monkeypatch):
+    created = {}
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
+    monkeypatch.setattr(sync.people, "get", lambda conn, email: None)
+    monkeypatch.setattr(
+        sync.people,
+        "create_from_google",
+        lambda conn, email, **kw: created.update({"email": email, **kw}),
+    )
+    assert sync.apply_person(None, person(email="alice@example.com"), {}) == "created"
+    assert created["email"] == "alice@example.com"
+
+
+def test_run_sync_counts_skipped(monkeypatch):
+    monkeypatch.setattr(
+        sync.gc,
+        "list_connections",
+        lambda token: (
+            [
+                person(rn="people/c1", email=None, phones=[]),
+                person(rn="people/c2", email=None, phones=[]),
+            ],
+            "tok",
+        ),
+    )
+    monkeypatch.setattr(sync.gc, "list_groups", lambda: {})
+    monkeypatch.setattr(sync.sync_state, "get_token", lambda conn: None)
+    monkeypatch.setattr(sync.sync_state, "set_token", lambda conn, t, s: None)
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
+    counts = sync.run_sync(None)
+    assert counts["skipped"] == 2
+    assert counts["created"] == 0
