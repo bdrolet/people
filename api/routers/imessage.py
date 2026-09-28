@@ -30,6 +30,7 @@ class IMessageHandleOut(BaseModel):
     handle: str
     display_name: str | None
     google_resource_name: str | None
+    person_id: int | None
     person_email: str | None
     match_method: str | None
     message_count: int

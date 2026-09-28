@@ -27,6 +27,7 @@ class LinkedInSummary(BaseModel):
 class LinkedInConnectionOut(LinkedInSummary):
     full_name: str
     email: str | None
+    person_id: int | None
     person_email: str | None
     match_method: str | None
 
