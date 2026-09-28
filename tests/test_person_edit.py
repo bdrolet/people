@@ -20,12 +20,13 @@ GROUPS = {
 def wire(monkeypatch):
     log = []
     row = {
+        "id": 1,
         "email": "a@x.com",
         "eligible": True,
         "google_resource_name": "people/c1",
         "google_etag": "e1",
     }
-    monkeypatch.setattr(people_repo, "get", lambda conn, email: row if email == "a@x.com" else None)
+    monkeypatch.setattr(people_repo, "get_by_id", lambda conn, pid: row if pid == 1 else None)
     monkeypatch.setattr(gc, "list_groups", lambda: GROUPS)
     monkeypatch.setattr(
         gc,
@@ -63,32 +64,37 @@ def wire(monkeypatch):
 
 
 def test_notes_write_through_then_sync(wire):
-    out = person_edit.update(None, "a@x.com", notes="met at conf")
+    out = person_edit.update(None, 1, notes="met at conf")
     assert wire[0] == ("bio", "people/c1", "e1", "met at conf")
     assert wire[-1] == ("sync", "a@x.com") and out["synced"] is True
 
 
 def test_label_moves_between_user_groups_but_keeps_inbox(wire):
-    person_edit.update(None, "a@x.com", relationship_label="colleague")
+    person_edit.update(None, 1, relationship_label="colleague")
     group_calls = [c for c in wire if c[0] == "group"]
     assert ("group", "contactGroups/col1", ["people/c1"], []) in group_calls
     assert ("group", "contactGroups/fam1", [], ["people/c1"]) in group_calls
     assert not any(c[1] == "contactGroups/inbox1" for c in group_calls)
 
 
-def test_unknown_email_raises(wire):
+def test_unknown_id_raises(wire):
     with pytest.raises(person_edit.NotFound):
-        person_edit.update(None, "nobody@x.com", notes="x")
+        person_edit.update(None, 999, notes="x")
 
 
 def test_unlinked_raises(monkeypatch, wire):
     monkeypatch.setattr(
         people_repo,
-        "get",
-        lambda conn, email: {"email": email, "eligible": False, "google_resource_name": None},
+        "get_by_id",
+        lambda conn, pid: {
+            "id": pid,
+            "email": "a@x.com",
+            "eligible": False,
+            "google_resource_name": None,
+        },
     )
     with pytest.raises(person_edit.NotLinked):
-        person_edit.update(None, "a@x.com", notes="x")
+        person_edit.update(None, 1, notes="x")
 
 
 def test_label_leaves_unrelated_groups_alone(wire, monkeypatch):
@@ -110,7 +116,7 @@ def test_label_leaves_unrelated_groups_alone(wire, monkeypatch):
         "Book Club": {"resourceName": "contactGroups/bc1", "groupType": "USER_CONTACT_GROUP"},
     }
     monkeypatch.setattr(gc, "list_groups", lambda: groups)
-    person_edit.update(None, "a@x.com", relationship_label="colleague")
+    person_edit.update(None, 1, relationship_label="colleague")
     group_calls = [c for c in wire if c[0] == "group"]
     assert not any("contactGroups/bc1" in c[3] for c in group_calls)
     assert ("group", "contactGroups/fam1", [], ["people/c1"]) in group_calls
@@ -121,7 +127,7 @@ def test_label_matches_existing_group_case_insensitively(wire, monkeypatch):
         raise AssertionError("must not be called")
 
     monkeypatch.setattr(gc, "ensure_group", must_not_be_called)
-    person_edit.update(None, "a@x.com", relationship_label="FAMILY")
+    person_edit.update(None, 1, relationship_label="FAMILY")
     group_calls = [c for c in wire if c[0] == "group"]
     assert ("group", "contactGroups/fam1", ["people/c1"], []) in group_calls
     assert not any(c[3] for c in group_calls)
@@ -133,7 +139,7 @@ def test_notes_uses_live_etag(wire, monkeypatch):
         "get_person",
         lambda rn: {"resourceName": "people/c1", "etag": "e2", "memberships": []},
     )
-    person_edit.update(None, "a@x.com", notes="n")
+    person_edit.update(None, 1, notes="n")
     assert ("bio", "people/c1", "e2", "n") in wire
 
 
@@ -143,7 +149,7 @@ def test_partial_failure_still_resyncs_and_reraises(wire, monkeypatch):
 
     monkeypatch.setattr(gc, "modify_group_members", boom)
     with pytest.raises(RuntimeError):
-        person_edit.update(None, "a@x.com", notes="n", relationship_label="colleague")
+        person_edit.update(None, 1, notes="n", relationship_label="colleague")
     assert ("sync", "a@x.com") in wire
     assert any(c[0] == "bio" for c in wire)
 
@@ -191,18 +197,18 @@ def contact_gc(monkeypatch):
     return fake
 
 
-CONTACT_ROW = {"email": "alice@example.com", "google_resource_name": "people/c1"}
+CONTACT_ROW = {"id": 42, "email": "alice@example.com", "google_resource_name": "people/c1"}
 
 
 @pytest.fixture
 def contact_repo(monkeypatch):
-    monkeypatch.setattr(person_edit.people, "get", lambda conn, email: dict(CONTACT_ROW))
+    monkeypatch.setattr(person_edit.people, "get_by_id", lambda conn, pid: dict(CONTACT_ROW))
 
 
 def test_contact_and_notes_go_in_one_update(contact_gc, contact_repo):
     person_edit.update(
         None,
-        "alice@example.com",
+        42,
         notes="hi",
         contact={"phoneNumbers": [{"value": "+15550100001"}]},
     )
@@ -214,25 +220,25 @@ def test_contact_and_notes_go_in_one_update(contact_gc, contact_repo):
 
 def test_contact_absent_writes_nothing(contact_gc, contact_repo):
     # Review Focus 3.
-    person_edit.update(None, "alice@example.com")
+    person_edit.update(None, 42)
     assert contact_gc.updates == []
 
 
 def test_contact_empty_dict_writes_nothing(contact_gc, contact_repo):
     # Review Focus 3: present but empty is a no-op, not an error.
-    person_edit.update(None, "alice@example.com", contact={})
+    person_edit.update(None, 42, contact={})
     assert contact_gc.updates == []
 
 
 def test_empty_list_clears_a_field(contact_gc, contact_repo):
     # Review Focus 1.
-    person_edit.update(None, "alice@example.com", contact={"phoneNumbers": []})
+    person_edit.update(None, 42, contact={"phoneNumbers": []})
     assert contact_gc.updates[0][2] == {"phoneNumbers": []}
 
 
 def test_rejected_field_raises_invalid_without_writing(contact_gc, contact_repo):
     with pytest.raises(person_edit.Invalid):
-        person_edit.update(None, "alice@example.com", contact={"biographies": [{"value": "x"}]})
+        person_edit.update(None, 42, contact={"biographies": [{"value": "x"}]})
     assert contact_gc.updates == []
 
 
@@ -240,7 +246,7 @@ def test_email_removal_raises_conflict_without_writing(contact_gc, contact_repo)
     with pytest.raises(person_edit.Conflict):
         person_edit.update(
             None,
-            "alice@example.com",
+            42,
             contact={"emailAddresses": [{"value": "other@example.com"}]},
         )
     assert contact_gc.updates == []
@@ -250,7 +256,7 @@ def test_stale_etag_raises_conflict(contact_gc, contact_repo):
     # Review Focus 5.
     contact_gc.raise_on_update = http_error(400, "FAILED_PRECONDITION: etag mismatch")
     with pytest.raises(person_edit.Conflict):
-        person_edit.update(None, "alice@example.com", contact={"names": [{"givenName": "A"}]})
+        person_edit.update(None, 42, contact={"names": [{"givenName": "A"}]})
 
 
 def test_other_google_4xx_raises_invalid_carrying_the_message(contact_gc, contact_repo):
@@ -258,7 +264,7 @@ def test_other_google_4xx_raises_invalid_carrying_the_message(contact_gc, contac
     with pytest.raises(person_edit.Invalid, match="Invalid birthday"):
         person_edit.update(
             None,
-            "alice@example.com",
+            42,
             contact={"birthdays": [{"date": {"month": 13}}]},
         )
 
@@ -268,7 +274,7 @@ def test_resync_still_runs_after_a_failed_write(contact_gc, contact_repo, monkey
     monkeypatch.setattr(person_edit.gsync, "sync_one", lambda conn, row: seen.append(1) or row)
     contact_gc.raise_on_update = http_error(400, "Invalid birthday")
     with pytest.raises(person_edit.Invalid):
-        person_edit.update(None, "alice@example.com", contact={"birthdays": [{}]})
+        person_edit.update(None, 42, contact={"birthdays": [{}]})
     assert seen == [1]
 
 
@@ -283,13 +289,13 @@ def test_failed_precondition_status_with_no_etag_wording_raises_conflict(contact
         400, "Precondition failed, try again.", error_status="FAILED_PRECONDITION"
     )
     with pytest.raises(person_edit.Conflict):
-        person_edit.update(None, "alice@example.com", contact={"names": [{"givenName": "A"}]})
+        person_edit.update(None, 42, contact={"names": [{"givenName": "A"}]})
 
 
 def test_http_412_raises_conflict(contact_gc, contact_repo):
     contact_gc.raise_on_update = http_error(412, "Precondition Failed")
     with pytest.raises(person_edit.Conflict):
-        person_edit.update(None, "alice@example.com", contact={"names": [{"givenName": "A"}]})
+        person_edit.update(None, 42, contact={"names": [{"givenName": "A"}]})
 
 
 def test_malformed_error_body_does_not_raise_a_parse_error(contact_gc, contact_repo):
@@ -297,7 +303,7 @@ def test_malformed_error_body_does_not_raise_a_parse_error(contact_gc, contact_r
     # must fall through to Invalid, never raise from inside the mapping.
     contact_gc.raise_on_update = HttpError(FakeResp(400), b"not json at all")
     with pytest.raises(person_edit.Invalid):
-        person_edit.update(None, "alice@example.com", contact={"names": [{"givenName": "A"}]})
+        person_edit.update(None, 42, contact={"names": [{"givenName": "A"}]})
 
 
 def test_real_message_substring_case_still_raises_conflict(contact_gc, contact_repo):
@@ -309,10 +315,43 @@ def test_real_message_substring_case_still_raises_conflict(contact_gc, contact_r
         "Clear local cache and get the latest person.",
     )
     with pytest.raises(person_edit.Conflict):
-        person_edit.update(None, "alice@example.com", contact={"names": [{"givenName": "A"}]})
+        person_edit.update(None, 42, contact={"names": [{"givenName": "A"}]})
 
 
 def test_5xx_propagates_untouched(contact_gc, contact_repo):
     contact_gc.raise_on_update = http_error(500, "Internal error")
     with pytest.raises(HttpError):
-        person_edit.update(None, "alice@example.com", contact={"names": [{"givenName": "A"}]})
+        person_edit.update(None, 42, contact={"names": [{"givenName": "A"}]})
+
+
+# --- Task 3: keyed by person_id, so a phone-only person is editable -------
+
+
+def test_update_is_keyed_by_person_id(contact_gc, monkeypatch):
+    seen: dict = {}
+
+    def fake_get_by_id(conn, pid):
+        seen["pid"] = pid
+        return {"id": pid, "email": "alice@example.com", "google_resource_name": "people/c1"}
+
+    monkeypatch.setattr(person_edit.people, "get_by_id", fake_get_by_id)
+    person_edit.update(None, 42, notes="hi")
+    assert seen["pid"] == 42
+
+
+def test_update_raises_not_found_for_an_unknown_id(monkeypatch):
+    monkeypatch.setattr(person_edit.people, "get_by_id", lambda conn, pid: None)
+    with pytest.raises(person_edit.NotFound):
+        person_edit.update(None, 999, notes="hi")
+
+
+def test_update_works_for_a_person_with_no_email(contact_gc, monkeypatch):
+    # Review Focus (Task 3): a phone-only row has row["email"] is None, which
+    # must reach check_email_addition without raising on every request.
+    monkeypatch.setattr(
+        person_edit.people,
+        "get_by_id",
+        lambda conn, pid: {"id": 7, "email": None, "google_resource_name": "people/c1"},
+    )
+    person_edit.update(None, 7, contact={"phoneNumbers": [{"value": "+15550100002"}]})
+    assert contact_gc.updates and "phoneNumbers" in contact_gc.updates[0][2]

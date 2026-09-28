@@ -80,11 +80,16 @@ def validate(contact: dict) -> dict:
     return normalized
 
 
-def check_email_addition(live: dict, submitted: list[dict], keyed_email: str) -> None:
+def check_email_addition(live: dict, submitted: list[dict], keyed_email: str | None) -> None:
     """Raises EmailRuleError if any existing address, or the keyed address,
-    is missing from `submitted`."""
+    is missing from `submitted`. `keyed_email` is None for a person with no
+    email address (e.g. adopted by phone only) — in that case there is no
+    keyed address to require, but every address already on the Google
+    contact is still required to survive."""
     existing = {normalize(str(e.get("value") or "")) for e in live.get("emailAddresses", [])}
-    existing.add(normalize(keyed_email))
+    normalized_keyed = normalize(keyed_email) if keyed_email else ""
+    if normalized_keyed:
+        existing.add(normalized_keyed)
     submitted_normalized = {normalize(str(e.get("value") or "")) for e in submitted}
     missing = existing - submitted_normalized
     if missing:

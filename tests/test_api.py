@@ -330,6 +330,22 @@ def test_patch_rejected_field_is_400(monkeypatch):
     assert "photos" in r.text
 
 
+def test_patch_a_phone_only_person_by_phone(monkeypatch):
+    # Newly reachable: resolution finds the row by phone, person_edit takes
+    # its id (there is no email to pass).
+    captured = {}
+
+    def fake_update(conn, pid, **kw):
+        captured["pid"] = pid
+        return row(id=8, email=None)
+
+    monkeypatch.setattr(person_edit, "update", fake_update)
+    monkeypatch.setattr(people_repo, "get_by_phone", lambda conn, e164: [row(id=8, email=None)])
+    r = client.patch("/people/%2B15550100001", json={"notes": "met at a conference"})
+    assert r.status_code == 200
+    assert captured["pid"] == 8
+
+
 def test_patch_email_removal_is_409(monkeypatch):
     def raise_conflict(conn, email, **kw):
         raise person_edit.Conflict("removals and changes go through the Google UI")

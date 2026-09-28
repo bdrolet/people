@@ -185,4 +185,4 @@ def sync_one(conn: Any, row: dict) -> dict:
     if not rn:
         return row
     apply_person(conn, gc.get_person(rn), gc.list_groups())
-    return people.get(conn, row["email"]) or row
+    return people.get_by_id(conn, row["id"]) or row

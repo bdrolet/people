@@ -344,11 +344,26 @@ def test_sync_one_derives_contact_fields(monkeypatch):
     monkeypatch.setattr(
         sync.people, "update_from_google", lambda conn, rn, **kw: captured.update(kw)
     )
-    monkeypatch.setattr(sync.people, "get", lambda conn, email: {"email": "alice@example.com"})
-    sync.sync_one(None, {"email": "alice@example.com", "google_resource_name": "people/c1"})
+    monkeypatch.setattr(
+        sync.people, "get_by_id", lambda conn, pid: {"id": pid, "email": "alice@example.com"}
+    )
+    sync.sync_one(
+        None, {"id": 1, "email": "alice@example.com", "google_resource_name": "people/c1"}
+    )
     assert captured["phone_numbers"] == ["+15550100001"]
     assert captured["company"] == "Example Health"
     assert captured["google_fields"]["organizations"][0]["title"] == "CTO"
+
+
+def test_sync_one_refetches_by_id(monkeypatch):
+    # A phone-only person has row["email"] is None, so the old
+    # people.get(conn, row["email"]) silently returned the stale pre-edit row.
+    monkeypatch.setattr(sync.gc, "get_person", lambda rn: person(phones=["+15550100001"]))
+    monkeypatch.setattr(sync.gc, "list_groups", lambda: GROUPS)
+    monkeypatch.setattr(sync, "apply_person", lambda conn, p, g: "updated")
+    monkeypatch.setattr(sync.people, "get_by_id", lambda conn, pid: {"id": pid, "fresh": True})
+    out = sync.sync_one(None, {"id": 7, "email": None, "google_resource_name": "people/c1"})
+    assert out["fresh"] is True
 
 
 def test_emailless_contact_with_a_phone_is_adopted(monkeypatch):

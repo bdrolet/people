@@ -87,6 +87,18 @@ def test_email_addition_coerces_a_non_string_value_instead_of_raising():
         cf.check_email_addition(LIVE, [{"value": 12345}], "alice@example.com")
 
 
+def test_email_addition_allows_the_first_address_for_a_person_with_none():
+    # A person with no keyed email: normalize(None) must not become "" in
+    # the must-survive set, or every such submission would be rejected.
+    cf.check_email_addition({}, [{"value": "new@example.com"}], None)
+
+
+def test_email_addition_still_blocks_removal_for_a_person_with_one():
+    live = {"emailAddresses": [{"value": "alice@example.com"}]}
+    with pytest.raises(cf.EmailRuleError):
+        cf.check_email_addition(live, [], "alice@example.com")
+
+
 # --- derive ---------------------------------------------------------------
 
 
