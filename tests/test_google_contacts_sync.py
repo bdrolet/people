@@ -20,6 +20,7 @@ def person(
     bio=None,
     deleted=False,
     etag="e1",
+    phones=(),
 ):
     p = {
         "resourceName": rn,
@@ -31,6 +32,8 @@ def person(
         ],
         "metadata": {"deleted": deleted},
     }
+    if phones:
+        p["phoneNumbers"] = [{"value": v} for v in phones]
     if bio:
         p["biographies"] = [{"value": bio}]
     return p
@@ -268,7 +271,7 @@ def test_run_sync_updates_links_creates_deletes(wire):
     )
     saved = wire(fg, fr)
     counts = sync.run_sync(None)
-    assert counts == {"updated": 1, "linked": 1, "created": 1, "deleted": 1}
+    assert counts == {"updated": 1, "linked": 1, "created": 1, "deleted": 1, "skipped": 0}
     assert fr.rows["linked@x.com"]["relationship_label"] == "family"
     assert fr.rows["hand@x.com"]["google_resource_name"] == "people/h1"
     assert fr.rows["unknown@x.com"]["eligible"] is True
@@ -341,8 +344,133 @@ def test_sync_one_derives_contact_fields(monkeypatch):
     monkeypatch.setattr(
         sync.people, "update_from_google", lambda conn, rn, **kw: captured.update(kw)
     )
-    monkeypatch.setattr(sync.people, "get", lambda conn, email: {"email": "alice@example.com"})
-    sync.sync_one(None, {"email": "alice@example.com", "google_resource_name": "people/c1"})
+    monkeypatch.setattr(
+        sync.people, "get_by_id", lambda conn, pid: {"id": pid, "email": "alice@example.com"}
+    )
+    sync.sync_one(
+        None, {"id": 1, "email": "alice@example.com", "google_resource_name": "people/c1"}
+    )
     assert captured["phone_numbers"] == ["+15550100001"]
     assert captured["company"] == "Example Health"
     assert captured["google_fields"]["organizations"][0]["title"] == "CTO"
+
+
+def test_sync_one_refetches_by_id(monkeypatch):
+    # A phone-only person has row["email"] is None, so the old
+    # people.get(conn, row["email"]) silently returned the stale pre-edit row.
+    monkeypatch.setattr(sync.gc, "get_person", lambda rn: person(phones=["+15550100001"]))
+    monkeypatch.setattr(sync.gc, "list_groups", lambda: GROUPS)
+    monkeypatch.setattr(sync, "apply_person", lambda conn, p, g: "updated")
+    monkeypatch.setattr(sync.people, "get_by_id", lambda conn, pid: {"id": pid, "fresh": True})
+    out = sync.sync_one(None, {"id": 7, "email": None, "google_resource_name": "people/c1"})
+    assert out["fresh"] is True
+
+
+def test_emailless_contact_with_a_phone_is_adopted(monkeypatch):
+    created = {}
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
+    monkeypatch.setattr(
+        sync.people,
+        "create_from_google",
+        lambda conn, email, **kw: created.update({"email": email, **kw}),
+    )
+    kind = sync.apply_person(None, person(email=None, phones=["(555) 010-0001"]), {})
+    assert kind == "created"
+    assert created["email"] is None
+    assert created["phone_numbers"] == ["+15550100001"]
+
+
+def test_emailless_contact_without_a_usable_phone_is_skipped(monkeypatch):
+    # Review Focus 4: a short code is not a usable phone; adopting would violate
+    # the CHECK constraint and abort the run.
+    calls = []
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
+    monkeypatch.setattr(sync.people, "create_from_google", lambda *a, **k: calls.append(1))
+    assert sync.apply_person(None, person(email=None, phones=["262966"]), {}) == "skipped"
+    assert sync.apply_person(None, person(email=None, phones=[]), {}) == "skipped"
+    assert calls == []
+
+
+def test_adopted_contact_updates_on_the_next_run(monkeypatch):
+    # Review Focus 5: only google_resource_name can find it — no email exists.
+    updated = {}
+    monkeypatch.setattr(
+        sync.people,
+        "get_by_google_resource",
+        lambda conn, rn: {"id": 7, "email": None, "google_resource_name": rn},
+    )
+    monkeypatch.setattr(
+        sync.people, "update_from_google", lambda conn, rn, **kw: updated.update({"rn": rn, **kw})
+    )
+    assert sync.apply_person(None, person(email=None, phones=["+15550100001"]), {}) == "updated"
+    assert updated["rn"] == "people/c1"
+
+
+def test_adopted_contact_losing_its_only_phone_is_skipped_not_updated(monkeypatch):
+    # Blocking fix: an already-linked, email-less row's phone_numbers are its
+    # only identifier (people_has_an_identifier). If Google's contact loses
+    # its last parseable phone — deleted outright, or replaced by a short
+    # code — update_from_google must NOT be called, since it would write
+    # phone_numbers = {} over a NULL email and abort the whole sync's
+    # transaction against a real Postgres CHECK constraint.
+    calls = []
+    monkeypatch.setattr(
+        sync.people,
+        "get_by_google_resource",
+        lambda conn, rn: {"id": 7, "email": None, "google_resource_name": rn},
+    )
+    monkeypatch.setattr(sync.people, "update_from_google", lambda conn, rn, **kw: calls.append(kw))
+
+    assert sync.apply_person(None, person(email=None, phones=[]), {}) == "skipped"
+    assert sync.apply_person(None, person(email=None, phones=["611"]), {}) == "skipped"
+    assert calls == []
+
+
+def test_adopted_contact_keeping_a_phone_still_updates(monkeypatch):
+    # Companion to the skip test above: a linked, email-less row with a
+    # still-usable phone must continue to update normally.
+    calls = []
+    monkeypatch.setattr(
+        sync.people,
+        "get_by_google_resource",
+        lambda conn, rn: {"id": 7, "email": None, "google_resource_name": rn},
+    )
+    monkeypatch.setattr(sync.people, "update_from_google", lambda conn, rn, **kw: calls.append(kw))
+
+    kind = sync.apply_person(None, person(email=None, phones=["+15550100003"]), {})
+    assert kind == "updated"
+    assert calls and calls[0]["phone_numbers"] == ["+15550100003"]
+
+
+def test_contact_with_an_email_behaves_exactly_as_before(monkeypatch):
+    created = {}
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
+    monkeypatch.setattr(sync.people, "get", lambda conn, email: None)
+    monkeypatch.setattr(
+        sync.people,
+        "create_from_google",
+        lambda conn, email, **kw: created.update({"email": email, **kw}),
+    )
+    assert sync.apply_person(None, person(email="alice@example.com"), {}) == "created"
+    assert created["email"] == "alice@example.com"
+
+
+def test_run_sync_counts_skipped(monkeypatch):
+    monkeypatch.setattr(
+        sync.gc,
+        "list_connections",
+        lambda token: (
+            [
+                person(rn="people/c1", email=None, phones=[]),
+                person(rn="people/c2", email=None, phones=[]),
+            ],
+            "tok",
+        ),
+    )
+    monkeypatch.setattr(sync.gc, "list_groups", lambda: {})
+    monkeypatch.setattr(sync.sync_state, "get_token", lambda conn: None)
+    monkeypatch.setattr(sync.sync_state, "set_token", lambda conn, t, s: None)
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
+    counts = sync.run_sync(None)
+    assert counts["skipped"] == 2
+    assert counts["created"] == 0

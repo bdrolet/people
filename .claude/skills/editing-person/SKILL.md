@@ -122,6 +122,41 @@ A few things worth knowing before sending one of these:
   `services/contact_fields.py::WRITABLE_FIELDS`; treat that constant as the
   authority if the two ever disagree.
 
+## A person with no email address
+
+Some people have no email — they were **adopted** by the nightly sync from
+a Google contact that has a phone number but no email address (see
+`people-architecture`'s Adoption section). Every PATCH above works exactly
+the same way for one of these, keyed by phone or numeric id instead of
+email:
+
+```bash
+curl -s -X PATCH "$BASE/people/%2B15550100001" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"relationship_label": "colleague"}'
+```
+
+An email address can be **added** to one of these people the same way as
+any other `contact` field:
+
+```bash
+curl -s -X PATCH "$BASE/people/%2B15550100001" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"contact": {"emailAddresses": [{"value": "alice@example.com"}]}}'
+```
+
+This writes the address to the Google contact under the same add-only rule
+as everyone else (above) — nothing already on the contact can be dropped.
+It does **not** change how this person is addressed going forward: the
+`people` row's `email` column stays `NULL` after this write. The refresh
+path for an already-linked contact (`services/google_contacts_sync.py`'s
+`update_from_google`) only updates `phone_numbers`/`company`/`job_title`/
+`google_fields` — it never writes `email`; only the initial creation or link
+does. So keep addressing this person by phone or id even after giving them
+an email address. If that address happens to belong to someone who already
+has a `people` row of their own, that's now findable but not automatically
+merged — see the duplicate-check query in **querying-people-db**.
+
 ## Errors
 
 - `404` — unknown email, phone, or id. Check with **searching-people** first.

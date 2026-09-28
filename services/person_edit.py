@@ -1,5 +1,6 @@
-"""PATCH /people/{email}: write to Google Contacts first (it is the truth),
-then refresh the DB row from Google. Spec §9, contact fields design §5.4."""
+"""PATCH /people/{ident}: write to Google Contacts first (it is the truth),
+then refresh the DB row from Google. Spec §9, contact fields design §5.4,
+adopt-emailless-contacts design §5.3 (keyed by person_id, not email)."""
 
 import json
 import logging
@@ -79,18 +80,18 @@ def _set_label(person_rn: str, live: dict, label: str) -> None:
 
 def update(
     conn: Any,
-    email: str,
+    person_id: int,
     *,
     notes: str | None = None,
     relationship_label: str | None = None,
     contact: dict | None = None,
 ) -> dict:
-    row = people.get(conn, email)
+    row = people.get_by_id(conn, person_id)
     if row is None:
-        raise NotFound(email)
+        raise NotFound(str(person_id))
     rn = row.get("google_resource_name")
     if not rn:
-        raise NotLinked(email)
+        raise NotLinked(str(person_id))
     live = gc.get_person(rn)  # fresh etag + memberships: Google rejects a stale etag
 
     # Validate and check the email rule BEFORE any write, so a rejected
@@ -105,6 +106,11 @@ def update(
             try:
                 contact_fields.check_email_addition(live, fields["emailAddresses"], row["email"])
             except contact_fields.EmailRuleError as e:
+                raise Conflict(str(e)) from e
+        if "phoneNumbers" in fields:
+            try:
+                contact_fields.check_phone_removal(row["email"], fields["phoneNumbers"])
+            except contact_fields.IdentifierRuleError as e:
                 raise Conflict(str(e)) from e
     if notes is not None:
         fields["biographies"] = [{"value": notes, "contentType": "TEXT_PLAIN"}]
@@ -127,5 +133,5 @@ def update(
         try:
             row = gsync.sync_one(conn, row)
         except Exception:
-            logger.warning("post-edit resync failed for %s", email, exc_info=True)
+            logger.warning("post-edit resync failed for %s", person_id, exc_info=True)
     return row

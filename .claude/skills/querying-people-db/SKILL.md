@@ -114,10 +114,37 @@ WHERE '+15550100001' = ANY(phone_numbers);
 ```
 
 **Phone-only people** (no email — `people-api` never mirrors these to
-HubSpot, since `clients/hubspot.py` keys on email; the nightly sync doesn't
-create these rows today, but the constraint allows them):
+HubSpot, since `clients/hubspot.py` keys on email. Two kinds land here: a
+person the nightly sync **adopted** straight from a Google contact that has
+a phone but no email address, and a person `people` created some other way
+that just hasn't linked to Google yet):
 ```sql
 SELECT id, display_name, phone_numbers FROM people WHERE email IS NULL;
+```
+
+**Adopted contacts** (the subset of the above the nightly sync created from
+Google directly — `google_resource_name IS NOT NULL` is what distinguishes
+an adoption from an unlinked phone-only row; this is also the **rollback
+selector** if adoption ever needs to be undone — deleting these rows
+restores the prior state, per the adopt-emailless-contacts design §6.4):
+```sql
+SELECT id, display_name, phone_numbers, first_seen
+FROM people
+WHERE email IS NULL AND google_resource_name IS NOT NULL
+ORDER BY first_seen DESC;
+```
+
+**Duplicate check after adoption** (an adopted phone-only row whose Google
+contact has since gained an email address that already belongs to a
+*different* `people` row — the design's §5.4 query verbatim; adoption
+detects this, it does not merge it, so expect **zero rows** — see
+`people-architecture`'s Adoption section):
+```sql
+SELECT a.id AS adopted_id, p.id AS existing_id
+FROM people a
+JOIN jsonb_array_elements(a.google_fields -> 'emailAddresses') e ON TRUE
+JOIN people p ON lower(p.email) = lower(e ->> 'value')
+WHERE a.email IS NULL AND p.id <> a.id;
 ```
 
 **Birthdays this month** (`google_fields->'birthdays'` is the raw Google

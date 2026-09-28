@@ -58,6 +58,11 @@ class EmailRuleError(Exception):
     """A submitted `emailAddresses` list drops an existing or keyed address. -> 409."""
 
 
+class IdentifierRuleError(Exception):
+    """A submitted `phoneNumbers` list would leave a person with neither an
+    email address nor a phone number. -> 409."""
+
+
 def validate(contact: dict) -> dict:
     """Allowlist + shape check. Returns the normalized map (bare objects wrapped
     in a one-element list). Raises ValidationError."""
@@ -80,11 +85,16 @@ def validate(contact: dict) -> dict:
     return normalized
 
 
-def check_email_addition(live: dict, submitted: list[dict], keyed_email: str) -> None:
+def check_email_addition(live: dict, submitted: list[dict], keyed_email: str | None) -> None:
     """Raises EmailRuleError if any existing address, or the keyed address,
-    is missing from `submitted`."""
+    is missing from `submitted`. `keyed_email` is None for a person with no
+    email address (e.g. adopted by phone only) — in that case there is no
+    keyed address to require, but every address already on the Google
+    contact is still required to survive."""
     existing = {normalize(str(e.get("value") or "")) for e in live.get("emailAddresses", [])}
-    existing.add(normalize(keyed_email))
+    normalized_keyed = normalize(keyed_email) if keyed_email else ""
+    if normalized_keyed:
+        existing.add(normalized_keyed)
     submitted_normalized = {normalize(str(e.get("value") or "")) for e in submitted}
     missing = existing - submitted_normalized
     if missing:
@@ -93,6 +103,23 @@ def check_email_addition(live: dict, submitted: list[dict], keyed_email: str) ->
             f"(missing: {', '.join(sorted(missing))}); "
             "removals and changes go through the Google UI"
         )
+
+
+def check_phone_removal(email: str | None, submitted: list[dict]) -> None:
+    """Raises IdentifierRuleError if `email` is None (the person has no email
+    address — e.g. adopted by phone only) and the submitted `phoneNumbers`
+    list normalizes to zero usable numbers (people_has_an_identifier requires
+    at least one). A person with an email address is unaffected — they keep
+    an identifier either way."""
+    if email:
+        return
+    raw_numbers = [p.get("value", "") for p in submitted]
+    if any(normalize_handle(n) is not None for n in raw_numbers):
+        return
+    raise IdentifierRuleError(
+        "a person must keep an email address or a phone number; "
+        "removing the last phone number goes through the Google UI"
+    )
 
 
 def _primary_organization(organizations: list[dict]) -> dict | None:

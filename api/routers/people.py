@@ -139,7 +139,7 @@ def patch_person(ident: str, body: PersonPatch) -> PersonOut:
             target = resolve_person(conn, ident)
             row = person_edit.update(
                 conn,
-                target["email"],
+                target["id"],
                 notes=body.notes,
                 relationship_label=body.relationship_label,
                 contact=body.contact,

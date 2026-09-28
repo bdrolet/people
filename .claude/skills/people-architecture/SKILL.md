@@ -150,13 +150,63 @@ phone-only person, or resolving a 409.
 **Phone-only people can't reach HubSpot.** `clients/hubspot.py` searches and
 creates contacts by email, so `repo/people.py::eligible_not_in_hubspot`
 excludes rows with `email IS NULL` — otherwise the nightly `fill` phase
-would burn the bounded cap trying to create contacts it can't key.
+would burn the bounded cap trying to create contacts it can't key. This is
+why an **adopted** contact (below) can never appear in HubSpot: it exists
+*because* it has no email.
 
 This is piece 1 of a 3-piece design (`docs/superpowers/specs/2026-09-24-person-identity-design.md`):
-identity only, no new rows. The nightly sync **still skips every Google
-contact with no email address** (`services/google_contacts_sync.py::apply_person`)
-— adopting those (553 of them, per the design doc) is piece 2, not yet
-shipped; `POST /people` (piece 3) doesn't exist either.
+identity only, no new rows. Piece 2 (`docs/superpowers/specs/2026-09-28-adopt-emailless-contacts-design.md`,
+shipped) is **Adoption**, below. `POST /people` (piece 3) still doesn't
+exist — adoption via the nightly sync is the only way an email-less person
+gets a row.
+
+### Adoption (piece 2, shipped 2026-09-28)
+
+The nightly sync no longer skips a Google contact that has no email
+address. `apply_person` **adopts** it instead, provided it has at least one
+phone number that normalizes to E.164 — the same rule
+`services/imessage_export.py::normalize_handle` uses for iMessage matching
+(`services/contact_fields.py::derive`'s `phone_numbers` list is what gets
+checked). The row lands via `people.create_from_google(conn, None, ...)`:
+`email IS NULL`, `phone_numbers` populated, `company`/`job_title`/
+`google_fields` derived as for any synced contact, `eligible = TRUE`,
+`automated = FALSE`, and the message counters (`message_count`,
+`my_response_count`) at their default `0` — no mail has ever been seen from
+these people.
+
+A contact with **neither** an email nor a usable phone (a short code does
+not count as usable) is **skipped** — nothing is written, and it's counted
+in `run_sync`'s `skipped` total, which flows into the nightly log line and
+the `POST /sync` response body. Names are deliberately not logged or
+persisted anywhere (the repo is public); the count is the whole report, and
+it should trend to zero as Ben fixes the contacts in Google.
+
+Measured 2026-09-28, before adoption shipped: 968 Google contacts, 553 with
+no email, 449 adoptable, 104 skipped (87 with neither identifier, 17 with a
+phone that doesn't parse).
+
+Once adopted, a contact is found by `google_resource_name` on every later
+sync (`people.get_by_google_resource`) and refreshes exactly like any other
+linked contact — the "linked" `apply_person` branch calls
+`people.update_from_google`, which updates `phone_numbers`/`company`/
+`job_title`/`google_fields` but **never writes `email`**. So even if the
+Google contact later gains an email address (e.g. via `PATCH
+/people/{ident}`'s `contact.emailAddresses`, see `editing-person`), the row
+stays `email IS NULL` and keyed by phone/id — only contact *creation* or an
+existing row's initial Google *link* (`set_google`) ever set `email`. This
+is exactly the situation `querying-people-db`'s duplicate-detection query
+watches for (design §5.4): it finds an adopted row whose Google contact now
+carries an email that already belongs to a different `people` row. Nothing
+merges them automatically.
+
+Adoption is otherwise automatic and incremental — a contact added by phone
+tomorrow adopts on the next nightly `people-sync` — but the incremental
+Google sync token means a run only revisits contacts that changed since the
+last one, so reaching the backlog of 553 already-existing contacts needed
+one full pass after this shipped: `scripts/clear_sync_token.py` (local
+only) clears the stored token in `sync_state` and prints what it cleared,
+so the next `run_sync` takes the full-listing path instead of an
+incremental one.
 
 ## Source of truth (spec §4.3)
 

@@ -99,7 +99,12 @@ def apply_person(conn: Any, person: dict, groups: dict[str, dict]) -> str | None
             return "deleted"
         return None
     label = relationship_label(person, groups)
+    derived = contact_fields.derive(person)
     if linked:
+        if linked.get("email") is None and not derived["phone_numbers"]:
+            # An adopted (email-less) row's phone_numbers are its only
+            # identifier — never overwrite them with {} (people_has_an_identifier).
+            return "skipped"
         people.update_from_google(
             conn,
             rn,
@@ -107,12 +112,27 @@ def apply_person(conn: Any, person: dict, groups: dict[str, dict]) -> str | None
             display_name=display_name(person),
             notes=notes(person),
             relationship_label=label,
-            **contact_fields.derive(person),
+            **derived,
         )
         return "updated"
     email = primary_email(person)
     if not email:
-        return None
+        # Adopt a contact that has no email address, provided it has a phone we
+        # can normalize — people_has_an_identifier requires one or the other
+        # (spec §5.1). Contacts with neither are counted, never written.
+        if not derived["phone_numbers"]:
+            return "skipped"
+        people.create_from_google(
+            conn,
+            None,
+            display_name=display_name(person),
+            resource_name=rn,
+            etag=person.get("etag"),
+            notes=notes(person),
+            relationship_label=label,
+            **derived,
+        )
+        return "created"
     row = people.get(conn, email)
     if row and not row.get("google_resource_name") and not row.get("google_deleted_at"):
         _link(conn, email, person, groups)
@@ -126,14 +146,14 @@ def apply_person(conn: Any, person: dict, groups: dict[str, dict]) -> str | None
             etag=person.get("etag"),
             notes=notes(person),
             relationship_label=label,
-            **contact_fields.derive(person),
+            **derived,
         )
         return "created"
     return None
 
 
 def run_sync(conn: Any) -> dict[str, int]:
-    counts = {"updated": 0, "linked": 0, "created": 0, "deleted": 0}
+    counts = {"updated": 0, "linked": 0, "created": 0, "deleted": 0, "skipped": 0}
     token = sync_state.get_token(conn)
     try:
         try:
@@ -169,4 +189,4 @@ def sync_one(conn: Any, row: dict) -> dict:
     if not rn:
         return row
     apply_person(conn, gc.get_person(rn), gc.list_groups())
-    return people.get(conn, row["email"]) or row
+    return people.get_by_id(conn, row["id"]) or row
