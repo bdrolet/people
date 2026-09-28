@@ -14,11 +14,16 @@ metadata:
 
 # Editing a Person
 
-`PATCH /people/{email}` writes to Google Contacts **first** (it is the
+`PATCH /people/{ident}` writes to Google Contacts **first** (it is the
 source of truth for `notes`/`relationship_label` and every other contact
 field — spec §4.3, contact-field-edits design), then refreshes the `people`
 DB row from Google and returns it. It never creates a new person — see "No
 creation" below.
+
+`{ident}` takes the same three forms as **fetching-person**: an email, an
+E.164 phone number (percent-encode `+` as `%2B`), or a numeric person id. A
+phone number shared by more than one person 409s with the candidate ids
+instead of guessing — see fetching-person's `409` note.
 
 ## Base URL and token
 
@@ -30,11 +35,11 @@ TOKEN=$(gcloud auth print-identity-token)   # Cloud Run IAM; your gcloud login i
 ## Update notes and/or relationship label
 
 ```bash
-curl -s -X PATCH "$BASE/people/<email>" \
+curl -s -X PATCH "$BASE/people/<ident>" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"notes": "Met at PyCon 2026, works on infra at Acme"}'
 
-curl -s -X PATCH "$BASE/people/<email>" \
+curl -s -X PATCH "$BASE/people/<ident>" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"relationship_label": "colleague"}'
 ```
@@ -72,22 +77,22 @@ the same field is how they'd drift.
 
 ```bash
 # Phone number — adds/replaces the contact's phone numbers
-curl -s -X PATCH "$BASE/people/<email>" \
+curl -s -X PATCH "$BASE/people/<ident>" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"contact": {"phoneNumbers": [{"value": "+15550100001", "type": "mobile"}]}}'
 
 # Name
-curl -s -X PATCH "$BASE/people/<email>" \
+curl -s -X PATCH "$BASE/people/<ident>" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"contact": {"names": [{"givenName": "Alice", "familyName": "Example"}]}}'
 
 # Company / job title
-curl -s -X PATCH "$BASE/people/<email>" \
+curl -s -X PATCH "$BASE/people/<ident>" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"contact": {"organizations": [{"name": "Example Corp", "title": "Engineer"}]}}'
 
 # Birthday
-curl -s -X PATCH "$BASE/people/<email>" \
+curl -s -X PATCH "$BASE/people/<ident>" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"contact": {"birthdays": [{"date": {"year": 1990, "month": 5, "day": 14}}]}}'
 ```
@@ -119,16 +124,19 @@ A few things worth knowing before sending one of these:
 
 ## Errors
 
-- `404` — unknown email. Check with **searching-people** first.
+- `404` — unknown email, phone, or id. Check with **searching-people** first.
 - `400` — an unknown/excluded `contact` key (the response names it), or a
   value that isn't an object or list of objects.
-- `409` — one of two things: the person has no linked Google contact yet
-  (not eligible, or eligible but people hasn't created/linked one — wait for
-  the next `email_classified`/`email_sent` event or nightly sync, then
-  retry); or a submitted `emailAddresses` would remove/change an existing
-  address (send the full existing set, or drop `emailAddresses` from the
-  request); or a concurrent edit changed the contact between the read and
-  the write (stale etag) — re-fetch with **fetching-person** and retry.
+- `409` — one of three things: the phone number resolves to more than one
+  person (`detail` carries `{"error": "ambiguous phone", "candidates":
+  [...]}`) — retry with one of the candidate ids; the person has no linked
+  Google contact yet (not eligible, or eligible but people hasn't
+  created/linked one — wait for the next `email_classified`/`email_sent`
+  event or nightly sync, then retry); or a submitted `emailAddresses` would
+  remove/change an existing address (send the full existing set, or drop
+  `emailAddresses` from the request); or a concurrent edit changed the
+  contact between the read and the write (stale etag) — re-fetch with
+  **fetching-person** and retry.
 
 ## No creation
 

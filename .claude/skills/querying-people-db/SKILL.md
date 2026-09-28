@@ -52,19 +52,28 @@ connection paths (Cloud SQL connector and local direct psycopg3).
 
 | Table | Contents |
 |---|---|
-| `people` | `email` (PK), `display_name`, `first_seen`, `last_seen`, `last_contacted`, `message_count`, `my_response_count`, `relationship_label`, `notes`, `eligible`, `automated`, `google_resource_name`, `google_etag`, `google_deleted_at`, `hubspot_contact_id`, `hubspot_synced_at`, `phone_numbers` (text[], E.164, GIN), `company`, `job_title` (both from the primary/first `organizations` entry), `google_fields` (JSONB, the full allowlisted Google contact payload, GIN), `updated_at` |
+| `people` | `id` (BIGSERIAL **PK**), `email` (nullable, **unique** — no longer the PK), `display_name`, `first_seen`, `last_seen`, `last_contacted`, `message_count`, `my_response_count`, `relationship_label`, `notes`, `eligible`, `automated`, `google_resource_name`, `google_etag`, `google_deleted_at`, `hubspot_contact_id`, `hubspot_synced_at`, `phone_numbers` (text[], E.164, GIN), `company`, `job_title` (both from the primary/first `organizations` entry), `google_fields` (JSONB, the full allowlisted Google contact payload, GIN), `updated_at`. `CHECK` constraint `people_has_an_identifier`: `email IS NOT NULL OR cardinality(phone_numbers) > 0` — every row has an email or a phone, never neither. |
 | `sync_state` | one row, `key='google_contacts'`: `sync_token`, `last_run_at`, `last_status` |
-| `linkedin_connections` | LinkedIn snapshot, PK `profile_url` (`linkedin.com/in/<slug>`): `full_name`, `email`, `company`, `position`, `connected_on`, `person_email` (soft link to `people.email`), `match_method`, `message_count`, `my_message_count`, `last_message_at`, `last_my_message_at`, `snapshot_at` |
+| `linkedin_connections` | LinkedIn snapshot, PK `profile_url` (`linkedin.com/in/<slug>`): `full_name`, `email`, `company`, `position`, `connected_on`, `person_id` (FK → `people.id`, `ON DELETE SET NULL` — replaced `person_email`; there is no `person_email` column anymore), `match_method`, `message_count`, `my_message_count`, `last_message_at`, `last_my_message_at`, `snapshot_at` |
 | `linkedin_messages` | `conversation_id`, `sender_name`, `sender_profile_url`, `recipient_names`, `recipient_profile_urls` (text[]), `sent_at`, `subject`, `content`, `folder`, `from_me` |
 | `linkedin_recommendations` | `direction` (`given`/`received`), `full_name`, `company`, `job_title`, `text`, `status`, `created_on`, `profile_url` (null unless the name matched one connection) |
 | `linkedin_imports` | append-only audit of `scripts/import_linkedin.py` runs: `snapshot_at`, `source`, row counts, `matched_by_email`, `matched_by_name` |
-| `imessage_handles` | iMessage snapshot, PK `handle` (E.164 phone or lowercased email): `display_name`, `google_resource_name`, `person_email` (soft link to `people.email`, FK `ON DELETE SET NULL`), `match_method` (`email`/`google`/null), `message_count`/`my_message_count` (1:1 chats only), `last_message_at`, `last_my_message_at`, `group_message_count`, `last_group_message_at`, `updated_at` |
+| `imessage_handles` | iMessage snapshot, PK `handle` (E.164 phone or lowercased email): `display_name`, `google_resource_name`, `person_id` (FK → `people.id`, `ON DELETE SET NULL` — replaced `person_email`; there is no `person_email` column anymore), `match_method` (`email`/`google`/null), `message_count`/`my_message_count` (1:1 chats only), `last_message_at`, `last_my_message_at`, `group_message_count`, `last_group_message_at`, `updated_at` |
 | `imessage_chats` | PK `chat_guid`: `display_name` (group name, if set), `is_group`, `participant_handles` (text[], excludes Ben), `last_message_at` |
 | `imessage_messages` | PK `guid`: `chat_guid`, `sender_handle` (NULL when `from_me`), `from_me`, `sent_at`, **`text`** (NULL if undecodable or retracted), `service` (`iMessage`/`SMS`/`RCS`), `has_attachments`, `edited_at`, `retracted` — **message text lives only here; `people-api` never serves it, by design (spec §6)** |
 | `imessage_imports` | append-only audit of `scripts/import_imessage.py` runs: `ran_at`, `mode` (`incremental`/`full`), `max_rowid` (watermark), row counts, `matched_by_email`, `matched_by_google`, `linked_to_people` |
 
 `last_interaction` (`GREATEST(last_seen, last_contacted)`) is derived, not
 stored — repeat the expression below rather than looking for a column.
+
+**`people.id` is internal.** It's the join key for `linkedin_connections`
+and `imessage_handles`, and what `people-api` returns as `id` and accepts in
+`GET/PATCH /people/{ident}`, but it is not a durable external reference —
+`people` is rebuildable from Google Contacts plus a full sync, and ids do
+not survive a rebuild. Use the email address as the human-facing handle in
+anything written outside this DB (a note, a doc, a message); use `id` only
+for a join, a phone-only person (no email), or resolving a
+`people-api` `409` ambiguous-phone response.
 
 ## Common queries
 
@@ -99,9 +108,16 @@ SELECT count(*) FROM people WHERE hubspot_contact_id IS NOT NULL;
 **People by phone number** (`phone_numbers` is `text[]`, E.164-normalized;
 matches the GIN index):
 ```sql
-SELECT email, display_name, phone_numbers
+SELECT id, email, display_name, phone_numbers
 FROM people
 WHERE '+15550100001' = ANY(phone_numbers);
+```
+
+**Phone-only people** (no email — `people-api` never mirrors these to
+HubSpot, since `clients/hubspot.py` keys on email; the nightly sync doesn't
+create these rows today, but the constraint allows them):
+```sql
+SELECT id, display_name, phone_numbers FROM people WHERE email IS NULL;
 ```
 
 **Birthdays this month** (`google_fields->'birthdays'` is the raw Google
@@ -142,12 +158,15 @@ SELECT automated, eligible, count(*) FROM people GROUP BY automated, eligible OR
 SELECT key, last_run_at, last_status, (sync_token IS NOT NULL) AS has_token FROM sync_state;
 ```
 
-**LinkedIn connections Ben talked with and let go quiet:**
+**LinkedIn connections Ben talked with and let go quiet** (join `people` for
+the email — `linkedin_connections` links by `person_id`, not `person_email`):
 ```sql
-SELECT full_name, company, position, message_count, my_message_count, last_message_at, person_email
-FROM linkedin_connections
-WHERE my_message_count > 0 AND last_message_at < now() - interval '1 year'
-ORDER BY last_message_at DESC
+SELECT lc.full_name, lc.company, lc.position, lc.message_count, lc.my_message_count,
+       lc.last_message_at, lc.person_id, p.email AS person_email
+FROM linkedin_connections lc
+LEFT JOIN people p ON p.id = lc.person_id
+WHERE lc.my_message_count > 0 AND lc.last_message_at < now() - interval '1 year'
+ORDER BY lc.last_message_at DESC
 LIMIT 50;
 ```
 
@@ -164,12 +183,15 @@ ORDER BY sent_at DESC;
 SELECT * FROM linkedin_imports ORDER BY id DESC LIMIT 5;
 ```
 
-**iMessage handles Ben talked with and let go quiet:**
+**iMessage handles Ben talked with and let go quiet** (join `people` for the
+email — `imessage_handles` links by `person_id`, not `person_email`):
 ```sql
-SELECT handle, display_name, message_count, my_message_count, last_message_at, person_email
-FROM imessage_handles
-WHERE my_message_count > 0 AND last_message_at < now() - interval '6 months'
-ORDER BY last_message_at DESC
+SELECT h.handle, h.display_name, h.message_count, h.my_message_count,
+       h.last_message_at, h.person_id, p.email AS person_email
+FROM imessage_handles h
+LEFT JOIN people p ON p.id = h.person_id
+WHERE h.my_message_count > 0 AND h.last_message_at < now() - interval '6 months'
+ORDER BY h.last_message_at DESC
 LIMIT 50;
 ```
 

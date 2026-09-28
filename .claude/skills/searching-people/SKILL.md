@@ -77,9 +77,11 @@ Examples: "former colleagues at X who went quiet" →
 emailed" → `unmatched=true&min_messages=1`.
 
 Each result: `profile_url`, `full_name`, `email`, `company`, `position`,
-`connected_on`, `person_email` (linked people row, if any), `match_method`
-(`email`/`name`/null), `message_count`, `my_message_count`,
-`last_message_at`, `last_my_message_at`, `snapshot_at`.
+`connected_on`, `person_id`/`person_email` (the linked people row's id and
+email, if any — `linkedin_connections` links by `person_id`; `person_email`
+is served by joining `people`), `match_method` (`email`/`name`/null),
+`message_count`, `my_message_count`, `last_message_at`, `last_my_message_at`,
+`snapshot_at`.
 
 This is a snapshot from Ben's last manual export — check its age with
 `GET $BASE/linkedin/imports/latest` before claiming something is current.
@@ -100,9 +102,12 @@ Filters (all optional, combined with AND): `q` (display name or handle
 substring), `min_messages` (int, 1:1 messages only), `replied` (`true` = Ben
 has sent at least one message), `quiet_since` (date — `last_message_at`
 before it), `unmatched` (`true` = no `google_resource_name` and no
-`person_email`), `include_groups` (bool, default `false` — ranks by the
+`person_id`), `include_groups` (bool, default `false` — ranks by the
 later of `last_message_at`/`last_group_message_at` instead of 1:1 only),
 `limit` (default 50, max 500). Ordered by `last_message_at` desc nulls last.
+Each result carries `person_id`/`person_email` (`imessage_handles` links by
+`person_id`; `person_email` is served by joining `people`) alongside the
+handle's own fields.
 
 Example: "who have I stopped texting" →
 `replied=true&quiet_since=<a year ago>`. Open one with
@@ -133,6 +138,7 @@ Both endpoints return `{"results": [...]}` of:
 
 ```json
 {
+  "id": 42,
   "email": "alice@example.com",
   "display_name": "Alice Example",
   "first_seen": "…", "last_seen": "…", "last_contacted": "…",
@@ -149,7 +155,13 @@ Both endpoints return `{"results": [...]}` of:
 three typed columns, which list/search queries already have on the row.
 `contact` — the full Google field blob — is **always `null` in list and
 search results**; it's only filled on a single-person fetch
-(**fetching-person**, `GET /people/{email}`), to keep listings one query.
+(**fetching-person**, `GET /people/{ident}`), to keep listings one query.
+
+`email` is nullable — a phone-only person (no `people` row has one today;
+the nightly sync still skips email-less Google contacts) would show `null`
+here and be reachable only by `id` or phone. `id` is an internal surrogate
+key, not a durable external reference — prefer the email when presenting or
+linking to a person; fall back to `id` only when `email` is null.
 
 ## Presenting results
 
@@ -162,7 +174,10 @@ person can act on directly):
       <relationship_label, if set> — <notes, truncated to one line, if set>
 ```
 
+If `email` is null, drop the `mailto:` link and fall back to
+`display_name`, then a phone number, then `id`.
+
 - Mark `in_google_contacts`/`in_hubspot` only if the user asks about linkage.
-- Offer to open one with **fetching-person** (`GET /people/{email}`) or
-  update it with **editing-person** — both take the email directly, no
-  lookup step needed.
+- Offer to open one with **fetching-person** (`GET /people/{ident}`) or
+  update it with **editing-person** — both take the email, phone, or id
+  directly, no lookup step needed.
