@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from services import linkedin_export as lx
+from tests.test_repo_linkedin import connection, snapshot
 
 
 @pytest.mark.parametrize(
@@ -222,12 +223,12 @@ def test_zip_and_nested_directory_inputs(tmp_path):
 PEOPLE = [
     # Alice matches by email; her display_name collides with Élodie's to prove a
     # claimed email is never re-used by a name match.
-    {"email": "alice@example.com", "display_name": "Elodie Accent"},
-    {"email": "Bob@Work.example", "display_name": "Bob  Sample"},
-    {"email": "dana@dup.example", "display_name": "Dana Dup"},
-    {"email": "carol@a.example", "display_name": "Carol Test"},
-    {"email": "carol@b.example", "display_name": "carol test"},
-    {"email": "nameless@x.example", "display_name": None},
+    {"id": 1, "email": "alice@example.com", "display_name": "Elodie Accent"},
+    {"id": 2, "email": "Bob@Work.example", "display_name": "Bob  Sample"},
+    {"id": 3, "email": "dana@dup.example", "display_name": "Dana Dup"},
+    {"id": 4, "email": "carol@a.example", "display_name": "Carol Test"},
+    {"id": 5, "email": "carol@b.example", "display_name": "carol test"},
+    {"id": 6, "email": "nameless@x.example", "display_name": None},
 ]
 
 
@@ -235,10 +236,10 @@ def test_match_people():
     s = lx.parse_export(FIXTURE, now=NOW)
     lx.match_people(s, PEOPLE)
     by_url = conns(s)
-    links = {url: (c.person_email, c.match_method) for url, c in by_url.items()}
+    links = {url: (c.person_id, c.match_method) for url, c in by_url.items()}
     assert links == {
-        "linkedin.com/in/alice-example": ("alice@example.com", "email"),
-        "linkedin.com/in/bob-sample": ("bob@work.example", "name"),
+        "linkedin.com/in/alice-example": (1, "email"),
+        "linkedin.com/in/bob-sample": (2, "name"),
         "linkedin.com/in/carol-test": (None, None),  # two people named Carol Test
         "linkedin.com/in/dana-dup-1": (None, None),  # two connections named Dana Dup
         "linkedin.com/in/dana-dup-2": (None, None),
@@ -251,5 +252,19 @@ def test_match_people_rerun_clears_stale_links():
     s = lx.parse_export(FIXTURE, now=NOW)
     lx.match_people(s, PEOPLE)
     lx.match_people(s, [])
-    assert all(c.person_email is None and c.match_method is None for c in s.connections)
+    assert all(c.person_id is None and c.match_method is None for c in s.connections)
     assert (s.matched_by_email, s.matched_by_name) == (0, 0)
+
+
+def test_match_people_links_by_email_to_person_id():
+    s = snapshot(connections=[connection(email="alice@example.com")])
+    lx.match_people(s, [{"id": 21, "email": "alice@example.com", "display_name": "Alice Example"}])
+    assert s.connections[0].person_id == 21
+    assert s.connections[0].match_method == "email"
+
+
+def test_match_people_links_by_unique_name_to_person_id():
+    s = snapshot(connections=[connection(email=None)])
+    lx.match_people(s, [{"id": 22, "email": "alice@example.com", "display_name": "Alice Example"}])
+    assert s.connections[0].person_id == 22
+    assert s.connections[0].match_method == "name"

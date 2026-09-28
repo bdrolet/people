@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, field_validator
@@ -9,14 +10,14 @@ from clients import db
 from repo import imessage as imessage_repo
 from repo import linkedin as linkedin_repo
 from repo import people
-from services import google_contacts_sync, person_edit
-from services.eligibility import normalize
+from services import google_contacts_sync, identity, person_edit
 
 router = APIRouter()
 
 
 class PersonOut(BaseModel):
-    email: str
+    id: int
+    email: str | None
     display_name: str | None
     first_seen: datetime | None
     last_seen: datetime | None
@@ -64,6 +65,7 @@ def to_out(
     include_contact: bool = False,
 ) -> PersonOut:
     return PersonOut(
+        id=row["id"],
         email=row["email"],
         display_name=row.get("display_name"),
         first_seen=row.get("first_seen"),
@@ -94,33 +96,57 @@ def list_recent(
         return PersonList(results=[to_out(r) for r in people.recent(conn, recent, eligible_only)])
 
 
-@router.get("/people/{email}", response_model=PersonOut)
-def get_person(email: str) -> PersonOut:
-    email = normalize(email)
-    with db.get_conn() as conn:
-        row = people.get(conn, email)
-        linkedin_row = linkedin_repo.connection_for_person(conn, email) if row else None
-        imessage_row = imessage_repo.summary_for_person(conn, email) if row else None
+def resolve_person(conn: Any, ident: str) -> dict:
+    """Classify `ident` — email, phone, or numeric id (spec §5.1) — and look
+    up the matching row. Raises 404 when nothing can match, and 409 with the
+    candidate ids when a phone number is shared by more than one person
+    (ambiguity is an error, not a guess: never pick one)."""
+    classified = identity.classify(ident)
+    if classified is None:
+        raise HTTPException(status_code=404)
+    kind, value = classified
+    row: dict | None
+    if kind == "email":
+        row = people.get(conn, str(value))
+    elif kind == "id":
+        row = people.get_by_id(conn, int(value))
+    else:
+        rows = people.get_by_phone(conn, str(value))
+        if len(rows) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "ambiguous phone", "candidates": [r["id"] for r in rows]},
+            )
+        row = rows[0] if rows else None
     if row is None:
         raise HTTPException(status_code=404)
+    return row
+
+
+@router.get("/people/{ident}", response_model=PersonOut)
+def get_person(ident: str) -> PersonOut:
+    with db.get_conn() as conn:
+        row = resolve_person(conn, ident)
+        linkedin_row = linkedin_repo.connection_for_person(conn, row["id"])
+        imessage_row = imessage_repo.summary_for_person(conn, row["id"])
     return to_out(row, linkedin_row, imessage_row, include_contact=True)
 
 
-@router.patch("/people/{email}", response_model=PersonOut)
-def patch_person(email: str, body: PersonPatch) -> PersonOut:
-    email = normalize(email)
+@router.patch("/people/{ident}", response_model=PersonOut)
+def patch_person(ident: str, body: PersonPatch) -> PersonOut:
     try:
         with db.get_conn() as conn:
+            target = resolve_person(conn, ident)
             row = person_edit.update(
                 conn,
-                email,
+                target["email"],
                 notes=body.notes,
                 relationship_label=body.relationship_label,
                 contact=body.contact,
             )
             conn.commit()
-            linkedin_row = linkedin_repo.connection_for_person(conn, email)
-            imessage_row = imessage_repo.summary_for_person(conn, email)
+            linkedin_row = linkedin_repo.connection_for_person(conn, row["id"])
+            imessage_row = imessage_repo.summary_for_person(conn, row["id"])
     except person_edit.NotFound:
         raise HTTPException(status_code=404)
     except person_edit.NotLinked:
@@ -132,12 +158,10 @@ def patch_person(email: str, body: PersonPatch) -> PersonOut:
     return to_out(row, linkedin_row, imessage_row, include_contact=True)
 
 
-@router.post("/people/{email}/sync", response_model=PersonOut)
-def sync_person(email: str) -> PersonOut:
+@router.post("/people/{ident}/sync", response_model=PersonOut)
+def sync_person(ident: str) -> PersonOut:
     with db.get_conn() as conn:
-        row = people.get(conn, normalize(email))
-        if row is None:
-            raise HTTPException(status_code=404)
+        row = resolve_person(conn, ident)
         row = google_contacts_sync.sync_one(conn, row)
         conn.commit()
     return to_out(row, include_contact=True)

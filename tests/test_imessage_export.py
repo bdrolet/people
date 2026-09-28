@@ -118,17 +118,26 @@ def test_build_batch_classifies_chats(tmp_path):
     assert "SMS;-;262966" not in chats  # short-code chat dropped entirely
 
 
-def test_match_handles_links_email_to_person():
+def test_match_handles_links_email_to_person_id():
     b = IMessageBatch(mode="full", max_rowid=0, handles=[IMessageHandle("bob@example.com")])
     ex.match_handles(
-        b, {}, [{"email": "bob@example.com", "display_name": "Bob", "google_resource_name": None}]
+        b,
+        {},
+        [
+            {
+                "id": 11,
+                "email": "bob@example.com",
+                "display_name": "Bob",
+                "google_resource_name": None,
+            }
+        ],
     )
-    assert b.handles[0].person_email == "bob@example.com"
+    assert b.handles[0].person_id == 11
     assert b.handles[0].match_method == "email"
     assert b.matched_by_email == 1 and b.linked_to_people == 1
 
 
-def test_match_handles_links_phone_via_unique_google_contact():
+def test_match_handles_links_phone_via_google_to_person_id():
     b = IMessageBatch(mode="full", max_rowid=0, handles=[IMessageHandle("+15550100001")])
     index = {"+15550100001": [{"resource_name": "people/c1", "display_name": "Alice Example"}]}
     ex.match_handles(
@@ -136,6 +145,7 @@ def test_match_handles_links_phone_via_unique_google_contact():
         index,
         [
             {
+                "id": 12,
                 "email": "alice@example.com",
                 "display_name": "Alice",
                 "google_resource_name": "people/c1",
@@ -143,10 +153,10 @@ def test_match_handles_links_phone_via_unique_google_contact():
         ],
     )
     h = b.handles[0]
-    assert (h.google_resource_name, h.display_name, h.person_email, h.match_method) == (
+    assert (h.google_resource_name, h.display_name, h.person_id, h.match_method) == (
         "people/c1",
         "Alice Example",
-        "alice@example.com",
+        12,
         "google",
     )
     assert b.matched_by_google == 1 and b.linked_to_people == 1
@@ -158,7 +168,7 @@ def test_match_handles_google_contact_without_people_row():
     ex.match_handles(b, index, [])
     h = b.handles[0]
     assert h.google_resource_name == "people/c9" and h.display_name == "Carol"
-    assert h.person_email is None and h.match_method == "google"
+    assert h.person_id is None and h.match_method == "google"
     assert b.matched_by_google == 1 and b.linked_to_people == 0
 
 
@@ -192,7 +202,7 @@ def test_match_handles_duplicate_contacts_same_name_matches_deterministically():
     assert b.matched_by_google == 1
 
 
-def test_match_handles_duplicate_contacts_same_person_email_links():
+def test_match_handles_duplicate_contacts_same_person_id_links():
     b = IMessageBatch(mode="full", max_rowid=0, handles=[IMessageHandle("+15550100001")])
     index = {
         "+15550100001": [
@@ -202,11 +212,13 @@ def test_match_handles_duplicate_contacts_same_person_email_links():
     }
     people_rows = [
         {
+            "id": 5,
             "email": "jane@example.com",
             "display_name": "Jane Example",
             "google_resource_name": "people/c1",
         },
         {
+            "id": 5,
             "email": "jane@example.com",
             "display_name": "Jane Example",
             "google_resource_name": "people/c2",
@@ -215,11 +227,11 @@ def test_match_handles_duplicate_contacts_same_person_email_links():
     ex.match_handles(b, index, people_rows)
     h = b.handles[0]
     assert h.match_method == "google"
-    assert h.person_email == "jane@example.com"
+    assert h.person_id == 5
     assert b.matched_by_google == 1 and b.linked_to_people == 1
 
 
-def test_match_handles_duplicate_contacts_conflicting_person_emails_stay_unlinked():
+def test_match_handles_duplicate_contacts_conflicting_person_ids_stay_unlinked():
     b = IMessageBatch(mode="full", max_rowid=0, handles=[IMessageHandle("+15550100001")])
     index = {
         "+15550100001": [
@@ -229,11 +241,13 @@ def test_match_handles_duplicate_contacts_conflicting_person_emails_stay_unlinke
     }
     people_rows = [
         {
+            "id": 5,
             "email": "jane1@example.com",
             "display_name": "Jane Example",
             "google_resource_name": "people/c1",
         },
         {
+            "id": 6,
             "email": "jane2@example.com",
             "display_name": "Jane Example",
             "google_resource_name": "people/c2",
@@ -244,7 +258,7 @@ def test_match_handles_duplicate_contacts_conflicting_person_emails_stay_unlinke
     assert h.match_method == "google"
     assert h.google_resource_name == "people/c1"
     assert h.display_name == "Jane Example"
-    assert h.person_email is None
+    assert h.person_id is None
     assert b.matched_by_google == 1 and b.linked_to_people == 0
 
 

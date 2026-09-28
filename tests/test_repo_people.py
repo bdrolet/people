@@ -92,7 +92,9 @@ def test_rows_for_imessage_matching_selects_google_link():
     conn = FakeConn(results=[[]])
     people.rows_for_imessage_matching(conn)
     sql, _ = conn.calls[0]
-    assert "email" in sql and "display_name" in sql and "google_resource_name" in sql
+    assert (
+        "id" in sql and "email" in sql and "display_name" in sql and "google_resource_name" in sql
+    )
     assert "FROM people" in sql
 
 
@@ -119,3 +121,32 @@ def test_update_from_google_persists_contact_fields():
 
 def test_columns_include_contact_fields():
     assert "phone_numbers" in people._COLUMNS and "google_fields" in people._COLUMNS
+
+
+def test_columns_include_id():
+    assert "id" in people._COLUMNS
+
+
+def test_get_by_id_selects_on_id():
+    conn = FakeConn(results=[[{"id": 7, "email": "a@example.com"}]])
+    assert people.get_by_id(conn, 7)["id"] == 7
+    sql, params = conn.calls[0]
+    assert "WHERE id = %s" in sql and params == (7,)
+
+
+def test_get_by_phone_returns_every_match():
+    # Review Focus 2: a shared landline resolves to more than one person.
+    conn = FakeConn(
+        results=[[{"id": 1, "email": "a@example.com"}, {"id": 2, "email": "b@example.com"}]]
+    )
+    rows = people.get_by_phone(conn, "+15550100001")
+    assert [r["id"] for r in rows] == [1, 2]
+    sql, params = conn.calls[0]
+    assert "phone_numbers" in sql and params == ("+15550100001",)
+
+
+def test_eligible_not_in_hubspot_excludes_people_without_an_email():
+    conn = FakeConn(results=[[]])
+    people.eligible_not_in_hubspot(conn, 10)
+    sql, _ = conn.calls[0]
+    assert "email IS NOT NULL" in sql

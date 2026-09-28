@@ -91,6 +91,14 @@ def test_upsert_messages_is_idempotent_on_guid():
     assert n == 1
 
 
+def test_upsert_handles_writes_person_id():
+    conn = FakeConn()
+    imessage.upsert_handles(conn, [IMessageHandle("+15550100001", person_id=11)])
+    sql, params = conn.calls[0]
+    assert "person_id" in sql and "person_email" not in sql
+    assert 11 in params
+
+
 def test_upsert_handles_preserves_stats_columns():
     conn = FakeConn()
     imessage.upsert_handles(conn, [IMessageHandle("+15550100001", display_name="Alice")])
@@ -156,10 +164,24 @@ def test_handles_filters_build_expected_sql():
     conn = FakeConn(results=[[]])
     imessage.handles(conn, q="ali", min_messages=5, replied=True, unmatched=True, limit=10)
     sql, params = conn.calls[0]
-    assert "display_name ILIKE %s OR handle ILIKE %s" in sql
-    assert "message_count >= %s" in sql and "my_message_count > 0" in sql
-    assert "person_email IS NULL AND google_resource_name IS NULL" in sql
+    assert "h.display_name ILIKE %s OR h.handle ILIKE %s" in sql
+    assert "h.message_count >= %s" in sql and "h.my_message_count > 0" in sql
+    assert "person_id IS NULL AND h.google_resource_name IS NULL" in sql
     assert params[-1] == 10
+
+
+def test_handle_reads_expose_person_email_via_join():
+    conn = FakeConn(results=[[]])
+    imessage.handles(conn, limit=5)
+    sql, _ = conn.calls[0]
+    assert "LEFT JOIN people" in sql and "p.email AS person_email" in sql
+
+
+def test_unmatched_filter_uses_person_id():
+    conn = FakeConn(results=[[]])
+    imessage.handles(conn, unmatched=True, limit=5)
+    sql, _ = conn.calls[0]
+    assert "person_id IS NULL" in sql
 
 
 def test_handles_include_groups_changes_ordering():
@@ -180,7 +202,8 @@ def test_handle_looks_up_by_pk():
     conn = FakeConn(results=[[{"handle": "+15550100001"}]])
     row = imessage.handle(conn, "+15550100001")
     sql, params = conn.calls[0]
-    assert "FROM imessage_handles WHERE handle = %s" in sql
+    assert "FROM imessage_handles h LEFT JOIN people p ON p.id = h.person_id" in sql
+    assert "WHERE h.handle = %s" in sql
     assert params == ("+15550100001",)
     assert row == {"handle": "+15550100001"}
 
@@ -201,26 +224,26 @@ def test_handle_groups_filters_group_chats_containing_handle():
 
 def test_summary_for_person_aggregates_across_handles():
     conn = FakeConn(results=[[{"handles": ["+15550100001"], "message_count": 5}]])
-    row = imessage.summary_for_person(conn, "alice@example.com")
+    row = imessage.summary_for_person(conn, 11)
     sql, params = conn.calls[0]
-    assert "FROM imessage_handles WHERE person_email = %s" in sql
+    assert "FROM imessage_handles WHERE person_id = %s" in sql
     assert "HAVING COUNT(*) > 0" in sql
-    assert params == ("alice@example.com",)
+    assert params == (11,)
     assert row["message_count"] == 5
 
 
 def test_summary_for_person_none_when_no_handles():
     conn = FakeConn(results=[[]])
-    assert imessage.summary_for_person(conn, "nobody@example.com") is None
+    assert imessage.summary_for_person(conn, 999) is None
 
 
 def test_search_handles_uses_ilike_and_trigram():
     conn = FakeConn(results=[[]])
     imessage.search_handles(conn, "ali", 20)
     sql, params = conn.calls[0]
-    assert "display_name ILIKE %s OR handle ILIKE %s" in sql
-    assert "similarity(display_name, %s) > 0.3" in sql
-    assert "similarity(handle, %s) > 0.3" in sql
+    assert "h.display_name ILIKE %s OR h.handle ILIKE %s" in sql
+    assert "similarity(h.display_name, %s) > 0.3" in sql
+    assert "similarity(h.handle, %s) > 0.3" in sql
     assert params == ("%ali%", "%ali%", "ali", "ali", 20)
 
 

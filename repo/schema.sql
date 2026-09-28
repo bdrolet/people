@@ -71,7 +71,15 @@ CREATE TABLE IF NOT EXISTS linkedin_connections (
     last_my_message_at  TIMESTAMPTZ,
     snapshot_at         TIMESTAMPTZ NOT NULL
 );
-CREATE INDEX IF NOT EXISTS linkedin_connections_person_email_idx ON linkedin_connections (person_email);
+-- Guarded on person_email still existing: the person-identity migration below
+-- drops that column (and, with it, this index), so this must stay a no-op
+-- after that (spec 2026-09-24-person-identity-design.md §4.1).
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'linkedin_connections' AND column_name = 'person_email') THEN
+        CREATE INDEX IF NOT EXISTS linkedin_connections_person_email_idx ON linkedin_connections (person_email);
+    END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS linkedin_connections_name_trgm_idx ON linkedin_connections USING gin (full_name gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS linkedin_connections_company_trgm_idx ON linkedin_connections USING gin (company gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS linkedin_connections_position_trgm_idx ON linkedin_connections USING gin (position gin_trgm_ops);
@@ -139,7 +147,15 @@ CREATE TABLE IF NOT EXISTS imessage_handles (
     last_group_message_at  TIMESTAMPTZ,
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS imessage_handles_person_email_idx ON imessage_handles (person_email);
+-- Guarded on person_email still existing: the person-identity migration below
+-- drops that column (and, with it, this index), so this must stay a no-op
+-- after that (spec 2026-09-24-person-identity-design.md §4.1).
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'imessage_handles' AND column_name = 'person_email') THEN
+        CREATE INDEX IF NOT EXISTS imessage_handles_person_email_idx ON imessage_handles (person_email);
+    END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS imessage_handles_google_idx ON imessage_handles (google_resource_name);
 CREATE INDEX IF NOT EXISTS imessage_handles_name_trgm_idx ON imessage_handles USING gin (display_name gin_trgm_ops);
 
@@ -185,9 +201,82 @@ CREATE TABLE IF NOT EXISTS imessage_imports (
 );
 
 -- Backfill the same constraint onto the LinkedIn snapshot (spec §4, Migration).
+-- Guarded on person_email still existing: the person-identity migration below
+-- drops that column, and this block must stay a no-op after that (spec
+-- 2026-09-24-person-identity-design.md §4.1).
 DO $$ BEGIN
-    ALTER TABLE linkedin_connections
-        ADD CONSTRAINT linkedin_connections_person_email_fkey
-        FOREIGN KEY (person_email) REFERENCES people(email) ON DELETE SET NULL;
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'linkedin_connections' AND column_name = 'person_email') THEN
+        ALTER TABLE linkedin_connections
+            ADD CONSTRAINT linkedin_connections_person_email_fkey
+            FOREIGN KEY (person_email) REFERENCES people(email) ON DELETE SET NULL;
+    END IF;
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
+
+-- Person identity: surrogate id, nullable unique email (spec §4.1).
+-- Order matters and is not obvious: the child foreign keys reference
+-- people(email), backed by the primary-key index, so DROP CONSTRAINT
+-- people_pkey fails with dependent_objects_still_exist while they exist.
+-- The children must move off person_email before the primary key swaps,
+-- and their new person_id foreign keys are added after id becomes the
+-- primary key (a foreign key needs a unique or primary-key target).
+
+-- 1. Surrogate key column, populated for every existing row.
+ALTER TABLE people ADD COLUMN IF NOT EXISTS id BIGSERIAL;
+
+-- 2. Children gain person_id and are backfilled through the old text link.
+--    No FK yet: people.id is not unique until step 3.
+ALTER TABLE imessage_handles     ADD COLUMN IF NOT EXISTS person_id BIGINT;
+ALTER TABLE linkedin_connections ADD COLUMN IF NOT EXISTS person_id BIGINT;
+
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'imessage_handles' AND column_name = 'person_email') THEN
+        UPDATE imessage_handles h SET person_id = p.id
+          FROM people p WHERE h.person_email = p.email AND h.person_id IS NULL;
+        ALTER TABLE imessage_handles DROP COLUMN person_email;   -- drops its FK too
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'linkedin_connections' AND column_name = 'person_email') THEN
+        UPDATE linkedin_connections c SET person_id = p.id
+          FROM people p WHERE c.person_email = p.email AND c.person_id IS NULL;
+        ALTER TABLE linkedin_connections DROP COLUMN person_email;
+    END IF;
+END $$;
+
+-- 3. Now nothing depends on the email PK index: swap the key.
+DO $$ BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_index i
+        JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+        WHERE i.indrelid = 'people'::regclass AND i.indisprimary AND a.attname = 'email'
+    ) THEN
+        ALTER TABLE people DROP CONSTRAINT people_pkey;
+        ALTER TABLE people ADD PRIMARY KEY (id);
+        ALTER TABLE people ALTER COLUMN email DROP NOT NULL;
+        ALTER TABLE people ADD CONSTRAINT people_email_key UNIQUE (email);
+    END IF;
+END $$;
+
+-- 4. With people.id a primary key, the children can reference it.
+DO $$ BEGIN
+    ALTER TABLE imessage_handles ADD CONSTRAINT imessage_handles_person_id_fkey
+        FOREIGN KEY (person_id) REFERENCES people(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+DO $$ BEGIN
+    ALTER TABLE linkedin_connections ADD CONSTRAINT linkedin_connections_person_id_fkey
+        FOREIGN KEY (person_id) REFERENCES people(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- 5. Every person must be reachable by something.
+DO $$ BEGIN
+    ALTER TABLE people ADD CONSTRAINT people_has_an_identifier
+        CHECK (email IS NOT NULL OR cardinality(phone_numbers) > 0);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE INDEX IF NOT EXISTS imessage_handles_person_id_idx     ON imessage_handles (person_id);
+CREATE INDEX IF NOT EXISTS linkedin_connections_person_id_idx ON linkedin_connections (person_id);

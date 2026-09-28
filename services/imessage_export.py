@@ -7,6 +7,7 @@ models/imessage.py records.
 """
 
 from datetime import UTC, datetime
+from typing import Any
 
 import phonenumbers
 
@@ -230,14 +231,14 @@ def _resolve_duplicate_contacts(entries: list[dict[str, str]]) -> dict[str, str]
 def match_handles(
     batch: IMessageBatch,
     phone_index: dict[str, list[dict[str, str]]],
-    people_rows: list[dict[str, str | None]],
+    people_rows: list[dict[str, Any]],
 ) -> None:
     """Link each handle to a Google contact and/or a people row (spec §5.4).
 
     Mutates batch.handles in place and increments batch's matching counters.
     """
-    people_by_email: dict[str, dict[str, str | None]] = {}
-    people_by_resource: dict[str, dict[str, str | None]] = {}
+    people_by_email: dict[str, dict[str, Any]] = {}
+    people_by_resource: dict[str, dict[str, Any]] = {}
     for row in people_rows:
         email = row.get("email")
         if email:
@@ -251,7 +252,7 @@ def match_handles(
             person = people_by_email.get(handle.handle)
             if person is None:
                 continue
-            handle.person_email = person["email"]
+            handle.person_id = person["id"]
             handle.display_name = person["display_name"]
             handle.match_method = "email"
             batch.matched_by_email += 1
@@ -273,11 +274,11 @@ def match_handles(
         handle.match_method = "google"
         batch.matched_by_google += 1
 
-        person_emails = {
-            people_by_resource[entry["resource_name"]]["email"]
+        person_ids = {
+            people_by_resource[entry["resource_name"]]["id"]
             for entry in entries
             if entry["resource_name"] in people_by_resource
         }
-        if len(person_emails) == 1:
-            handle.person_email = next(iter(person_emails))
+        if len(person_ids) == 1:
+            handle.person_id = next(iter(person_ids))
             batch.linked_to_people += 1

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 
 _COLUMNS = """
-    email, display_name, first_seen, last_seen, last_contacted, message_count,
+    id, email, display_name, first_seen, last_seen, last_contacted, message_count,
     my_response_count, relationship_label, notes, eligible, automated,
     google_resource_name, google_etag, google_deleted_at, hubspot_contact_id,
     hubspot_synced_at, phone_numbers, company, job_title, google_fields, updated_at,
@@ -66,6 +66,25 @@ def get(conn: Any, email: str) -> dict | None:
     return conn.execute(
         f"SELECT {_COLUMNS} FROM people WHERE email = %s", (_norm(email),)
     ).fetchone()
+
+
+def get_by_id(conn: Any, person_id: int) -> dict | None:
+    return conn.execute(f"SELECT {_COLUMNS} FROM people WHERE id = %s", (person_id,)).fetchone()
+
+
+def get_by_phone(conn: Any, e164: str) -> list[dict]:
+    """A phone number can belong to several people (a household landline), so
+    this returns every match rather than picking one — ambiguity is an error,
+    not a guess (spec §5.1). Ordered by last interaction descending so the
+    most recently interacted-with candidate comes first."""
+    return conn.execute(
+        f"""
+        SELECT {_COLUMNS} FROM people
+        WHERE %s = ANY(phone_numbers)
+        ORDER BY {_LAST_INTERACTION} DESC
+        """,
+        (e164,),
+    ).fetchall()
 
 
 def get_by_google_resource(conn: Any, resource_name: str) -> dict | None:
@@ -262,10 +281,13 @@ def managed(conn: Any) -> list[dict]:
 
 
 def eligible_not_in_hubspot(conn: Any, limit: int) -> list[dict]:
+    # clients/hubspot.py searches and creates contacts by email address, so a
+    # phone-only person cannot be mirrored (spec §5.2) — exclude them here so
+    # the nightly reconcile never burns the bounded cap on failed creates.
     return conn.execute(
         f"""
         SELECT {_COLUMNS} FROM people
-        WHERE eligible AND hubspot_contact_id IS NULL
+        WHERE eligible AND hubspot_contact_id IS NULL AND email IS NOT NULL
         ORDER BY {_LAST_INTERACTION} DESC LIMIT %s
         """,
         (limit,),
@@ -273,10 +295,12 @@ def eligible_not_in_hubspot(conn: Any, limit: int) -> list[dict]:
 
 
 def names_for_matching(conn: Any) -> list[dict]:
-    """Every row's email and display_name, for scripts/import_linkedin.py's soft link."""
-    return conn.execute("SELECT email, display_name FROM people").fetchall()
+    """Every row's id, email and display_name, for scripts/import_linkedin.py's soft link."""
+    return conn.execute("SELECT id, email, display_name FROM people").fetchall()
 
 
 def rows_for_imessage_matching(conn: Any) -> list[dict]:
-    """Email, display name, and Google link for scripts/import_imessage.py (spec §5.4)."""
-    return conn.execute("SELECT email, display_name, google_resource_name FROM people").fetchall()
+    """Id, email, display name, and Google link for scripts/import_imessage.py (spec §5.4)."""
+    return conn.execute(
+        "SELECT id, email, display_name, google_resource_name FROM people"
+    ).fetchall()

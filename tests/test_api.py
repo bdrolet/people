@@ -16,6 +16,7 @@ TS = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
 
 def row(email="alice@x.com", **kw):
     base = {
+        "id": 1,
         "email": email,
         "display_name": "Alice",
         "first_seen": TS,
@@ -61,6 +62,7 @@ def li_row(slug="alice-example", **kw):
         "company": "Example Health",
         "position": "CTO",
         "connected_on": date(2021, 4, 2),
+        "person_id": 1,
         "person_email": "alice@x.com",
         "match_method": "name",
         "message_count": 14,
@@ -110,6 +112,7 @@ def handle_row(handle="+15550100001", **kw):
         "handle": handle,
         "display_name": "Alice",
         "google_resource_name": None,
+        "person_id": 1,
         "person_email": "alice@x.com",
         "match_method": "email",
         "message_count": 212,
@@ -153,6 +156,8 @@ def _wire(monkeypatch):
     monkeypatch.setattr(
         people_repo, "get", lambda conn, email: row() if email == "alice@x.com" else None
     )
+    monkeypatch.setattr(people_repo, "get_by_id", lambda conn, person_id: None)
+    monkeypatch.setattr(people_repo, "get_by_phone", lambda conn, e164: [])
     monkeypatch.setattr(people_repo, "search", lambda conn, q, limit: [row()] if "ali" in q else [])
     monkeypatch.setattr(
         people_repo, "recent", lambda conn, limit, eligible_only=True: [row()][:limit]
@@ -202,6 +207,66 @@ def test_get_person_404():
 
 def test_get_person_normalizes_case():
     assert client.get("/people/Alice@X.com").status_code == 200
+
+
+def test_get_by_id(monkeypatch):
+    """spec §5.1: a bare numeric path segment resolves by id."""
+    monkeypatch.setattr(
+        people_repo, "get_by_id", lambda conn, person_id: row(id=7) if person_id == 7 else None
+    )
+    body = client.get("/people/7").json()
+    assert body["id"] == 7
+
+
+def test_get_by_encoded_phone(monkeypatch):
+    monkeypatch.setattr(
+        people_repo,
+        "get_by_phone",
+        lambda conn, e164: [row(id=8)] if e164 == "+15550100001" else [],
+    )
+    body = client.get("/people/%2B15550100001").json()
+    assert body["id"] == 8
+
+
+def test_get_by_unencoded_phone(monkeypatch):
+    # Review Focus 3: a literal + in a path segment is not a space — this
+    # must resolve exactly like the percent-encoded form above.
+    monkeypatch.setattr(
+        people_repo,
+        "get_by_phone",
+        lambda conn, e164: [row(id=8)] if e164 == "+15550100001" else [],
+    )
+    body = client.get("/people/+15550100001").json()
+    assert body["id"] == 8
+
+
+def test_ambiguous_phone_is_409_with_candidates(monkeypatch):
+    # Review Focus 2: never guess — the caller must be told it's ambiguous.
+    monkeypatch.setattr(
+        people_repo,
+        "get_by_phone",
+        lambda conn, e164: [row(id=1), row(id=2)] if e164 == "+15550100001" else [],
+    )
+    r = client.get("/people/%2B15550100001")
+    assert r.status_code == 409
+    assert r.json()["detail"] == {"error": "ambiguous phone", "candidates": [1, 2]}
+
+
+def test_unresolvable_identifier_is_404():
+    # Review Focus 4: an unclassifiable identifier 404s, never 500s.
+    assert client.get("/people/alice").status_code == 404
+
+
+def test_person_out_carries_id_and_nullable_email(monkeypatch):
+    monkeypatch.setattr(
+        people_repo,
+        "get_by_id",
+        lambda conn, person_id: (
+            row(id=9, email=None, phone_numbers=["+15550100001"]) if person_id == 9 else None
+        ),
+    )
+    body = client.get("/people/9").json()
+    assert body["id"] == 9 and body["email"] is None
 
 
 def test_search():
@@ -434,10 +499,10 @@ def test_get_person_linkedin_present(monkeypatch):
     monkeypatch.setattr(
         linkedin_repo,
         "connection_for_person",
-        lambda conn, email: (seen.setdefault("email", email), li_row())[1],
+        lambda conn, person_id: (seen.setdefault("person_id", person_id), li_row())[1],
     )
     body = client.get("/people/Alice@X.com").json()
-    assert seen["email"] == "alice@x.com"
+    assert seen["person_id"] == row()["id"]
     assert body["linkedin"]["profile_url"] == "linkedin.com/in/alice-example"
     assert body["linkedin"]["my_message_count"] == 6
     assert "full_name" not in body["linkedin"] and "person_email" not in body["linkedin"]
@@ -512,6 +577,16 @@ def test_handles_endpoint_applies_filters(monkeypatch):
     assert r.status_code == 200
     assert seen["replied"] is True and seen["min_messages"] == 3
     assert r.json()["results"][0]["handle"] == "+15550100001"
+
+
+def test_imessage_handle_carries_person_id(monkeypatch):
+    monkeypatch.setattr(
+        imessage_repo,
+        "handles",
+        lambda conn, **kw: [handle_row(person_id=11, person_email="alice@example.com")],
+    )
+    row_out = client.get("/imessage/handles?limit=1").json()["results"][0]
+    assert row_out["person_id"] == 11 and row_out["person_email"] == "alice@example.com"
 
 
 def test_handles_limit_bounds():

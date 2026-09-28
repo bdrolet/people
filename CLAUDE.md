@@ -76,6 +76,7 @@ services/
   google_contacts_sync.py   ensure_contact (link/create), run_sync (nightly), sync_one (PATCH refresh)
   hubspot_mirror.py         ensure_contact, log_email, reconcile (adopt/heal/enforce/fill)
   person_edit.py            PATCH: write Google first, then refresh DB
+  identity.py               classify(ident) → email | phone | id (spec §5.1) — pure, no I/O
   contact_fields.py         pure: WRITABLE_FIELDS allowlist + shape validation, email
                              add-only rule, derive() of phone_numbers/company/job_title/
                              google_fields from a Google person payload
@@ -91,7 +92,9 @@ api/
   main.py                   FastAPI app, /health, OTel request-metrics middleware
   caller.py                 logs the IAM-authenticated caller (email claim) per request; no-op off Cloud Run
   routers/
-    people.py                GET /people?recent=, GET/PATCH/POST-sync /people/{email}
+    people.py                GET /people?recent=, GET/PATCH/POST-sync /people/{ident}
+                              ({ident}: email, E.164 phone, or numeric id — services/identity.py;
+                              ambiguous phone → 409 with candidate ids)
     search.py                 POST /search
     linkedin.py              GET /linkedin/connections[/{slug}], GET /linkedin/imports/latest
     imessage.py              GET /imessage/handles[/{handle}], GET /imessage/imports/latest
@@ -141,7 +144,7 @@ exactly as tasks and schedule do.
 | Field | Truth | Direction |
 |---|---|---|
 | `display_name` | Google Contacts once linked; event data before that | Google → DB on link/sync. Event data never overwrites a Google-sourced name. |
-| `notes` | Google contact **biography** | Both ways — `PATCH /people/{email}` writes Google first, then refreshes the DB row from it. The event path never writes notes. |
+| `notes` | Google contact **biography** | Both ways — `PATCH /people/{ident}` writes Google first, then refreshes the DB row from it. The event path never writes notes. |
 | `relationship_label` | Google **contact group** membership | Google → DB — first non-system, non-`GOOGLE_CONTACT_GROUP` group, lowercased. `PATCH` writes by moving group membership (adds the target group, removes the prior one). |
 | counters (`message_count`, `my_response_count`), timestamps, `eligible`, `automated` | DB | Written only by the event handlers and `scripts/import_contacts.py`. |
 | `google_deleted_at` | Google | Set by `people-sync` when a linked `resourceName` comes back deleted. Never recreated. |
@@ -155,9 +158,31 @@ Contacts plus a full sync; counters rebuild via `scripts/import_contacts.py`.
 The LinkedIn snapshot rebuilds by re-running `scripts/import_linkedin.py` on the latest export.
 The iMessage snapshot rebuilds by re-running `scripts/import_imessage.py --full` against `chat.db`.
 
+### Identity: id, email, phone (2026-09-24 design)
+
+`people.id` (`BIGSERIAL`) is the primary key; `email` is nullable and
+unique. `GET/PATCH /people/{ident}` and `POST /people/{ident}/sync` accept
+an email, an E.164 phone (percent-encode `+` as `%2B`), or a numeric id —
+`services/identity.py::classify` decides which, in that order, 404ing when
+none match. A phone shared by more than one person 409s with the candidate
+ids rather than guessing. Responses carry `id`; `email` may be `null`.
+`imessage_handles` and `linkedin_connections` link by `person_id` (FK →
+`people.id`, `ON DELETE SET NULL`); the API still serves `person_email` via
+a join, so reading skills are unchanged. A `people_has_an_identifier` CHECK
+constraint requires every row to have an email or at least one phone
+number. A person id is **internal only** — not a durable external reference
+(`people` rebuilds from Google Contacts plus a full sync, and ids don't
+survive that) — the email address remains the human-facing handle.
+Phone-only people are never mirrored to HubSpot, which keys on email
+(`repo/people.py::eligible_not_in_hubspot` excludes `email IS NULL`). This
+is piece 1 of 3 (identity only, no new rows) — the nightly sync still skips
+Google contacts with no email address; adopting them is piece 2, and
+`POST /people` is piece 3, neither shipped yet. See
+`docs/superpowers/specs/2026-09-24-person-identity-design.md`.
+
 ### Editable contact fields (2026-09-24 design)
 
-`PATCH /people/{email}` also takes a `contact` map: arbitrary Google People
+`PATCH /people/{ident}` also takes a `contact` map: arbitrary Google People
 API fields (phone numbers, name, organization, birthday, addresses, and
 more), validated against the allowlist in `services/contact_fields.py` and
 written to Google in one `updateContact` call, alongside `biographies` when
@@ -211,6 +236,9 @@ are counted; **Bcc is excluded**.
   `last_interaction`.
 - Only **eligible** people are mirrored. Losing eligibility is impossible, so
   a contact only leaves HubSpot by eviction.
+- A phone-only person (no email) is never mirrored — HubSpot is searched and
+  created by email address, so `eligible_not_in_hubspot` excludes
+  `email IS NULL` (identity design §5.2).
 - Engagements (`log_email`) are created only for contacts currently in
   HubSpot. Evicted contacts stop accumulating engagements; if they come
   back, history restarts from that point.
