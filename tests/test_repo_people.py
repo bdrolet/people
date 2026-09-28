@@ -92,7 +92,9 @@ def test_rows_for_imessage_matching_selects_google_link():
     conn = FakeConn(results=[[]])
     people.rows_for_imessage_matching(conn)
     sql, _ = conn.calls[0]
-    assert "email" in sql and "display_name" in sql and "google_resource_name" in sql
+    assert (
+        "id" in sql and "email" in sql and "display_name" in sql and "google_resource_name" in sql
+    )
     assert "FROM people" in sql
 
 

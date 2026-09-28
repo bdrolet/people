@@ -30,19 +30,22 @@ _HANDLE_INSERT_COLUMNS = (
     "handle",
     "display_name",
     "google_resource_name",
-    "person_email",
+    "person_id",
     "match_method",
 )
-_HANDLE_UPDATE = ("display_name", "google_resource_name", "person_email", "match_method")
+_HANDLE_UPDATE = ("display_name", "google_resource_name", "person_id", "match_method")
 
 # An empty Python list must bind as text[] on pg8000 too.
 _CASTS = {"participant_handles": "::text[]"}
 
+# person_id is the FK to people(id); person_email is exposed for the API by joining
+# people rather than being stored on imessage_handles (spec 2026-09-24-person-identity §5.3).
 _HANDLE_COLUMNS = """
-    handle, display_name, google_resource_name, person_email, match_method,
-    message_count, my_message_count, last_message_at, last_my_message_at,
-    group_message_count, last_group_message_at
+    h.handle, h.display_name, h.google_resource_name, h.person_id, p.email AS person_email,
+    h.match_method, h.message_count, h.my_message_count, h.last_message_at,
+    h.last_my_message_at, h.group_message_count, h.last_group_message_at
 """
+_HANDLES_JOIN = "imessage_handles h LEFT JOIN people p ON p.id = h.person_id"
 
 
 def _upsert_many(
@@ -138,7 +141,7 @@ def upsert_handles(conn: Any, handles: list[IMessageHandle], chunk: int = 500) -
         "handle",
         _HANDLE_UPDATE,
         [
-            (h.handle, h.display_name, h.google_resource_name, h.person_email, h.match_method)
+            (h.handle, h.display_name, h.google_resource_name, h.person_id, h.match_method)
             for h in handles
         ],
         chunk,
@@ -240,39 +243,39 @@ def handles(
     where: list[str] = []
     params: list[Any] = []
     if q:
-        where.append("(display_name ILIKE %s OR handle ILIKE %s)")
+        where.append("(h.display_name ILIKE %s OR h.handle ILIKE %s)")
         like = f"%{q.strip()}%"
         params += [like, like]
     if min_messages is not None:
-        where.append("message_count >= %s")
+        where.append("h.message_count >= %s")
         params.append(min_messages)
     if replied is not None:
-        where.append("my_message_count > 0" if replied else "my_message_count = 0")
+        where.append("h.my_message_count > 0" if replied else "h.my_message_count = 0")
     if quiet_since is not None:
-        where.append("last_message_at < %s")
+        where.append("h.last_message_at < %s")
         params.append(quiet_since)
     if unmatched is not None:
         where.append(
-            "person_email IS NULL AND google_resource_name IS NULL"
+            "h.person_id IS NULL AND h.google_resource_name IS NULL"
             if unmatched
-            else "(person_email IS NOT NULL OR google_resource_name IS NOT NULL)"
+            else "(h.person_id IS NOT NULL OR h.google_resource_name IS NOT NULL)"
         )
     clause = f"WHERE {' AND '.join(where)}" if where else ""
     order = (
-        "GREATEST(COALESCE(last_message_at, 'epoch'::timestamptz),"
-        " COALESCE(last_group_message_at, 'epoch'::timestamptz)) DESC"
+        "GREATEST(COALESCE(h.last_message_at, 'epoch'::timestamptz),"
+        " COALESCE(h.last_group_message_at, 'epoch'::timestamptz)) DESC"
         if include_groups
-        else "last_message_at DESC NULLS LAST"
+        else "h.last_message_at DESC NULLS LAST"
     )
     return conn.execute(
-        f"SELECT {_HANDLE_COLUMNS} FROM imessage_handles {clause} ORDER BY {order} LIMIT %s",
+        f"SELECT {_HANDLE_COLUMNS} FROM {_HANDLES_JOIN} {clause} ORDER BY {order} LIMIT %s",
         (*params, limit),
     ).fetchall()
 
 
 def handle(conn: Any, handle: str) -> dict | None:
     return conn.execute(
-        f"SELECT {_HANDLE_COLUMNS} FROM imessage_handles WHERE handle = %s", (handle,)
+        f"SELECT {_HANDLE_COLUMNS} FROM {_HANDLES_JOIN} WHERE h.handle = %s", (handle,)
     ).fetchone()
 
 
@@ -294,7 +297,7 @@ def handle_groups(conn: Any, handle: str) -> list[dict]:
     ).fetchall()
 
 
-def summary_for_person(conn: Any, email: str) -> dict | None:
+def summary_for_person(conn: Any, person_id: int) -> dict | None:
     """Aggregated over every handle linked to this person (§7.1 IMessageSummary)."""
     return conn.execute(
         """
@@ -306,10 +309,10 @@ def summary_for_person(conn: Any, email: str) -> dict | None:
                COALESCE(SUM(group_message_count), 0) AS group_message_count,
                MAX(last_group_message_at) AS last_group_message_at,
                MAX(updated_at) AS imported_at
-        FROM imessage_handles WHERE person_email = %s
+        FROM imessage_handles WHERE person_id = %s
         HAVING COUNT(*) > 0
         """,
-        (email,),
+        (person_id,),
     ).fetchone()
 
 
@@ -318,10 +321,10 @@ def search_handles(conn: Any, q: str, limit: int) -> list[dict]:
     like = f"%{term.lower()}%"
     return conn.execute(
         f"""
-        SELECT {_HANDLE_COLUMNS} FROM imessage_handles
-        WHERE display_name ILIKE %s OR handle ILIKE %s
-           OR similarity(display_name, %s) > 0.3 OR similarity(handle, %s) > 0.3
-        ORDER BY last_message_at DESC NULLS LAST LIMIT %s
+        SELECT {_HANDLE_COLUMNS} FROM {_HANDLES_JOIN}
+        WHERE h.display_name ILIKE %s OR h.handle ILIKE %s
+           OR similarity(h.display_name, %s) > 0.3 OR similarity(h.handle, %s) > 0.3
+        ORDER BY h.last_message_at DESC NULLS LAST LIMIT %s
         """,
         (like, like, term, term, limit),
     ).fetchall()

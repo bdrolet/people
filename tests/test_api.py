@@ -16,6 +16,7 @@ TS = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
 
 def row(email="alice@x.com", **kw):
     base = {
+        "id": 1,
         "email": email,
         "display_name": "Alice",
         "first_seen": TS,

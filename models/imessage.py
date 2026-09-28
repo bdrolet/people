@@ -12,7 +12,7 @@ class IMessageHandle:
     handle: str  # E.164 phone or lowercased email
     display_name: str | None = None
     google_resource_name: str | None = None
-    person_email: str | None = None
+    person_id: int | None = None
     match_method: str | None = None  # 'email' | 'google' | None
 
 

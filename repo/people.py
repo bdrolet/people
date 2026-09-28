@@ -300,5 +300,7 @@ def names_for_matching(conn: Any) -> list[dict]:
 
 
 def rows_for_imessage_matching(conn: Any) -> list[dict]:
-    """Email, display name, and Google link for scripts/import_imessage.py (spec §5.4)."""
-    return conn.execute("SELECT email, display_name, google_resource_name FROM people").fetchall()
+    """Id, email, display name, and Google link for scripts/import_imessage.py (spec §5.4)."""
+    return conn.execute(
+        "SELECT id, email, display_name, google_resource_name FROM people"
+    ).fetchall()
