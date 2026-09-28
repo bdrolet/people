@@ -76,6 +76,15 @@ would not survive that). Prefer the email as the human-facing handle when
 presenting or linking to a person; use the id only for a phone-only person
 or to resolve a 409's candidates.
 
+**Zero message counts with a real, eligible contact isn't a bug.** The
+nightly sync **adopts** a Google contact that has a phone number but no
+email address (`people-architecture`'s Adoption section) — these people
+show up here with `email: null`, `eligible: true`, and `message_count`/
+`my_response_count` both `0`, because no mail has ever been seen from them;
+they were pulled in from Google, not from the event pipeline. That's
+different from a person `people` has simply never linked to Google — this
+one already carries `phone_numbers` and `contact` data.
+
 ## Presenting
 
 ```

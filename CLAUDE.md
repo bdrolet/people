@@ -33,7 +33,7 @@ This overrides the default "commit or push only when asked" behavior for code ch
 |---|---|
 | **GCP project** | `bens-project-462804`, `us-central1` |
 | **Events CF** | `people-process` — Pub/Sub trigger on the inbox-owned `email-events` topic (data source), entry point `process` in `main.py`; handles `email_classified` and `email_sent`, ignores everything else |
-| **Sync CF** | `people-sync` — HTTP trigger, entry point `sync`; POST with `Authorization: Bearer <people-sync-token>`; Cloud Scheduler `people-sync` at `0 4 * * *` America/New_York (before inbox's 5 AM sweep) — Google Contacts incremental sync, then HubSpot reconcile |
+| **Sync CF** | `people-sync` — HTTP trigger, entry point `sync`; POST with `Authorization: Bearer <people-sync-token>`; Cloud Scheduler `people-sync` at `0 4 * * *` America/New_York (before inbox's 5 AM sweep) — Google Contacts incremental sync (**adopts** an email-less contact with a usable phone number, `email IS NULL`; counts the rest `skipped`), then HubSpot reconcile |
 | **API** | `people-api` — Cloud Run FastAPI service (`api/`); auth is Cloud Run IAM — `roles/run.invoker` granted per caller in `terraform/api.tf`; callers send `gcloud auth print-identity-token`; image in Artifact Registry repo `people`, deployed by `.github/workflows/deploy-api.yml`; `https://people-api.drolet.cloud` (Cloud Run domain mapping in `terraform/api.tf`; the CNAME lives in `~/src/infra` `cloudflare/drolet-cloud.tf`); the raw run.app URL is `terraform output -raw people_api_url` |
 | **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people` (incl. editable-contact-field columns `phone_numbers`, `company`, `job_title`, `google_fields` — see the source-of-truth table below), `sync_state`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`, `imessage_handles`, `imessage_chats`, `imessage_messages`, `imessage_imports`; schema in `repo/schema.sql` |
 | **Google Contacts** | People API v1 via `clients/google_contacts.py` — OAuth refresh-token creds, scope `https://www.googleapis.com/auth/contacts`; reuses schedule's OAuth client (`google-calendar-client-id`/`-secret`, data sources), a people-owned refresh token (`google-contacts-refresh-token`) |
@@ -102,6 +102,8 @@ scripts/
   import_contacts.py        bulk backfill (spec §12) — --dry-run, --reset-counters
   get_google_contacts_token.py  mint the Google refresh token (contacts scope)
   migrate_db.py             apply repo/schema.sql
+  clear_sync_token.py       clear the stored Google sync token so the next people-sync
+                             run does a full pass (one-time, after adoption shipped)
   fetch-env.sh               populate .env from Secret Manager + terraform.tfvars
   test-api-local.py          smoke test people-api
   link-skills.sh             symlink searching-people/fetching-person/editing-person into ~/.claude/skills/
@@ -149,6 +151,7 @@ exactly as tasks and schedule do.
 | counters (`message_count`, `my_response_count`), timestamps, `eligible`, `automated` | DB | Written only by the event handlers and `scripts/import_contacts.py`. |
 | `google_deleted_at` | Google | Set by `people-sync` when a linked `resourceName` comes back deleted. Never recreated. |
 | `hubspot_contact_id` | DB (people manages) | Set on create/adopt, cleared on evict/heal. |
+| An adopted row's identity | Phone number / `id`, not email | Nightly-sync adoption (§Identity below) sets `email = NULL` via `create_from_google`. It stays `NULL` even after `PATCH /people/{ident}` adds an email to the underlying Google contact, because the already-linked refresh path (`update_from_google`) only writes `phone_numbers`/`company`/`job_title`/`google_fields` — never `email`; only creation or an initial Google link do that. The row keeps being addressed by phone or `id`. `querying-people-db`'s duplicate-detection query is how a resulting two-rows-one-person case becomes visible; nothing merges it automatically. |
 | `linkedin_*` tables | LinkedIn data export | Export → DB on manual import (`scripts/import_linkedin.py`). Never written back anywhere; LinkedIn is not a source for any `people` field. |
 | `imessage_*` tables | `chat.db` on Ben's Mac | chat.db → DB on local import (`scripts/import_imessage.py`). Never written back anywhere; iMessage is not a source for any `people` field. |
 | `phone_numbers`, `company`, `job_title`, `google_fields` | Google Contacts | Google → DB on link, nightly sync, and after every `PATCH`. Event data never writes them; never pushed to HubSpot (contact-field-edits design §4.1). |
@@ -158,7 +161,7 @@ Contacts plus a full sync; counters rebuild via `scripts/import_contacts.py`.
 The LinkedIn snapshot rebuilds by re-running `scripts/import_linkedin.py` on the latest export.
 The iMessage snapshot rebuilds by re-running `scripts/import_imessage.py --full` against `chat.db`.
 
-### Identity: id, email, phone (2026-09-24 design)
+### Identity: id, email, phone (2026-09-24 design; adoption 2026-09-28)
 
 `people.id` (`BIGSERIAL`) is the primary key; `email` is nullable and
 unique. `GET/PATCH /people/{ident}` and `POST /people/{ident}/sync` accept
@@ -172,13 +175,30 @@ a join, so reading skills are unchanged. A `people_has_an_identifier` CHECK
 constraint requires every row to have an email or at least one phone
 number. A person id is **internal only** — not a durable external reference
 (`people` rebuilds from Google Contacts plus a full sync, and ids don't
-survive that) — the email address remains the human-facing handle.
+survive that) — the email address remains the human-facing handle where one
+exists. `services/person_edit.py::update` is keyed by `person_id` (not
+email), so a phone-only person is editable the same as anyone else.
 Phone-only people are never mirrored to HubSpot, which keys on email
-(`repo/people.py::eligible_not_in_hubspot` excludes `email IS NULL`). This
-is piece 1 of 3 (identity only, no new rows) — the nightly sync still skips
-Google contacts with no email address; adopting them is piece 2, and
-`POST /people` is piece 3, neither shipped yet. See
-`docs/superpowers/specs/2026-09-24-person-identity-design.md`.
+(`repo/people.py::eligible_not_in_hubspot` excludes `email IS NULL`).
+
+**Piece 2 — adoption (shipped 2026-09-28).** The nightly sync no longer
+skips a Google contact with no email address: `apply_person` **adopts** it
+as long as it has at least one phone number that normalizes to E.164 (the
+same rule `services/imessage_export.py::normalize_handle` uses) —
+`create_from_google(conn, None, ...)`, `email IS NULL`, `eligible = TRUE`,
+zero message counters (no mail has ever been seen from them). A contact
+with neither an email nor a usable phone is **skipped** and counted in
+`run_sync`'s `skipped` total (logged as a count only — never names, the
+repo is public). Measured 2026-09-28, before the change: 968 Google
+contacts, 553 with no email, 449 adoptable, 104 skipped (87 with neither
+identifier, 17 with an unparseable phone). Adoption only reaches contacts
+the incremental sync actually revisits, so the existing backlog needed one
+full pass: `scripts/clear_sync_token.py` clears the stored token so the
+next `run_sync` takes the full-listing path. `POST /people` (piece 3) still
+doesn't exist — adoption via the nightly sync is the only way an
+email-less person gets a row. See
+`docs/superpowers/specs/2026-09-24-person-identity-design.md` and
+`docs/superpowers/specs/2026-09-28-adopt-emailless-contacts-design.md`.
 
 ### Editable contact fields (2026-09-24 design)
 
