@@ -51,7 +51,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(
         people_repo,
         "names_for_matching",
-        lambda conn: [{"email": "alice@example.com", "display_name": "Alice Example"}],
+        lambda conn: [{"id": 1, "email": "alice@example.com", "display_name": "Alice Example"}],
     )
     monkeypatch.setattr(
         linkedin_repo, "replace_snapshot", lambda conn, s: state["replaced"].append(s)

@@ -99,7 +99,7 @@ def get_person(email: str) -> PersonOut:
     email = normalize(email)
     with db.get_conn() as conn:
         row = people.get(conn, email)
-        linkedin_row = linkedin_repo.connection_for_person(conn, email) if row else None
+        linkedin_row = linkedin_repo.connection_for_person(conn, row["id"]) if row else None
         imessage_row = imessage_repo.summary_for_person(conn, row["id"]) if row else None
     if row is None:
         raise HTTPException(status_code=404)
@@ -119,7 +119,7 @@ def patch_person(email: str, body: PersonPatch) -> PersonOut:
                 contact=body.contact,
             )
             conn.commit()
-            linkedin_row = linkedin_repo.connection_for_person(conn, email)
+            linkedin_row = linkedin_repo.connection_for_person(conn, row["id"])
             imessage_row = imessage_repo.summary_for_person(conn, row["id"])
     except person_edit.NotFound:
         raise HTTPException(status_code=404)

@@ -17,7 +17,7 @@ class LinkedInConnection:
     company: str | None
     position: str | None
     connected_on: date | None
-    person_email: str | None = None  # soft link to people.email
+    person_id: int | None = None  # soft link to people.id
     match_method: str | None = None  # 'email' | 'name' | None
     message_count: int = 0
     my_message_count: int = 0

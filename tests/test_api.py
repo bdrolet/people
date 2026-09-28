@@ -435,10 +435,10 @@ def test_get_person_linkedin_present(monkeypatch):
     monkeypatch.setattr(
         linkedin_repo,
         "connection_for_person",
-        lambda conn, email: (seen.setdefault("email", email), li_row())[1],
+        lambda conn, person_id: (seen.setdefault("person_id", person_id), li_row())[1],
     )
     body = client.get("/people/Alice@X.com").json()
-    assert seen["email"] == "alice@x.com"
+    assert seen["person_id"] == row()["id"]
     assert body["linkedin"]["profile_url"] == "linkedin.com/in/alice-example"
     assert body["linkedin"]["my_message_count"] == 6
     assert "full_name" not in body["linkedin"] and "person_email" not in body["linkedin"]

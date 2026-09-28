@@ -9,7 +9,7 @@ from models.linkedin import LinkedInSnapshot
 
 _CONNECTION_INSERT = (
     "profile_url", "first_name", "last_name", "full_name", "email", "company", "position",
-    "connected_on", "person_email", "match_method", "message_count", "my_message_count",
+    "connected_on", "person_id", "match_method", "message_count", "my_message_count",
     "last_message_at", "last_my_message_at", "snapshot_at",
 )  # fmt: skip
 _MESSAGE_INSERT = (
@@ -57,7 +57,7 @@ def replace_snapshot(conn: Any, s: LinkedInSnapshot, chunk: int = 500) -> None:
                 c.company,
                 c.position,
                 c.connected_on,
-                c.person_email,
+                c.person_id,
                 c.match_method,
                 c.message_count,
                 c.my_message_count,
@@ -134,20 +134,23 @@ def replace_snapshot(conn: Any, s: LinkedInSnapshot, chunk: int = 500) -> None:
     )
 
 
+# person_id is the FK to people(id); person_email is exposed for the API by joining
+# people rather than being stored on linkedin_connections (spec 2026-09-24-person-identity §5.3).
 _CONNECTION_COLUMNS = """
-    profile_url, full_name, email, company, position, connected_on, person_email,
-    match_method, message_count, my_message_count, last_message_at, last_my_message_at,
-    snapshot_at
+    lc.profile_url, lc.full_name, lc.email, lc.company, lc.position, lc.connected_on,
+    lc.person_id, p.email AS person_email, lc.match_method, lc.message_count,
+    lc.my_message_count, lc.last_message_at, lc.last_my_message_at, lc.snapshot_at
 """
+_CONNECTIONS_JOIN = "linkedin_connections lc LEFT JOIN people p ON p.id = lc.person_id"
 _ORDER = "ORDER BY last_message_at DESC NULLS LAST, connected_on DESC NULLS LAST"
 # Must match linkedin_messages_participants_idx exactly for the planner to use it.
 _PARTICIPANTS = "(recipient_profile_urls || ARRAY[sender_profile_url])"
 
 
-def connection_for_person(conn: Any, email: str) -> dict | None:
+def connection_for_person(conn: Any, person_id: int) -> dict | None:
     return conn.execute(
-        f"SELECT {_CONNECTION_COLUMNS} FROM linkedin_connections WHERE person_email = %s {_ORDER} LIMIT 1",
-        (email,),
+        f"SELECT {_CONNECTION_COLUMNS} FROM {_CONNECTIONS_JOIN} WHERE lc.person_id = %s {_ORDER} LIMIT 1",
+        (person_id,),
     ).fetchone()
 
 
@@ -156,10 +159,10 @@ def search_connections(conn: Any, q: str, limit: int) -> list[dict]:
     like = f"%{term.lower()}%"
     return conn.execute(
         f"""
-        SELECT {_CONNECTION_COLUMNS} FROM linkedin_connections
-        WHERE full_name ILIKE %s OR company ILIKE %s OR position ILIKE %s
-           OR similarity(full_name, %s) > 0.3 OR similarity(company, %s) > 0.3
-           OR similarity(position, %s) > 0.3
+        SELECT {_CONNECTION_COLUMNS} FROM {_CONNECTIONS_JOIN}
+        WHERE lc.full_name ILIKE %s OR lc.company ILIKE %s OR lc.position ILIKE %s
+           OR similarity(lc.full_name, %s) > 0.3 OR similarity(lc.company, %s) > 0.3
+           OR similarity(lc.position, %s) > 0.3
         {_ORDER} LIMIT %s
         """,
         (like, like, like, term, term, term, limit),
@@ -182,28 +185,28 @@ def list_connections(
     params: list[Any] = []
     for column, value in (("full_name", q), ("company", company), ("position", position)):
         if value:
-            where.append(f"{column} ILIKE %s")
+            where.append(f"lc.{column} ILIKE %s")
             params.append(f"%{value.strip()}%")
     if min_messages is not None:
-        where.append("message_count >= %s")
+        where.append("lc.message_count >= %s")
         params.append(min_messages)
     if replied is not None:
-        where.append("my_message_count > 0" if replied else "my_message_count = 0")
+        where.append("lc.my_message_count > 0" if replied else "lc.my_message_count = 0")
     if quiet_since is not None:
-        where.append("last_message_at < %s")
+        where.append("lc.last_message_at < %s")
         params.append(quiet_since)
     if unmatched is not None:
-        where.append("person_email IS NULL" if unmatched else "person_email IS NOT NULL")
+        where.append("lc.person_id IS NULL" if unmatched else "lc.person_id IS NOT NULL")
     clause = f"WHERE {' AND '.join(where)}" if where else ""
     return conn.execute(
-        f"SELECT {_CONNECTION_COLUMNS} FROM linkedin_connections {clause} {_ORDER} LIMIT %s",
+        f"SELECT {_CONNECTION_COLUMNS} FROM {_CONNECTIONS_JOIN} {clause} {_ORDER} LIMIT %s",
         (*params, limit),
     ).fetchall()
 
 
 def get_connection(conn: Any, profile_url: str) -> dict | None:
     return conn.execute(
-        f"SELECT {_CONNECTION_COLUMNS} FROM linkedin_connections WHERE profile_url = %s",
+        f"SELECT {_CONNECTION_COLUMNS} FROM {_CONNECTIONS_JOIN} WHERE lc.profile_url = %s",
         (profile_url,),
     ).fetchone()
 

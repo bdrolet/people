@@ -68,9 +68,16 @@ REC = LinkedInRecommendation(
 
 
 def test_names_for_matching():
-    conn = FakeConn(results=[[{"email": "a@b.c", "display_name": "A"}]])
-    assert people.names_for_matching(conn) == [{"email": "a@b.c", "display_name": "A"}]
-    assert conn.calls[0] == ("SELECT email, display_name FROM people", None)
+    conn = FakeConn(results=[[{"id": 1, "email": "a@b.c", "display_name": "A"}]])
+    assert people.names_for_matching(conn) == [{"id": 1, "email": "a@b.c", "display_name": "A"}]
+    assert conn.calls[0] == ("SELECT id, email, display_name FROM people", None)
+
+
+def test_replace_snapshot_writes_person_id():
+    conn = FakeConn()
+    linkedin.replace_snapshot(conn, snapshot(connections=[connection(person_id=21)]))
+    joined = " ".join(sql for sql, _ in conn.calls)
+    assert "person_id" in joined and "person_email" not in joined
 
 
 def test_replace_snapshot_order_and_params():
@@ -116,11 +123,12 @@ def test_replace_snapshot_batches():
 
 def test_connection_for_person():
     conn = FakeConn(results=[[{"profile_url": "linkedin.com/in/alice-example"}]])
-    row = linkedin.connection_for_person(conn, "alice@example.com")
+    row = linkedin.connection_for_person(conn, 21)
     sql, params = conn.calls[0]
-    assert "FROM linkedin_connections WHERE person_email = %s" in sql
+    assert "lc.person_id = %s" in sql
+    assert "LEFT JOIN people" in sql and "p.email AS person_email" in sql
     assert "ORDER BY last_message_at DESC NULLS LAST" in sql and sql.endswith("LIMIT 1")
-    assert params == ("alice@example.com",) and row["profile_url"].endswith("alice-example")
+    assert params == (21,) and row["profile_url"].endswith("alice-example")
 
 
 def test_search_connections():
@@ -128,7 +136,7 @@ def test_search_connections():
     linkedin.search_connections(conn, " Health ", 20)
     sql, params = conn.calls[0]
     for col in ("full_name", "company", "position"):
-        assert f"{col} ILIKE %s" in sql and f"similarity({col}, %s) > 0.3" in sql
+        assert f"lc.{col} ILIKE %s" in sql and f"similarity(lc.{col}, %s) > 0.3" in sql
     assert params == ("%health%",) * 3 + ("Health",) * 3 + (20,)
 
 
@@ -158,9 +166,9 @@ def test_list_connections_all_filters():
     )
     sql, params = conn.calls[0]
     assert (
-        "WHERE full_name ILIKE %s AND company ILIKE %s AND position ILIKE %s"
-        " AND message_count >= %s AND my_message_count = 0 AND last_message_at < %s"
-        " AND person_email IS NULL ORDER BY"
+        "WHERE lc.full_name ILIKE %s AND lc.company ILIKE %s AND lc.position ILIKE %s"
+        " AND lc.message_count >= %s AND lc.my_message_count = 0 AND lc.last_message_at < %s"
+        " AND lc.person_id IS NULL ORDER BY"
     ) in sql
     assert params == ("%ali%", "%Example%", "%cto%", 3, date(2026, 1, 1), 10)
 
@@ -169,14 +177,21 @@ def test_list_connections_true_false_variants():
     conn = FakeConn(results=[[]])
     linkedin.list_connections(conn, replied=True, unmatched=False)
     sql, _ = conn.calls[0]
-    assert "my_message_count > 0 AND person_email IS NOT NULL" in sql
+    assert "lc.my_message_count > 0 AND lc.person_id IS NOT NULL" in sql
+
+
+def test_list_connections_expose_person_email_via_join():
+    conn = FakeConn(results=[[]])
+    linkedin.list_connections(conn)
+    sql, _ = conn.calls[0]
+    assert "LEFT JOIN people" in sql and "p.email AS person_email" in sql
 
 
 def test_get_connection():
     conn = FakeConn(results=[[]])
     assert linkedin.get_connection(conn, "linkedin.com/in/nobody") is None
     sql, params = conn.calls[0]
-    assert "WHERE profile_url = %s" in sql and params == ("linkedin.com/in/nobody",)
+    assert "WHERE lc.profile_url = %s" in sql and params == ("linkedin.com/in/nobody",)
 
 
 def test_messages_for_uses_participant_index_expression():
