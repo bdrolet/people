@@ -76,10 +76,13 @@ services/
   google_contacts_sync.py   ensure_contact (link/create), run_sync (nightly), sync_one (PATCH refresh)
   hubspot_mirror.py         ensure_contact, log_email, reconcile (adopt/heal/enforce/fill)
   person_edit.py            PATCH: write Google first, then refresh DB
+  person_create.py          POST /people: validate → refuse duplicates → create in
+                             Google → apply_person creates the row (spec §5)
   identity.py               classify(ident) → email | phone | id (spec §5.1) — pure, no I/O
   contact_fields.py         pure: WRITABLE_FIELDS allowlist + shape validation, email
-                             add-only rule, derive() of phone_numbers/company/job_title/
-                             google_fields from a Google person payload
+                             add-only rule, identifiers() for duplicate checking,
+                             derive() of phone_numbers/company/job_title/google_fields
+                             from a Google person payload
   sync_auth.py              bearer check for POST /sync
   linkedin_export.py        parse a LinkedIn data export (dir/zip) → snapshot; match_people
   imessage_export.py        pure chat.db logic: timestamps, attributedBody decode, handle
@@ -92,9 +95,9 @@ api/
   main.py                   FastAPI app, /health, OTel request-metrics middleware
   caller.py                 logs the IAM-authenticated caller (email claim) per request; no-op off Cloud Run
   routers/
-    people.py                GET /people?recent=, GET/PATCH/POST-sync /people/{ident}
-                              ({ident}: email, E.164 phone, or numeric id — services/identity.py;
-                              ambiguous phone → 409 with candidate ids)
+    people.py                GET /people?recent=, POST /people (create), GET/PATCH/POST-sync
+                              /people/{ident} ({ident}: email, E.164 phone, or numeric id —
+                              services/identity.py; ambiguous phone → 409 with candidate ids)
     search.py                 POST /search
     linkedin.py              GET /linkedin/connections[/{slug}], GET /linkedin/imports/latest
     imessage.py              GET /imessage/handles[/{handle}], GET /imessage/imports/latest
@@ -115,8 +118,8 @@ tests/                      one test module per unit
 .claude/skills/             people-architecture, deploy-people, fetch-people-logs, querying-people-db,
                              adding-people-secret, adding-observability, querying-grafana-metrics,
                              testing-people-handlers, verifying-pr-locally, importing-contacts,
-                             searching-people, fetching-person, editing-person, importing-linkedin,
-                             importing-imessage
+                             searching-people, fetching-person, editing-person, creating-person,
+                             importing-linkedin, importing-imessage
 ```
 
 ## Event schema
@@ -151,7 +154,8 @@ exactly as tasks and schedule do.
 | counters (`message_count`, `my_response_count`), timestamps, `eligible`, `automated` | DB | Written only by the event handlers and `scripts/import_contacts.py`. |
 | `google_deleted_at` | Google | Set by `people-sync` when a linked `resourceName` comes back deleted. Never recreated. |
 | `hubspot_contact_id` | DB (people manages) | Set on create/adopt, cleared on evict/heal. |
-| An adopted row's identity | Phone number / `id`, not email | Nightly-sync adoption (§Identity below) sets `email = NULL` via `create_from_google`. It stays `NULL` even after `PATCH /people/{ident}` adds an email to the underlying Google contact, because the already-linked refresh path (`update_from_google`) only writes `phone_numbers`/`company`/`job_title`/`google_fields` — never `email`; only creation or an initial Google link do that. The row keeps being addressed by phone or `id`. `querying-people-db`'s duplicate-detection query is how a resulting two-rows-one-person case becomes visible; nothing merges it automatically. |
+| An adopted row's identity | Phone number / `id`, not email — until promoted | Nightly-sync adoption (§Identity below) sets `email = NULL` via `create_from_google`. It stays `NULL` through ordinary refreshes — the already-linked path (`update_from_google`) only writes `phone_numbers`/`company`/`job_title`/`google_fields` on its own — until `apply_person`'s promotion step (§Piece 3 below) sees the Google contact has gained an address and that address isn't already held by a different `people` row, at which point `update_from_google`'s optional `email` argument writes it onto this row. If the address *is* already claimed, promotion is skipped rather than writing it (it would violate `people_email_key` and abort the whole nightly sync) and the row keeps being addressed by phone or `id`; `querying-people-db`'s duplicate-detection query is how that two-rows-one-person case becomes visible — nothing merges it automatically. |
+| A hand-created row's identity | Google, same as everyone else | `POST /people` (§Piece 3 below) writes the Google Contact **first**; the `people` row is then derived from what Google returned, via the same `apply_person` path the nightly sync uses — a hand-created person is byte-identical in shape to one the sync created or adopted. If the Google write fails, nothing local is written. |
 | `linkedin_*` tables | LinkedIn data export | Export → DB on manual import (`scripts/import_linkedin.py`). Never written back anywhere; LinkedIn is not a source for any `people` field. |
 | `imessage_*` tables | `chat.db` on Ben's Mac | chat.db → DB on local import (`scripts/import_imessage.py`). Never written back anywhere; iMessage is not a source for any `people` field. |
 | `phone_numbers`, `company`, `job_title`, `google_fields` | Google Contacts | Google → DB on link, nightly sync, and after every `PATCH`. Event data never writes them; never pushed to HubSpot (contact-field-edits design §4.1). |
@@ -194,11 +198,42 @@ contacts, 553 with no email, 449 adoptable, 104 skipped (87 with neither
 identifier, 17 with an unparseable phone). Adoption only reaches contacts
 the incremental sync actually revisits, so the existing backlog needed one
 full pass: `scripts/clear_sync_token.py` clears the stored token so the
-next `run_sync` takes the full-listing path. `POST /people` (piece 3) still
-doesn't exist — adoption via the nightly sync is the only way an
-email-less person gets a row. See
+next `run_sync` takes the full-listing path. See
 `docs/superpowers/specs/2026-09-24-person-identity-design.md` and
 `docs/superpowers/specs/2026-09-28-adopt-emailless-contacts-design.md`.
+
+**Piece 3 — `POST /people` and email promotion (shipped 2026-09-28,**
+`docs/superpowers/specs/2026-09-28-post-people-design.md`**).**
+`services/person_create.py::create` adds the one way to create a person by
+hand: validate the `contact` map (`contact_fields.validate`, then at least
+one identifier — an email, or a phone that normalizes to E.164 — else
+`Invalid` → `400`) → refuse a duplicate found by email or phone on either
+the `people` side or the Google side (`Duplicate` → `409` with
+`{"error": "person exists", "candidates": [<id>, ...]}`; `candidates` is
+empty for a Google-only match, since there's no `people.id` to give) →
+`clients/google_contacts.py::create_person` → the same
+`google_contacts_sync.apply_person` the nightly sync uses to create the
+row, so a hand-created person is indistinguishable from an adopted one. If
+`notes`/`relationship_label` was given, `person_edit.update` applies it
+after. `api/routers/people.py::create_person` maps `Invalid`→`400`,
+`Duplicate`→`409`, returns `201` with the same `PersonOut` shape `GET`
+returns.
+
+This also closes the gap piece 2 left open: `apply_person`'s linked branch
+now **promotes** — writes `email` onto an adopted row, via
+`update_from_google`'s new optional `email` argument — the first time it
+sees the row's Google contact has gained an address, gated by
+`repo/people.py::email_owner` so a claimed address is never written (see
+the source-of-truth table above). A promoted row becomes eligible for the
+HubSpot mirror for the first time, since `eligible_not_in_hubspot` excludes
+rows with no email — the next `fill` phase may pick it up, subject to the
+existing cap. `run_sync`'s counts gain a `promoted` kind for this.
+
+Measured 2026-09-28: 984 people, 449 of them adopted (email-less), 34 phone
+numbers already shared across more than one row from duplicate Google
+contacts adopted separately before this endpoint existed — the rationale
+for refusing rather than creating a second row on a duplicate. See
+`.claude/skills/creating-person/SKILL.md` for the caller-facing detail.
 
 ### Editable contact fields (2026-09-24 design)
 

@@ -6,8 +6,9 @@ description: >
   birthday, address — "add a note about X", "tag alice as a colleague", "set
   the relationship label for that contact", "update alice's phone number",
   "add a work address for bob". Does not create people — a person becomes a
-  contact automatically by emailing or being emailed; use searching-people
-  to check whether someone already exists first.
+  contact automatically by emailing or being emailed, or by hand via
+  creating-person; use searching-people to check whether someone already
+  exists first.
 metadata:
   depends-on: "fetching-person, searching-people"
 ---
@@ -173,14 +174,18 @@ merged — see the duplicate-check query in **querying-people-db**.
   contact between the read and the write (stale etag) — re-fetch with
   **fetching-person** and retry.
 
-## No creation
+## No creation here
 
-There is no "add a person" endpoint. Someone becomes a person automatically
-the moment they email Ben or Ben emails them — the event pipeline handles
+This endpoint never creates a person — `resolve_person` 404s if `{ident}`
+doesn't already match a row. Someone becomes a person automatically the
+moment they email Ben or Ben emails them — the event pipeline handles
 creation, eligibility, and (once eligible) the Google Contact / HubSpot
 mirror. If **searching-people** shows nobody for an address you expected to
 find, either no qualifying email has been exchanged yet, or (spec §5) every
 message so far was automated/filed `ignore` and nobody has replied.
+
+To add someone by hand instead — met in person, given a business card, no
+email exchanged yet — use **creating-person** (`POST /people`).
 
 For adding someone to the **referral outreach** pipeline specifically (a
 different, HubSpot-only concern), see the global `adding-referral-contact`

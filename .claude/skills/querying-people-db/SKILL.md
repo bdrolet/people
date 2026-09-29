@@ -122,11 +122,15 @@ that just hasn't linked to Google yet):
 SELECT id, display_name, phone_numbers FROM people WHERE email IS NULL;
 ```
 
-**Adopted contacts** (the subset of the above the nightly sync created from
-Google directly — `google_resource_name IS NOT NULL` is what distinguishes
-an adoption from an unlinked phone-only row; this is also the **rollback
-selector** if adoption ever needs to be undone — deleting these rows
-restores the prior state, per the adopt-emailless-contacts design §6.4):
+**Adopted contacts, still phone-only** (the subset of the above the nightly
+sync created from Google directly — `google_resource_name IS NOT NULL` is
+what distinguishes an adoption from an unlinked phone-only row; this is
+also the **rollback selector** if adoption ever needs to be undone —
+deleting these rows restores the prior state, per the
+adopt-emailless-contacts design §6.4). **Only catches rows that haven't
+promoted yet** — once a row gains an email (below), it drops out of this
+`email IS NULL` filter and reads as an ordinary row; there's no flag
+recording that it was ever adopted or created without one:
 ```sql
 SELECT id, display_name, phone_numbers, first_seen
 FROM people
@@ -134,11 +138,20 @@ WHERE email IS NULL AND google_resource_name IS NOT NULL
 ORDER BY first_seen DESC;
 ```
 
-**Duplicate check after adoption** (an adopted phone-only row whose Google
-contact has since gained an email address that already belongs to a
-*different* `people` row — the design's §5.4 query verbatim; adoption
-detects this, it does not merge it, so expect **zero rows** — see
-`people-architecture`'s Adoption section):
+**Duplicate check after adoption or promotion** (a phone-only row — adopted
+by the nightly sync, or created by hand via `POST /people`
+(`creating-person`) — whose Google contact carries an email address that
+already belongs to a *different* `people` row — the piece-2 design's §5.4
+query verbatim). `apply_person`'s promotion step (piece 3) only ever
+*reads* this situation, never writes into it: it guards on
+`repo/people.py::email_owner` and leaves a claimed address unwritten rather
+than aborting the nightly sync (writing it would violate `people_email_key`),
+so the two rows stand apart — this query is what finds a promotion that was
+refused for exactly that reason. `POST /people` itself can't create a fresh
+instance of this case — its own duplicate check (`creating-person`) already
+refuses to create a second row for a claimed address — so expect **zero
+rows** in steady state; see `people-architecture`'s Adoption and "Creating a
+person by hand" sections:
 ```sql
 SELECT a.id AS adopted_id, p.id AS existing_id
 FROM people a
