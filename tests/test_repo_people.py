@@ -178,3 +178,52 @@ def test_create_from_google_accepts_no_email():
     sql, params = conn.calls[0]
     assert "INSERT INTO people" in sql
     assert params[0] is None  # email bound as NULL, never ""
+
+
+def test_email_owner_selects_on_email():
+    conn = FakeConn(results=[[{"id": 9}]])
+    assert people.email_owner(conn, " Alice@Example.com ") == 9
+    sql, params = conn.calls[0]
+    assert "WHERE email = %s" in sql and params == ("alice@example.com",)
+
+
+def test_email_owner_returns_none_when_unclaimed():
+    assert people.email_owner(FakeConn(results=[[]]), "a@example.com") is None
+
+
+def test_update_from_google_omits_email_by_default():
+    conn = FakeConn()
+    people.update_from_google(
+        conn,
+        "people/c1",
+        etag="e1",
+        display_name="Alice",
+        notes=None,
+        relationship_label=None,
+        phone_numbers=["+15550100001"],
+        company=None,
+        job_title=None,
+        google_fields={},
+    )
+    sql, _ = conn.calls[0]
+    assert "email = " not in sql  # every existing caller unaffected
+
+
+def test_update_from_google_writes_email_when_passed():
+    conn = FakeConn()
+    people.update_from_google(
+        conn,
+        "people/c1",
+        etag="e1",
+        display_name="Alice",
+        notes=None,
+        relationship_label=None,
+        phone_numbers=["+15550100001"],
+        company=None,
+        job_title=None,
+        google_fields={},
+        email="alice@example.com",
+    )
+    sql, params = conn.calls[0]
+    assert "email = %s" in sql
+    assert "alice@example.com" in params

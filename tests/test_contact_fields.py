@@ -158,3 +158,50 @@ def test_derive_keeps_only_allowlisted_keys_in_google_fields():
     assert "metadata" not in got["google_fields"]
     assert "biographies" not in got["google_fields"]  # owned by notes
     assert "memberships" not in got["google_fields"]  # owned by relationship_label
+
+
+# --- identifiers ------------------------------------------------------------
+
+
+def test_identifiers_returns_normalized_emails_and_phones():
+    emails, phones = cf.identifiers(
+        {
+            "emailAddresses": [{"value": " Alice@Example.COM "}],
+            "phoneNumbers": [{"value": "(555) 010-0001"}],
+        }
+    )
+    assert emails == ["alice@example.com"]
+    assert phones == ["+15550100001"]
+
+
+def test_identifiers_drops_unusable_phones():
+    # Review Focus 2: a short code is not an identifier.
+    _, phones = cf.identifiers({"phoneNumbers": [{"value": "262966"}, {"value": "call me"}]})
+    assert phones == []
+
+
+def test_identifiers_handles_a_contact_with_neither():
+    assert cf.identifiers({"names": [{"givenName": "Alice"}]}) == ([], [])
+
+
+def test_identifiers_ignores_blank_and_non_string_values():
+    emails, phones = cf.identifiers(
+        {
+            "emailAddresses": [{"value": ""}, {"value": None}, {}],
+            "phoneNumbers": [{"value": 12345}],
+        }
+    )
+    assert emails == [] and phones == []
+
+
+def test_identifiers_deduplicates_preserving_order():
+    emails, _ = cf.identifiers(
+        {
+            "emailAddresses": [
+                {"value": "a@example.com"},
+                {"value": "A@EXAMPLE.COM"},
+                {"value": "b@example.com"},
+            ]
+        }
+    )
+    assert emails == ["a@example.com", "b@example.com"]

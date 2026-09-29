@@ -10,7 +10,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="$HOME/.claude/skills"
 mkdir -p "$DEST"
 
-for skill in searching-people fetching-person editing-person; do
+for skill in searching-people fetching-person editing-person creating-person; do
   # ln -sfn onto a real (non-symlink) directory fails and set -e aborts the
   # loop half-linked; guard so a pre-existing real copy fails loudly instead.
   if [[ -e "$DEST/$skill" && ! -L "$DEST/$skill" ]]; then

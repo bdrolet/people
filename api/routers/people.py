@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+from googleapiclient.errors import HttpError
 from pydantic import BaseModel, field_validator
 
 from api.routers.imessage import IMessageSummary
@@ -10,7 +11,7 @@ from clients import db
 from repo import imessage as imessage_repo
 from repo import linkedin as linkedin_repo
 from repo import people
-from services import google_contacts_sync, identity, person_edit
+from services import google_contacts_sync, identity, person_create, person_edit
 
 router = APIRouter()
 
@@ -40,6 +41,12 @@ class PersonOut(BaseModel):
 
 class PersonList(BaseModel):
     results: list[PersonOut]
+
+
+class PersonCreate(BaseModel):
+    contact: dict
+    notes: str | None = None
+    relationship_label: str | None = None
 
 
 class PersonPatch(BaseModel):
@@ -94,6 +101,36 @@ def list_recent(
 ) -> PersonList:
     with db.get_conn() as conn:
         return PersonList(results=[to_out(r) for r in people.recent(conn, recent, eligible_only)])
+
+
+@router.post("/people", response_model=PersonOut, status_code=201)
+def create_person(body: PersonCreate) -> PersonOut:
+    try:
+        with db.get_conn() as conn:
+            row = person_create.create(
+                conn,
+                contact=body.contact,
+                notes=body.notes,
+                relationship_label=body.relationship_label,
+            )
+            conn.commit()
+    except person_create.Invalid as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except person_create.Duplicate as e:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "person exists", "candidates": e.candidates},
+        ) from e
+    except person_edit.Invalid as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except person_edit.Conflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except HttpError as e:
+        status = e.resp.status
+        if 400 <= status < 500:
+            raise HTTPException(status_code=400, detail=e.reason or "") from e
+        raise
+    return to_out(row, include_contact=True)
 
 
 def resolve_person(conn: Any, ident: str) -> dict:

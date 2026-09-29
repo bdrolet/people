@@ -6,8 +6,9 @@ description: >
   birthday, address — "add a note about X", "tag alice as a colleague", "set
   the relationship label for that contact", "update alice's phone number",
   "add a work address for bob". Does not create people — a person becomes a
-  contact automatically by emailing or being emailed; use searching-people
-  to check whether someone already exists first.
+  contact automatically by emailing or being emailed, or by hand via
+  creating-person; use searching-people to check whether someone already
+  exists first.
 metadata:
   depends-on: "fetching-person, searching-people"
 ---
@@ -146,16 +147,20 @@ curl -s -X PATCH "$BASE/people/%2B15550100001" \
 ```
 
 This writes the address to the Google contact under the same add-only rule
-as everyone else (above) — nothing already on the contact can be dropped.
-It does **not** change how this person is addressed going forward: the
-`people` row's `email` column stays `NULL` after this write. The refresh
-path for an already-linked contact (`services/google_contacts_sync.py`'s
-`update_from_google`) only updates `phone_numbers`/`company`/`job_title`/
-`google_fields` — it never writes `email`; only the initial creation or link
-does. So keep addressing this person by phone or id even after giving them
-an email address. If that address happens to belong to someone who already
-has a `people` row of their own, that's now findable but not automatically
-merged — see the duplicate-check query in **querying-people-db**.
+as everyone else (above), but it does **not** immediately change how this
+person is addressed — the `people` row's `email` column stays `NULL` right
+after this write; `PATCH` itself never touches it. The next nightly sync
+is what catches it up: `apply_person`'s **promotion** step
+(`services/google_contacts_sync.py`) sees the row's Google contact now has
+an address and, provided no *other* `people` row already holds it
+(`repo/people.py::email_owner` guards this — writing a claimed address
+would violate the `people_email_key` unique constraint and abort the whole
+sync), writes it onto this row via `update_from_google`'s optional `email`
+argument. So keep addressing this person by phone or id until that sync
+has run; after it, the email works too. If the address is already claimed
+by a different `people` row, promotion is skipped and nothing is written —
+that address is now findable on both rows but not automatically merged —
+see the duplicate-check query in **querying-people-db**.
 
 ## Errors
 
@@ -173,14 +178,18 @@ merged — see the duplicate-check query in **querying-people-db**.
   contact between the read and the write (stale etag) — re-fetch with
   **fetching-person** and retry.
 
-## No creation
+## No creation here
 
-There is no "add a person" endpoint. Someone becomes a person automatically
-the moment they email Ben or Ben emails them — the event pipeline handles
+This endpoint never creates a person — `resolve_person` 404s if `{ident}`
+doesn't already match a row. Someone becomes a person automatically the
+moment they email Ben or Ben emails them — the event pipeline handles
 creation, eligibility, and (once eligible) the Google Contact / HubSpot
 mirror. If **searching-people** shows nobody for an address you expected to
 find, either no qualifying email has been exchanged yet, or (spec §5) every
 message so far was automated/filed `ignore` and nobody has replied.
+
+To add someone by hand instead — met in person, given a business card, no
+email exchanged yet — use **creating-person** (`POST /people`).
 
 For adding someone to the **referral outreach** pipeline specifically (a
 different, HubSpot-only concern), see the global `adding-referral-contact`

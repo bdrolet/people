@@ -87,6 +87,18 @@ def create_contact(display_name: str | None, email: str, group_resource_name: st
     return _svc().people().createContact(body=body, personFields=PERSON_FIELDS).execute()
 
 
+def create_person(body: dict, group_resource_name: str | None) -> dict:
+    """createContact with a caller-supplied body plus group membership. The
+    eligibility path still uses create_contact (email-only body); this is for
+    POST /people, where the caller has already built the full field map."""
+    full_body: dict[str, Any] = dict(body)
+    if group_resource_name:
+        full_body["memberships"] = [
+            {"contactGroupMembership": {"contactGroupResourceName": group_resource_name}}
+        ]
+    return _svc().people().createContact(body=full_body, personFields=PERSON_FIELDS).execute()
+
+
 def get_person(resource_name: str) -> dict:
     return _svc().people().get(resourceName=resource_name, personFields=PERSON_FIELDS).execute()
 

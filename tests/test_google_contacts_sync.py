@@ -271,7 +271,14 @@ def test_run_sync_updates_links_creates_deletes(wire):
     )
     saved = wire(fg, fr)
     counts = sync.run_sync(None)
-    assert counts == {"updated": 1, "linked": 1, "created": 1, "deleted": 1, "skipped": 0}
+    assert counts == {
+        "updated": 1,
+        "linked": 1,
+        "created": 1,
+        "deleted": 1,
+        "skipped": 0,
+        "promoted": 0,
+    }
     assert fr.rows["linked@x.com"]["relationship_label"] == "family"
     assert fr.rows["hand@x.com"]["google_resource_name"] == "people/h1"
     assert fr.rows["unknown@x.com"]["eligible"] is True
@@ -474,3 +481,66 @@ def test_run_sync_counts_skipped(monkeypatch):
     counts = sync.run_sync(None)
     assert counts["skipped"] == 2
     assert counts["created"] == 0
+
+
+def linked_row(email=None, pid=7):
+    return {"id": pid, "email": email, "google_resource_name": "people/c1"}
+
+
+def test_promotes_an_unclaimed_address(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: linked_row())
+    monkeypatch.setattr(sync.people, "email_owner", lambda conn, email: None)
+    monkeypatch.setattr(
+        sync.people, "update_from_google", lambda conn, rn, **kw: captured.update(kw)
+    )
+    kind = sync.apply_person(None, person(email="alice@example.com", phones=["+15550100001"]), {})
+    assert kind == "promoted"
+    assert captured["email"] == "alice@example.com"
+
+
+def test_does_not_promote_a_claimed_address(monkeypatch):
+    # Review Focus 1: writing it would violate people_email_key and abort the run.
+    captured = {}
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: linked_row())
+    monkeypatch.setattr(sync.people, "email_owner", lambda conn, email: 99)
+    monkeypatch.setattr(
+        sync.people, "update_from_google", lambda conn, rn, **kw: captured.update(kw)
+    )
+    kind = sync.apply_person(None, person(email="taken@example.com", phones=["+15550100001"]), {})
+    assert kind == "updated"
+    assert captured["email"] is None
+
+
+def test_never_rewrites_an_existing_email(monkeypatch):
+    # Review Focus 5: Google's primary address differs from the stored one.
+    captured = {}
+    monkeypatch.setattr(
+        sync.people, "get_by_google_resource", lambda conn, rn: linked_row(email="old@example.com")
+    )
+    monkeypatch.setattr(
+        sync.people, "email_owner", lambda conn, email: pytest.fail("must not be consulted")
+    )
+    monkeypatch.setattr(
+        sync.people, "update_from_google", lambda conn, rn, **kw: captured.update(kw)
+    )
+    assert sync.apply_person(None, person(email="new@example.com", phones=[]), {}) == "updated"
+    assert captured["email"] is None
+
+
+def test_run_sync_counts_promoted(monkeypatch):
+    monkeypatch.setattr(
+        sync.gc,
+        "list_connections",
+        lambda token: (
+            [person(email="alice@example.com", phones=["+15550100001"])],
+            "tok",
+        ),
+    )
+    monkeypatch.setattr(sync.gc, "list_groups", lambda: {})
+    monkeypatch.setattr(sync.sync_state, "get_token", lambda conn: None)
+    monkeypatch.setattr(sync.sync_state, "set_token", lambda conn, t, s: None)
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: linked_row())
+    monkeypatch.setattr(sync.people, "email_owner", lambda conn, email: None)
+    monkeypatch.setattr(sync.people, "update_from_google", lambda conn, rn, **kw: None)
+    assert sync.run_sync(None)["promoted"] == 1

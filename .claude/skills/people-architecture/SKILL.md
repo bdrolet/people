@@ -48,7 +48,7 @@ scripts/import_linkedin.py (local, manual) ──LinkedIn data export──▶ l
 scripts/import_imessage.py (local, manual, needs Full Disk Access) ──chat.db──▶ imessage_* tables (incremental upsert)
 
 inbox-process, Claude Code skills ──Google ID token (Cloud Run IAM)──▶ people-api (Cloud Run)
-                                                        GET/PATCH /people/{ident}, POST /people/{ident}/sync, POST /search, GET /people,
+                                                        GET/PATCH /people/{ident}, POST /people, POST /people/{ident}/sync, POST /search, GET /people,
                                                         GET /linkedin/connections[/{slug}], GET /linkedin/imports/latest,
                                                         GET /imessage/handles[/{handle}], GET /imessage/imports/latest
 ```
@@ -156,9 +156,10 @@ why an **adopted** contact (below) can never appear in HubSpot: it exists
 
 This is piece 1 of a 3-piece design (`docs/superpowers/specs/2026-09-24-person-identity-design.md`):
 identity only, no new rows. Piece 2 (`docs/superpowers/specs/2026-09-28-adopt-emailless-contacts-design.md`,
-shipped) is **Adoption**, below. `POST /people` (piece 3) still doesn't
-exist — adoption via the nightly sync is the only way an email-less person
-gets a row.
+shipped) is **Adoption**, below. Piece 3
+(`docs/superpowers/specs/2026-09-28-post-people-design.md`, shipped) is
+**`POST /people`**, below Adoption — creating a person by hand, and the
+email-promotion gap that adoption alone left behind.
 
 ### Adoption (piece 2, shipped 2026-09-28)
 
@@ -188,16 +189,21 @@ phone that doesn't parse).
 Once adopted, a contact is found by `google_resource_name` on every later
 sync (`people.get_by_google_resource`) and refreshes exactly like any other
 linked contact — the "linked" `apply_person` branch calls
-`people.update_from_google`, which updates `phone_numbers`/`company`/
-`job_title`/`google_fields` but **never writes `email`**. So even if the
-Google contact later gains an email address (e.g. via `PATCH
-/people/{ident}`'s `contact.emailAddresses`, see `editing-person`), the row
-stays `email IS NULL` and keyed by phone/id — only contact *creation* or an
-existing row's initial Google *link* (`set_google`) ever set `email`. This
-is exactly the situation `querying-people-db`'s duplicate-detection query
-watches for (design §5.4): it finds an adopted row whose Google contact now
-carries an email that already belongs to a different `people` row. Nothing
-merges them automatically.
+`people.update_from_google`, which always updates `phone_numbers`/
+`company`/`job_title`/`google_fields`. **As of piece 3 below, it also
+promotes `email`:** if the Google contact has since gained an address (e.g.
+via `PATCH /people/{ident}`'s `contact.emailAddresses`, see
+`editing-person`) and no *other* `people` row already holds it
+(`repo/people.py::email_owner` guards this), that address is written onto
+this row, moving it off `email IS NULL` for good. If the address *is*
+already claimed by a different row, promotion is skipped — writing it would
+violate the `people_email_key` unique constraint and abort the whole
+sync — and the row stays `email IS NULL`, keyed by phone/id. That claimed
+case is exactly what `querying-people-db`'s duplicate-detection query
+watches for (piece-2 design §5.4): it finds an adopted row whose Google
+contact carries an email that already belongs to a different `people` row.
+Nothing merges them automatically — see "Creating a person by hand" below
+for the mechanism (`apply_person`'s promotion step) in full.
 
 Adoption is otherwise automatic and incremental — a contact added by phone
 tomorrow adopts on the next nightly `people-sync` — but the incremental
@@ -207,6 +213,45 @@ one full pass after this shipped: `scripts/clear_sync_token.py` (local
 only) clears the stored token in `sync_state` and prints what it cleared,
 so the next `run_sync` takes the full-listing path instead of an
 incremental one.
+
+### Creating a person by hand (piece 3, shipped 2026-09-28)
+
+`POST /people` (`services/person_create.py`) creates a Google Contact and
+its `people` row together, from a `contact` map of Google People API field
+names plus the same top-level `notes`/`relationship_label` fields `PATCH`
+uses. It reuses the sync's own row-creation path (`apply_person`), so a
+hand-created person is indistinguishable from one the sync adopted —
+including derived `phone_numbers`/`company`/`job_title`/`google_fields`.
+Validation runs before any write: the `contact_fields` allowlist, then at
+least one identifier (an email, or a phone that normalizes to E.164 — a
+short code doesn't count), else `400`. A duplicate — matched by email or
+phone on either the `people` side or the Google side — is refused with
+`409 {"error": "person exists", "candidates": [<id>, ...]}` rather than
+creating a second row; `candidates` is empty when the only match is a
+Google contact the sync hasn't adopted yet, since there's no `people.id` to
+give — run a sync, then `PATCH`. See **creating-person** for the
+caller-facing detail.
+
+This piece also closes the email-promotion gap Adoption left open: an
+adopted (email-less) row's `email` column was write-once (creation/link
+only) even after its Google contact gained an address. `apply_person`'s
+linked branch now promotes — writes that address onto the row — the first
+time it sees one, but only when the address isn't already held by a
+*different* `people` row (`repo/people.py::email_owner` guards this;
+writing a claimed address would violate `people_email_key` and abort the
+entire nightly sync, so the claimed case is left alone and both rows
+stand — `querying-people-db`'s duplicate-detection query is what finds
+them). `run_sync`'s counts gain a `promoted` kind for this.
+
+**Promotion makes a person mirrorable to HubSpot for the first time.**
+`eligible_not_in_hubspot` excludes rows with no email (see "Identity"
+above), so a newly-promoted row becomes a candidate for the next
+`fill` phase, subject to the existing cap and eviction rules — a new,
+if currently rare, way for the mirror's population to grow.
+
+Measured 2026-09-28: 984 people, 449 of them adopted (email-less), 34 phone
+numbers already shared across more than one row from duplicate Google
+contacts adopted separately before this endpoint existed.
 
 ## Source of truth (spec §4.3)
 
@@ -268,7 +313,9 @@ mail are counted; Bcc is excluded (`services/ingest.py::record_outbound`).
 - Only eligible people are mirrored; losing eligibility never happens, so a
   contact leaves HubSpot only by eviction.
 - A phone-only person (no email) is never mirrored — HubSpot is keyed on
-  email; see "Identity" above.
+  email; see "Identity" above. Unless and until one gains an address via
+  promotion (see "Creating a person by hand" above), at which point it
+  becomes a `fill` candidate like any other eligible row.
 - Engagements (`log_email`) are only created for contacts currently in
   HubSpot; an evicted contact's history restarts if it comes back.
 - All writes gated by `HUBSPOT_WRITES_ENABLED` (default `false` — see
@@ -284,10 +331,12 @@ mail are counted; Bcc is excluded (`services/ingest.py::record_outbound`).
 `clients/` I/O only (Google Contacts, HubSpot, Cloud SQL, OTel, local Graph
 import) · `repo/` DB read/write on an open connection, never opens its own ·
 `services/` one concern per file (`eligibility`, `ingest`,
-`google_contacts_sync`, `hubspot_mirror`, `person_edit`, `contact_fields`
-(pure — allowlist validation, email add-only rule, Google-payload
-derivation), `identity` (pure — classify `{ident}` as email/phone/id,
-spec §5.1), `sync_auth`) ·
+`google_contacts_sync`, `hubspot_mirror`, `person_edit`, `person_create`
+(`POST /people`: validate, refuse duplicates, create in Google, let
+`google_contacts_sync.apply_person` create the row), `contact_fields`
+(pure — allowlist validation, email add-only rule, `identifiers()` for
+duplicate checking, Google-payload derivation), `identity` (pure — classify
+`{ident}` as email/phone/id, spec §5.1), `sync_auth`) ·
 `handlers/` orchestrate clients + repo + services, called only from
 `main.py` (`api/routers/` play the same role for `people-api`, called only
 from `api/main.py`) · `models/` pure types, no imports from other layers ·
