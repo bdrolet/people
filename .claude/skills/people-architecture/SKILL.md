@@ -189,16 +189,21 @@ phone that doesn't parse).
 Once adopted, a contact is found by `google_resource_name` on every later
 sync (`people.get_by_google_resource`) and refreshes exactly like any other
 linked contact — the "linked" `apply_person` branch calls
-`people.update_from_google`, which updates `phone_numbers`/`company`/
-`job_title`/`google_fields` but **never writes `email`**. So even if the
-Google contact later gains an email address (e.g. via `PATCH
-/people/{ident}`'s `contact.emailAddresses`, see `editing-person`), the row
-stays `email IS NULL` and keyed by phone/id — only contact *creation* or an
-existing row's initial Google *link* (`set_google`) ever set `email`. This
-is exactly the situation `querying-people-db`'s duplicate-detection query
-watches for (design §5.4): it finds an adopted row whose Google contact now
-carries an email that already belongs to a different `people` row. Nothing
-merges them automatically.
+`people.update_from_google`, which always updates `phone_numbers`/
+`company`/`job_title`/`google_fields`. **As of piece 3 below, it also
+promotes `email`:** if the Google contact has since gained an address (e.g.
+via `PATCH /people/{ident}`'s `contact.emailAddresses`, see
+`editing-person`) and no *other* `people` row already holds it
+(`repo/people.py::email_owner` guards this), that address is written onto
+this row, moving it off `email IS NULL` for good. If the address *is*
+already claimed by a different row, promotion is skipped — writing it would
+violate the `people_email_key` unique constraint and abort the whole
+sync — and the row stays `email IS NULL`, keyed by phone/id. That claimed
+case is exactly what `querying-people-db`'s duplicate-detection query
+watches for (piece-2 design §5.4): it finds an adopted row whose Google
+contact carries an email that already belongs to a different `people` row.
+Nothing merges them automatically — see "Creating a person by hand" below
+for the mechanism (`apply_person`'s promotion step) in full.
 
 Adoption is otherwise automatic and incremental — a contact added by phone
 tomorrow adopts on the next nightly `people-sync` — but the incremental

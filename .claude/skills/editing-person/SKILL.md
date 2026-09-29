@@ -147,16 +147,20 @@ curl -s -X PATCH "$BASE/people/%2B15550100001" \
 ```
 
 This writes the address to the Google contact under the same add-only rule
-as everyone else (above) — nothing already on the contact can be dropped.
-It does **not** change how this person is addressed going forward: the
-`people` row's `email` column stays `NULL` after this write. The refresh
-path for an already-linked contact (`services/google_contacts_sync.py`'s
-`update_from_google`) only updates `phone_numbers`/`company`/`job_title`/
-`google_fields` — it never writes `email`; only the initial creation or link
-does. So keep addressing this person by phone or id even after giving them
-an email address. If that address happens to belong to someone who already
-has a `people` row of their own, that's now findable but not automatically
-merged — see the duplicate-check query in **querying-people-db**.
+as everyone else (above), but it does **not** immediately change how this
+person is addressed — the `people` row's `email` column stays `NULL` right
+after this write; `PATCH` itself never touches it. The next nightly sync
+is what catches it up: `apply_person`'s **promotion** step
+(`services/google_contacts_sync.py`) sees the row's Google contact now has
+an address and, provided no *other* `people` row already holds it
+(`repo/people.py::email_owner` guards this — writing a claimed address
+would violate the `people_email_key` unique constraint and abort the whole
+sync), writes it onto this row via `update_from_google`'s optional `email`
+argument. So keep addressing this person by phone or id until that sync
+has run; after it, the email works too. If the address is already claimed
+by a different `people` row, promotion is skipped and nothing is written —
+that address is now findable on both rows but not automatically merged —
+see the duplicate-check query in **querying-people-db**.
 
 ## Errors
 
