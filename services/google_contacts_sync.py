@@ -105,6 +105,17 @@ def apply_person(conn: Any, person: dict, groups: dict[str, dict]) -> str | None
             # An adopted (email-less) row's phone_numbers are its only
             # identifier — never overwrite them with {} (people_has_an_identifier).
             return "skipped"
+        promote = None
+        if linked.get("email") is None:
+            # A row that already has an email is never touched here — Google
+            # is the truth for most fields, but silently changing a person's
+            # identity key on a nightly path is not something to do by
+            # accident (spec §6.2).
+            candidate = primary_email(person)
+            if candidate and people.email_owner(conn, candidate) is None:
+                # Only promote an unclaimed address: writing a claimed one
+                # violates people_email_key and aborts the entire sync.
+                promote = candidate
         people.update_from_google(
             conn,
             rn,
@@ -112,9 +123,10 @@ def apply_person(conn: Any, person: dict, groups: dict[str, dict]) -> str | None
             display_name=display_name(person),
             notes=notes(person),
             relationship_label=label,
+            email=promote,
             **derived,
         )
-        return "updated"
+        return "promoted" if promote else "updated"
     email = primary_email(person)
     if not email:
         # Adopt a contact that has no email address, provided it has a phone we
@@ -153,7 +165,7 @@ def apply_person(conn: Any, person: dict, groups: dict[str, dict]) -> str | None
 
 
 def run_sync(conn: Any) -> dict[str, int]:
-    counts = {"updated": 0, "linked": 0, "created": 0, "deleted": 0, "skipped": 0}
+    counts = {"updated": 0, "linked": 0, "created": 0, "deleted": 0, "skipped": 0, "promoted": 0}
     token = sync_state.get_token(conn)
     try:
         try:

@@ -230,3 +230,17 @@ def test_migration_resumes_after_a_partial_apply(conn):
         " where i.indrelid = 'people'::regclass and i.indisprimary"
     ).fetchall()
     assert [r[0] for r in pk] == ["id"]
+
+
+def test_promoting_to_a_claimed_address_violates_the_unique_index(conn):
+    """Review Focus 1: this is what the email_owner guard prevents."""
+    conn.execute("INSERT INTO people (email, first_seen) VALUES ('taken@example.com', now())")
+    conn.execute(
+        "INSERT INTO people (email, first_seen, google_resource_name, phone_numbers)"
+        " VALUES (NULL, now(), 'people/c1', %s)",
+        (["+15550100001"],),
+    )
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        conn.execute(
+            "UPDATE people SET email = 'taken@example.com' WHERE google_resource_name = 'people/c1'"
+        )

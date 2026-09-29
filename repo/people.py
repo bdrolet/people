@@ -174,28 +174,50 @@ def update_from_google(
     company: str | None,
     job_title: str | None,
     google_fields: dict,
+    email: str | None = None,
 ) -> None:
-    """Google is the truth for these fields: overwrite, including with NULL."""
+    """Google is the truth for these fields: overwrite, including with NULL.
+
+    `email` is the one exception: it is written only when explicitly passed
+    (email promotion, see services/google_contacts_sync.py::apply_person).
+    This runs for every linked contact on every sync, so every other caller
+    must keep getting exactly the SQL it got before this parameter existed."""
+    set_clauses = [
+        "google_etag = %s",
+        "display_name = COALESCE(%s, display_name)",
+        "notes = %s",
+        "relationship_label = %s",
+        "phone_numbers = %s::text[]",
+        "company = %s",
+        "job_title = %s",
+        "google_fields = %s::jsonb",
+        "updated_at = now()",
+    ]
+    params: list[Any] = [
+        etag,
+        display_name,
+        notes,
+        relationship_label,
+        phone_numbers,
+        company,
+        job_title,
+        google_fields,
+    ]
+    if email is not None:
+        set_clauses.append("email = %s")
+        params.append(_norm(email))
+    params.append(resource_name)
     conn.execute(
-        """
-        UPDATE people SET google_etag = %s, display_name = COALESCE(%s, display_name),
-            notes = %s, relationship_label = %s,
-            phone_numbers = %s::text[], company = %s, job_title = %s,
-            google_fields = %s::jsonb, updated_at = now()
-        WHERE google_resource_name = %s
-        """,
-        (
-            etag,
-            display_name,
-            notes,
-            relationship_label,
-            phone_numbers,
-            company,
-            job_title,
-            google_fields,
-            resource_name,
-        ),
+        f"UPDATE people SET {', '.join(set_clauses)} WHERE google_resource_name = %s",
+        tuple(params),
     )
+
+
+def email_owner(conn: Any, email: str) -> int | None:
+    """The id of the person holding this address, or None. Guards promotion:
+    writing a claimed address violates people_email_key and aborts the sync."""
+    row = conn.execute("SELECT id FROM people WHERE email = %s", (_norm(email),)).fetchone()
+    return row["id"] if row else None
 
 
 def mark_google_deleted(conn: Any, resource_name: str) -> None:
