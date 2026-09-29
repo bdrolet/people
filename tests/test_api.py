@@ -1,13 +1,16 @@
+import json
 from datetime import UTC, date, datetime
 
 import pytest
 from fastapi.testclient import TestClient
+from googleapiclient.errors import HttpError
 
 import clients.db as db
 import repo.imessage as imessage_repo
 import repo.linkedin as linkedin_repo
 import repo.people as people_repo
 import services.google_contacts_sync as gsync
+import services.person_create as person_create
 import services.person_edit as person_edit
 from api.main import app
 
@@ -653,3 +656,87 @@ def test_no_imessage_response_model_exposes_message_text():
         obj = getattr(mod, name)
         if isinstance(obj, type) and issubclass(obj, BaseModel):
             assert not (set(obj.model_fields) & banned), f"{name} exposes message content"
+
+
+# --- Task 4: POST /people --------------------------------------------------
+
+
+class FakeResp:
+    def __init__(self, status):
+        self.status = status
+        self.reason = "error"
+
+
+def http_error(status, message):
+    return HttpError(FakeResp(status), json.dumps({"error": {"message": message}}).encode())
+
+
+def test_post_creates_a_person(monkeypatch):
+    monkeypatch.setattr(
+        "api.routers.people.person_create.create", lambda conn, **kw: row(id=7, email=None)
+    )
+    r = client.post("/people", json={"contact": {"phoneNumbers": [{"value": "+15550100001"}]}})
+    assert r.status_code == 201
+    assert r.json()["id"] == 7
+
+
+def test_post_passes_notes_and_label_through(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        "api.routers.people.person_create.create",
+        lambda conn, **kw: seen.update(kw) or row(id=7),
+    )
+    client.post(
+        "/people",
+        json={
+            "contact": {"emailAddresses": [{"value": "a@example.com"}]},
+            "notes": "hi",
+            "relationship_label": "colleague",
+        },
+    )
+    assert seen["notes"] == "hi" and seen["relationship_label"] == "colleague"
+
+
+def test_post_invalid_is_400_with_the_message(monkeypatch):
+    # Review Focus 2 at the transport layer.
+    def boom(conn, **kw):
+        raise person_create.Invalid("a contact needs an email address or a phone number")
+
+    monkeypatch.setattr("api.routers.people.person_create.create", boom)
+    r = client.post("/people", json={"contact": {"phoneNumbers": [{"value": "262966"}]}})
+    assert r.status_code == 400
+    assert "phone number" in r.text
+
+
+def test_post_duplicate_is_409_with_candidates(monkeypatch):
+    def boom(conn, **kw):
+        raise person_create.Duplicate("person exists", candidates=[11, 12])
+
+    monkeypatch.setattr("api.routers.people.person_create.create", boom)
+    r = client.post("/people", json={"contact": {"emailAddresses": [{"value": "a@example.com"}]}})
+    assert r.status_code == 409
+    assert r.json()["detail"]["candidates"] == [11, 12]
+    assert r.json()["detail"]["error"] == "person exists"
+
+
+def test_post_requires_a_contact_map():
+    assert client.post("/people", json={"notes": "hi"}).status_code == 422
+
+
+def test_post_google_4xx_is_400_with_googles_message(monkeypatch):
+    def boom(conn, **kw):
+        raise http_error(400, "Invalid birthday")
+
+    monkeypatch.setattr("api.routers.people.person_create.create", boom)
+    r = client.post("/people", json={"contact": {"emailAddresses": [{"value": "a@example.com"}]}})
+    assert r.status_code == 400
+    assert "Invalid birthday" in r.text
+
+
+def test_post_google_5xx_propagates(monkeypatch):
+    def boom(conn, **kw):
+        raise http_error(500, "Internal error")
+
+    monkeypatch.setattr("api.routers.people.person_create.create", boom)
+    with pytest.raises(HttpError):
+        client.post("/people", json={"contact": {"emailAddresses": [{"value": "a@example.com"}]}})
