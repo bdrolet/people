@@ -156,7 +156,7 @@ def wired(monkeypatch, tmp_path):
     b = contact("people/b", phones=["+15550100001"], emails=["b@example.com"])
     google = FakeGoogle([a, b])
     conn = FakeConn()
-    state = {"repointed": [], "deleted_rows": [], "order": []}
+    state = {"repointed": [], "deleted_rows": [], "order": [], "handles": []}
 
     monkeypatch.setattr(mdc.gc, "list_connections", google.list_connections)
     monkeypatch.setattr(mdc.gc, "get_person", google.get_person)
@@ -190,6 +190,11 @@ def wired(monkeypatch, tmp_path):
         mdc.imessage_repo, "summary_for_person", lambda c, pid: {"handles": ["+15550100001"]}
     )
     monkeypatch.setattr(mdc.linkedin_repo, "connection_for_person", lambda c, pid: None)
+    monkeypatch.setattr(
+        mdc.imessage_repo,
+        "repoint_google_resource",
+        lambda c, frm, to: state["handles"].append((frm, to)) or 1,
+    )
     monkeypatch.setattr(mdc.imessage_repo, "repoint_person", repoint_im)
     monkeypatch.setattr(mdc.linkedin_repo, "repoint_person", lambda c, frm, to: 0)
     monkeypatch.setattr(mdc.people_repo, "delete", delete_row)
@@ -237,6 +242,7 @@ def test_a_birthday_clash_is_skipped_with_no_writes(monkeypatch, tmp_path):
     a = contact("people/a", phones=["+15550100001"], birthday={"month": 4, "day": 2})
     b = contact("people/b", phones=["+15550100001"], birthday={"month": 7, "day": 9})
     google = FakeGoogle([a, b])
+    monkeypatch.setattr(mdc.imessage_repo, "repoint_google_resource", lambda c, frm, to: 0)
     monkeypatch.setattr(mdc.gc, "list_connections", google.list_connections)
     monkeypatch.setattr(mdc.gc, "update_fields", google.update_fields)
     monkeypatch.setattr(mdc.gc, "delete_person", google.delete_person)
@@ -250,6 +256,7 @@ def test_two_rows_with_distinct_emails_are_skipped(monkeypatch, tmp_path):
     a = contact("people/a", phones=["+15550100001"])
     b = contact("people/b", phones=["+15550100001"])
     google = FakeGoogle([a, b])
+    monkeypatch.setattr(mdc.imessage_repo, "repoint_google_resource", lambda c, frm, to: 0)
     monkeypatch.setattr(mdc.gc, "list_connections", google.list_connections)
     monkeypatch.setattr(mdc.gc, "update_fields", google.update_fields)
     monkeypatch.setattr(mdc.gc, "delete_person", google.delete_person)
@@ -287,6 +294,7 @@ def test_output_carries_no_personal_data(wired, capsys):
 
 
 def _wire_google(monkeypatch, google):
+    monkeypatch.setattr(mdc.imessage_repo, "repoint_google_resource", lambda c, frm, to: 0)
     monkeypatch.setattr(mdc.gc, "list_connections", google.list_connections)
     monkeypatch.setattr(mdc.gc, "update_fields", google.update_fields)
     monkeypatch.setattr(mdc.gc, "delete_person", google.delete_person)

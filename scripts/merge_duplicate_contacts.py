@@ -23,7 +23,9 @@ What a merge does, per set:
   4. Re-point `imessage_handles` and `linkedin_connections` at the survivor's
      `people` row, **then** delete the loser rows. Those FKs are ON DELETE SET
      NULL, so deleting first would silently drop the links instead of moving
-     them.
+     them. An iMessage handle's own `google_resource_name` match is re-pointed
+     too — it is independent of `person_id`, so it would otherwise be left
+     naming a contact that no longer exists.
 
 It skips and reports rather than guessing: a set whose copies carry different
 birthdays or different notes, and a set whose `people` rows carry more than one distinct email
@@ -311,6 +313,7 @@ def run(get_conn: Callable, *, apply: bool, backup_path: Path) -> dict:
         "links_repointed": 0,
         "rows_relinked": 0,
         "groups_moved": 0,
+        "handles_relinked": 0,
     }
     plan: list[tuple[dict, list[dict], list[str]]] = []
     group_types: dict[str, str] | None = None
@@ -385,6 +388,9 @@ def run(get_conn: Callable, *, apply: bool, backup_path: Path) -> dict:
                 gc.modify_group_members(group, [rn], [])
             for loser in losers:
                 gc.delete_person(loser["resourceName"])
+                result["handles_relinked"] += imessage_repo.repoint_google_resource(
+                    conn, loser["resourceName"], rn
+                )
             counts = _collapse_rows(conn, survivor, [c["resourceName"] for c in losers])
             for k in ("rows_deleted", "links_repointed", "rows_relinked"):
                 result[k] += counts[k]
@@ -396,7 +402,9 @@ def run(get_conn: Callable, *, apply: bool, backup_path: Path) -> dict:
         f"{result['rows_deleted']} people rows deleted, "
         f"{result['links_repointed']} links re-pointed, "
         f"{result['rows_relinked']} rows re-linked, "
-        f"{result['groups_moved']} group memberships moved, {result['skipped']} sets skipped."
+        f"{result['groups_moved']} group memberships moved, "
+        f"{result['handles_relinked']} iMessage handle matches re-pointed, "
+        f"{result['skipped']} sets skipped."
     )
     return result
 
