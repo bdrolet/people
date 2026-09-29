@@ -879,7 +879,8 @@ def test_person_whatsapp_is_null_when_there_is_nothing():
 
 
 def test_person_whatsapp_survives_membership_with_no_handle(monkeypatch):
-    """§8.1: for one of the 375 group-only people the counters are all zero and
+    """§8.1: for the group-only person (measured 2026-09-29: 1, not the 375 an
+    earlier probe recorded — §4.3, §12) the counters are all zero and
     match_method is null, which is accurate — nothing has been exchanged."""
     monkeypatch.setattr(
         whatsapp_repo,

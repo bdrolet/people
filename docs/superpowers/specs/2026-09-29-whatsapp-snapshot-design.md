@@ -448,8 +448,9 @@ Three design consequences, all of them load-bearing:
 2. `whatsapp_chats.member_count` is stored, so a consumer can distinguish the
    two regimes instead of treating `group_count` as a closeness signal.
 3. `whatsapp_chat_members` still stores all 10,090 rows with a resolved
-   `person_id`, because 375 of them *are* people already in `people` (§4.3) —
-   the roster is worth keeping, it just is not a handle list.
+   `person_id`, because 1 of them *is* a person already in `people` (measured
+   2026-09-29; an earlier probe recorded 375 here — §4.3, §12) — the roster is
+   worth keeping, it just is not a handle list.
 
 ## 6. Import (`scripts/import_whatsapp.py`)
 
@@ -679,8 +680,9 @@ Aggregated across every handle linked to that person, the way
 
 `shared_groups` comes from `whatsapp_chat_members.person_id`, not from
 `whatsapp_handles`, and it is the reason the object must be returned as
-**non-null when the person has group membership but no handle row** — the 375
-people in §4.3. For one of those the interaction counters are all zero and
+**non-null when the person has group membership but no handle row** — the 1
+person in §4.3 (measured 2026-09-29; an earlier probe recorded 375 — §12). For
+that person the interaction counters are all zero and
 `match_method` is `null`, which is accurate: nothing has been exchanged, they
 are simply in a group together. Count only groups where the member row is
 `is_active`.
@@ -869,7 +871,7 @@ sits on the same trend, not a separate one.
 | Name matching for non-LID handles | Not done | A handle with a phone that does not match means "no match"; falling back to names would manufacture false links. |
 | Group membership | Its own table, full roster | The one signal WhatsApp has and iMessage does not; a silent member leaves no messages to infer from. |
 | `whatsapp_handles` scope | Interaction only — 621 rows, not 6,767 | 6,193 of those identities are strangers in two 1,200-member community groups; they would drown the real contacts (§5.7). |
-| `person_id` on `whatsapp_chat_members` | Yes, resolved at import | 375 people already in `people` share a group with Ben and have never messaged him; without it they are invisible to the API (§4.3). |
+| `person_id` on `whatsapp_chat_members` | Yes, resolved at import | 1 person already in `people` shares a group with Ben and has never messaged him (measured 2026-09-29; an earlier probe recorded 375 — §4.3, §12); without it they are invisible to the API (§4.3). |
 | `member_count` on chats | Stored | Without it, `group_count` reads as a closeness signal when it is mostly community-group noise (§5.7). |
 | Duplicate session JID | Collapse on `chat_jid` | 208 sessions, 207 JIDs; the extra row holds no messages. |
 | `group_message_count` semantics | Messages the handle *sent* | WhatsApp can attribute group senders; iMessage could not. Divergence documented. |

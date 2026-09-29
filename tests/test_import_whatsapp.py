@@ -65,7 +65,9 @@ def test_dry_run_still_matches_for_real(tmp_path):
 
 def test_a_real_run_writes_in_the_documented_order(tmp_path):
     """§6.7: chats first (messages and members reference them), then handles,
-    members, messages, the recomputes, and the audit row."""
+    the stored-handle rematch, members, messages, the full-mode delete (which
+    must run before the recomputes — deleting after would compute counters over
+    rows about to disappear), the recomputes, and the audit row."""
     conn = FakeConn()
     import_whatsapp.run(lambda: conn, build_store(tmp_path), full=True, dry_run=False)
     order = [
@@ -73,10 +75,12 @@ def test_a_real_run_writes_in_the_documented_order(tmp_path):
         for marker in (
             "INSERT INTO whatsapp_chats",
             "INSERT INTO whatsapp_handles",
+            "FROM whatsapp_handles WHERE handle NOT LIKE",  # rematch_stored_handles
             "INSERT INTO whatsapp_chat_members",
             "INSERT INTO whatsapp_messages",
+            "DELETE FROM whatsapp_messages",  # delete_missing, must precede the recomputes
             "UPDATE whatsapp_chats",
-            "UPDATE whatsapp_handles",
+            "group_message_count",  # recompute_handle_stats's UPDATE whatsapp_handles
             "INSERT INTO whatsapp_imports",
         )
     ]

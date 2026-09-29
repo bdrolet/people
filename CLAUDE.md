@@ -175,6 +175,12 @@ The LinkedIn snapshot rebuilds by re-running `scripts/import_linkedin.py` on the
 The iMessage snapshot rebuilds by re-running `scripts/import_imessage.py --full` against `chat.db`.
 The WhatsApp snapshot rebuilds by re-running `scripts/import_whatsapp.py --full` against the local store.
 
+`scripts/merge_duplicate_contacts.py` (not yet on this branch — PR #18) must call
+`repo/whatsapp.py::repoint_person` from its `_collapse_rows`, beside its iMessage and
+LinkedIn re-points, before deleting the loser `people` row: both `whatsapp_handles.person_id`
+and `whatsapp_chat_members.person_id` are `ON DELETE SET NULL`, so a merge that deletes
+first silently unlinks WhatsApp handles and memberships rather than moving them.
+
 ### Identity: id, email, phone (2026-09-24 design; adoption 2026-09-28)
 
 `people.id` (`BIGSERIAL`) is the primary key; `email` is nullable and

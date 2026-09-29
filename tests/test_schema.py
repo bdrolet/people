@@ -412,3 +412,62 @@ def test_handle_stats_recompute_over_real_rows(conn):
         (handle,),
     ).fetchone()
     assert row == (2, 1, 1, 1)  # both sides of the 1:1; only what they sent in the group
+
+
+def test_rematch_stored_handles_relinks_nulls_ambiguity_and_spares_lid(conn):
+    """Final-review Finding A, end to end against real Postgres: a group-only
+    sender's handle whose stored link went stale gets picked up on the next
+    run's rematch, an ambiguous phone links to nothing, and a `lid:` handle's
+    name match survives untouched (§6.5)."""
+    from repo import whatsapp as wa_repo
+
+    stale, ambiguous, lid = "+15550100010", "+15550100020", "lid:99900000000123"
+
+    # A person the stale handle used to be (wrongly) linked to, with no phone
+    # number of its own, and the person whose phone number it actually
+    # matches now.
+    conn.execute(
+        "INSERT INTO people (email, phone_numbers, first_seen) VALUES"
+        " ('wrong@example.com', %s, now()),"
+        " (NULL, %s, now())",
+        ([], [stale]),
+    )
+    correct_id = conn.execute(
+        "SELECT id FROM people WHERE phone_numbers = %s", ([stale],)
+    ).fetchone()[0]
+    wrong_id = conn.execute("SELECT id FROM people WHERE email = 'wrong@example.com'").fetchone()[0]
+
+    # The number `ambiguous` is shared by two distinct people rows on purpose —
+    # 34 real numbers are shared this way in production (CLAUDE.md).
+    conn.execute(
+        "INSERT INTO people (email, phone_numbers, first_seen) VALUES"
+        " (NULL, %s, now()), (NULL, %s, now())",
+        ([ambiguous], [ambiguous]),
+    )
+
+    # A person the LID handle is matched to by name — this SQL must never touch it.
+    conn.execute(
+        "INSERT INTO people (email, display_name, first_seen) VALUES"
+        " ('lid-match@example.com', 'Zoe Example', now())"
+    )
+    lid_person_id = conn.execute(
+        "SELECT id FROM people WHERE email = 'lid-match@example.com'"
+    ).fetchone()[0]
+
+    conn.execute(
+        "INSERT INTO whatsapp_handles (handle, person_id, match_method) VALUES"
+        " (%s, %s, 'phone'),"  # stale: linked to the wrong person
+        " (%s, %s, 'phone'),"  # ambiguous today: was matched once, must be nulled
+        " (%s, %s, 'name')",  # lid: must survive untouched
+        (stale, wrong_id, ambiguous, wrong_id, lid, lid_person_id),
+    )
+
+    wa_repo.rematch_stored_handles(conn)
+
+    all_rows = conn.execute(
+        "SELECT handle, person_id, match_method FROM whatsapp_handles"
+    ).fetchall()
+    rows = {r[0]: (r[1], r[2]) for r in all_rows}
+    assert rows[stale] == (correct_id, "phone")
+    assert rows[ambiguous] == (None, None)
+    assert rows[lid] == (lid_person_id, "name")

@@ -1,4 +1,7 @@
+import pathlib
 from datetime import UTC, datetime
+
+import pytest
 
 from models.whatsapp import (
     WhatsAppBatch,
@@ -127,6 +130,41 @@ def test_upsert_handles_rewrites_the_link_even_to_null():
     sql, _ = conn.calls[0]
     assert "person_id = EXCLUDED.person_id" in sql
     assert "match_method = EXCLUDED.match_method" in sql
+
+
+# --- rematch_stored_handles (final-review Finding A) -------------------------
+
+
+def test_rematch_stored_handles_excludes_lid_handles_entirely():
+    """A `lid:` handle carries a name match this SQL cannot recompute; it must
+    not appear in either the candidates CTE or the update target (§6.5)."""
+    conn = FakeConn()
+    whatsapp.rematch_stored_handles(conn)
+    sql, params = conn.calls[0]
+    assert sql.count("NOT LIKE 'lid:%'") == 2
+    assert params is None
+
+
+def test_rematch_stored_handles_links_on_an_exact_unique_phone_match():
+    conn = FakeConn()
+    whatsapp.rematch_stored_handles(conn)
+    sql, _ = conn.calls[0]
+    assert "JOIN people p ON h.handle = ANY(p.phone_numbers)" in sql
+    assert "COUNT(DISTINCT person_id) AS n" in sql
+    assert "WHEN counts.n = 1 THEN counts.only_id ELSE NULL END" in sql
+    assert "match_method = CASE WHEN counts.n = 1 THEN 'phone' ELSE NULL END" in sql
+
+
+def test_rematch_stored_handles_nulls_on_zero_or_ambiguous_matches():
+    """Zero candidates (LEFT JOIN leaves counts.n NULL) and more than one
+    candidate (counts.n > 1) both take the ELSE NULL branch — ambiguity links
+    to nothing, same rule match_handles applies in Python (§6.5)."""
+    conn = FakeConn()
+    whatsapp.rematch_stored_handles(conn)
+    sql, _ = conn.calls[0]
+    assert "LEFT JOIN counts ON counts.handle = k.handle" in sql
+    assert "UPDATE whatsapp_handles h SET" in sql
+    assert "updated_at = now()" in sql
 
 
 # --- Members -----------------------------------------------------------------
@@ -266,6 +304,25 @@ def test_repoint_person_moves_handles_and_members():
     assert isinstance(moved, int)
 
 
+def test_merge_duplicate_contacts_calls_repoint_person():
+    """Final-review Finding B: `scripts/merge_duplicate_contacts.py` is not on
+    this branch yet (PR #18, unmerged) — until its `_collapse_rows` calls
+    `repoint_person`, a contact merge silently unlinks WhatsApp handles and
+    memberships via `ON DELETE SET NULL` (CLAUDE.md, §4, §11 step 5). This guard
+    costs nothing while the script is absent and fires the moment it lands
+    without the call."""
+    path = (
+        pathlib.Path(__file__).resolve().parent.parent / "scripts" / "merge_duplicate_contacts.py"
+    )
+    if not path.exists():
+        pytest.skip(
+            "scripts/merge_duplicate_contacts.py does not exist on this branch yet "
+            "(PR #18, unmerged) — once it lands, this test must assert its "
+            "_collapse_rows calls repo/whatsapp.py::repoint_person"
+        )
+    assert "repoint_person" in path.read_text()
+
+
 # --- Reads (§8.3) ------------------------------------------------------------
 
 
@@ -339,7 +396,9 @@ def test_handle_groups_returns_subjects_and_counts_not_a_roster():
     sql, params = conn.calls[0]
     assert "FROM whatsapp_chat_members mem" in sql
     assert "c.subject" in sql and "c.member_count" in sql and "c.message_count" in sql
-    assert "handle" in sql.split("SELECT")[1].split("FROM")[0] or True
+    # §7: not a roster — no other member's handle is projected, only this one's
+    # groups. Inverted from a vacuous `... or True` that could never fail.
+    assert "handle" not in sql.split("SELECT")[1].split("FROM")[0]
     assert params == ("+15550100001",)
 
 
@@ -366,8 +425,9 @@ def test_summary_for_person_aggregates_handles_and_shared_groups():
 
 
 def test_summary_for_person_survives_with_membership_and_no_handle():
-    """The 375 people who share a group with Ben and have never messaged him must
-    get a non-null object with zeroed counters (§4.3, §8.1)."""
+    """The 1 person who shares a group with Ben and has never messaged him
+    (measured 2026-09-29; an earlier probe recorded 375 — §4.3, §12) must get a
+    non-null object with zeroed counters (§4.3, §8.1)."""
     conn = FakeConn(results=[[]])
     assert whatsapp.summary_for_person(conn, 7) is None
     sql, _ = conn.calls[0]

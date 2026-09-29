@@ -311,7 +311,9 @@ def match_handles(batch: WhatsAppBatch, people_rows: list[dict[str, Any]]) -> No
     not a guess. By name: a LID handle — and only a LID handle, since a LID
     carries no phone number by construction — links to a row whose display name
     is exactly (normalized-case, trimmed) its ZPARTNERNAME, and only when that
-    name is unique on both sides.
+    name is unique on the `people` side (§6.5) — a name shared by more than one
+    `people` row links to nothing; nothing here requires the WhatsApp side's
+    name to be unique.
 
     A handle with a phone that does not match means "no match": falling back to
     the name there would manufacture false links. Mutates the batch in place, and

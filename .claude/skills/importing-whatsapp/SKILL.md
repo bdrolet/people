@@ -21,8 +21,10 @@ container is readable by the user. Do not send Ben to System Settings.
 
 The app is usually running, so the script copies the store **and its `-wal`/`-shm`
 sidecars** to a temp directory and reads the copy, then deletes it. If a run dies
-hard, check for a leftover `/tmp/whatsapp-import-*` directory — it holds the full
-plaintext history.
+hard, check for a leftover `whatsapp-import-*` directory — it holds the full
+plaintext history. `tempfile.mkdtemp` honours `TMPDIR`, which is **not** `/tmp` on
+macOS; run `python -c "import tempfile; print(tempfile.gettempdir())"` to find the
+right directory rather than assuming `/tmp`.
 
 ## First run: full, dry-run, then for real
 
@@ -41,42 +43,50 @@ Routine runs after that are incremental and take seconds:
 
 `--full` re-reads every message and reconciles deletions; the default reads from
 the `Z_PK` watermark plus a 14-day re-scan window. `--db PATH` points at a copy or
-a fixture.
+a fixture. `--full --dry-run` still skips `delete_missing` (dry-run never writes,
+and the reconciling delete is a write), so its preview always prints `0 deleted`
+— that is the dry-run guarantee working as designed, not evidence there is
+nothing to reconcile; only a real `--full` run reconciles deletions.
 
 ## Reading the output
 
 ```
-chats 201 (direct 102, group 99, skipped 7, duplicate jid 1)
-messages 10,245 upserted, 0 deleted, 83 senderless dropped, 1 duplicate id
-handles 621 (phone-matched 69, name-matched 0, unmatched 552, unnormalized 1)
-members 10,090 rows / 6,767 identities across 99 groups (matched 444)
-watermark 10329   mode full
+chats 199 (direct 100, group 99, skipped 7, duplicate jid 1)
+messages 10,225 upserted, 0 deleted, 83 senderless dropped, 1 duplicate id
+handles 623 (phone-matched 69, name-matched 2, unmatched 552, unnormalized 1)
+members 9,213 rows / 5,991 identities across 99 groups (matched 26)
+watermark 10,836   mode full
 ```
 
-(Illustrative magnitudes, from the design's measured baseline — the shape of a
-real run's output, not a live number.) The members line reports `matched`, not
-`phone-matched` — a member row carries no `match_method`, so that count folds in
-name matches too. The handles line does split `phone-matched` from
-`name-matched`, because a handle row does carry a `match_method`.
+(Measured 2026-09-29 against the real store on Ben's Mac — spec §12 holds the
+full baseline and its 2026-09-29 re-measurement.) The members line reports
+`matched`, not `phone-matched` — a member row carries no `match_method`, so that
+count folds in name matches too. The handles line does split `phone-matched`
+from `name-matched`, because a handle row does carry a `match_method`.
 
 Counts only, never names or numbers — the repo is public. The oddities are all
 expected and documented:
 
-- **`senderless dropped`** — group messages WhatsApp cannot attribute to a sender.
-  A message attributed to nobody inflates counts and cannot be ranked, so it is
-  dropped rather than stored with a null sender.
-- **`duplicate id`** — `ZSTANZAID` is not unique (one known pair in the store);
-  the pair collapses into one row and is counted so it is never a silent surprise.
-- **`unnormalized`** — a chat whose number will not parse.
+- **`senderless dropped`** — group messages WhatsApp cannot attribute to a sender
+  (83, measured). A message attributed to nobody inflates counts and cannot be
+  ranked, so it is dropped rather than stored with a null sender.
+- **`duplicate id`** — `ZSTANZAID` is not unique (one known pair in 10,332 raw
+  rows); the pair collapses into one row and is counted so it is never a silent
+  surprise.
+- **`unnormalized`** — a chat whose number will not parse (one, with a 1-digit
+  local part and no messages).
 - **`skipped`** — status/broadcast sessions, which carry no conversation.
 
 ## Three things to know before trusting the numbers
 
 1. **LID chats can never be phone-matched.** WhatsApp is migrating to Linked IDs,
-   which deliberately contain no phone number. Their handle is stored as
-   `lid:<id>` and they can only be linked by an exact, unique display-name match
-   (`match_method = 'name'`) — the one link type worth distrusting. Expect LID's
-   share of the store to grow over time.
+   which deliberately contain no phone number. Four such chats hold 1,125
+   messages — 11% of the store, including its single largest conversation.
+   Their handle is stored as `lid:<id>` and they can only be linked by an exact,
+   unique display-name match (`match_method = 'name'`) — the one link type
+   worth distrusting. Expect LID's share to keep growing: as of the 2026-09-29
+   measurement, roughly 57% of distinct group-member identities are already
+   `lid:` rather than a phone number.
 2. **`group_message_count` means something different here than in iMessage.** On
    a `whatsapp_handles` row it counts messages that handle **sent** in groups;
    `imessage_handles.group_message_count` counts *every* message in a group the
@@ -88,12 +98,13 @@ expected and documented:
 
 ## Group membership is not a contact list
 
-`whatsapp_chat_members` holds the full roster, but most member rows sit in very
-large community groups where co-membership says nothing about a relationship.
-That is why:
+`whatsapp_chat_members` holds the full roster — 9,213 rows across 99 groups,
+5,991 distinct identities (measured 2026-09-29) — but 7,416 of those rows sit in
+groups of 200 or more, where co-membership says nothing about a relationship,
+and the two largest groups hold 1,213 and 1,190 members. That is why:
 
 - `whatsapp_handles` only carries identities with real interaction (a 1:1 chat, or
-  at least one group message sent) — a small fraction of the member-row count.
+  at least one group message sent) — 623 rows, not 5,991.
 - `whatsapp_chats.member_count` is stored, so a five-person family group is
   distinguishable from a community group.
 - `group_count` on a handle is **not** a closeness signal. Check the group's

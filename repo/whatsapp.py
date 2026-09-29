@@ -113,6 +113,48 @@ def upsert_handles(conn: Any, handles: list[WhatsAppHandle], chunk: int = 500) -
     )
 
 
+def rematch_stored_handles(conn: Any) -> None:
+    """Re-derive person_id/match_method for every stored non-LID handle from the
+    current `people.phone_numbers` (§6.5 final-review Finding A).
+
+    services.whatsapp_export.match_handles only sees batch.handles, which on an
+    incremental run holds every direct-session handle (sessions are re-read in
+    full every run) plus whichever group senders happen to fall inside this
+    run's message window — not the group-only senders outside it. Without this,
+    a merge, a new contact, or a corrected phone number for one of those handles
+    is never picked up until the next `--full` run, contradicting §6.5's "every
+    run" promise. Group members are unaffected by this gap: batch.members always
+    covers the whole roster (§6.2), so match_handles already re-evaluates every
+    member's person_id from scratch on every run.
+
+    A `lid:` handle is never touched — its only possible link is the name match
+    §6.5 describes, which this SQL cannot recompute (it has no ZPARTNERNAME to
+    work from), and clobbering it would destroy the only link a LID chat can
+    ever have. An ambiguous phone (more than one `people` row) links to nothing,
+    the same rule match_handles applies in Python.
+    """
+    conn.execute(
+        """
+        WITH candidates AS (
+            SELECT h.handle, p.id AS person_id
+            FROM whatsapp_handles h
+            JOIN people p ON h.handle = ANY(p.phone_numbers)
+            WHERE h.handle NOT LIKE 'lid:%'
+        ), counts AS (
+            SELECT handle, COUNT(DISTINCT person_id) AS n, MIN(person_id) AS only_id
+            FROM candidates GROUP BY handle
+        )
+        UPDATE whatsapp_handles h SET
+            person_id = CASE WHEN counts.n = 1 THEN counts.only_id ELSE NULL END,
+            match_method = CASE WHEN counts.n = 1 THEN 'phone' ELSE NULL END,
+            updated_at = now()
+        FROM (SELECT handle FROM whatsapp_handles WHERE handle NOT LIKE 'lid:%') k
+        LEFT JOIN counts ON counts.handle = k.handle
+        WHERE h.handle = k.handle
+        """
+    )
+
+
 def replace_members(conn: Any, members: list[WhatsAppChatMember], chunk: int = 500) -> int:
     """Delete-and-replace per chat (§6.7 step 3): membership is a full snapshot with
     no per-row id, so an upsert alone would never notice a departure. Only the chats
@@ -438,7 +480,8 @@ def summary_for_person(conn: Any, person_id: int) -> dict | None:
     """Aggregated over every handle linked to this person, plus shared groups (§8.1).
 
     Returns a row when the person has either a handle or an active membership, so
-    the 375 people who share a group with Ben and have never messaged him still get
+    a person who shares a group with Ben and has never messaged him (measured
+    2026-09-29: 1, not the 375 an earlier probe recorded — §4.3, §12) still gets
     an object — with zeroed counters and a null match_method, which is accurate
     (§4.3). Returns None only when there is neither.
     """

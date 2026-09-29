@@ -489,8 +489,9 @@ def test_a_lid_handle_with_no_partner_name_links_to_nothing(tmp_path):
 
 
 def test_members_are_matched_by_the_same_function(tmp_path):
-    """375 people already in `people` share a group with Ben and have never
-    messaged him; without person_id here they are invisible to people-api (§4.3)."""
+    """1 person already in `people` (measured 2026-09-29; an earlier probe
+    recorded 375 — §4.3, §12) shares a group with Ben and has never messaged
+    him; without person_id here they are invisible to people-api (§4.3)."""
     members = {m.handle: m for m in matched(tmp_path).members}
     assert members["+15550100001"].person_id == 1
     assert members["+15550100002"].person_id == 3  # a member with no handle row
