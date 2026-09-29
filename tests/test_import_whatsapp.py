@@ -1,6 +1,8 @@
 import pytest
 
+from models.whatsapp import WhatsAppBatch, WhatsAppChatMember, WhatsAppHandle
 from scripts import import_whatsapp
+from services.whatsapp_export import match_handles
 from tests.fixtures.whatsapp import build_store
 
 
@@ -117,6 +119,29 @@ def test_the_summary_reports_the_watermark_and_the_dropped_rows(tmp_path):
     # so max_pk — and the watermark — is 14, not the plan's original 13.
     assert "watermark 14" in out
     assert "senderless" in out and "duplicate" in out
+
+
+def test_a_name_matched_member_is_not_mislabelled_phone_matched():
+    """WhatsAppChatMember carries no match_method (only WhatsAppHandle does), so a
+    member whose person_id came from a name match — the only way a LID member can
+    match at all (§6.5) — must not be reported under a "phone-matched" label. The
+    members line reports it as "matched"; the handles line above it still carries
+    the real phone/name split."""
+    batch = WhatsAppBatch(mode="full", watermark=1)
+    batch.handles = [WhatsAppHandle(handle="lid:1", display_name="Zoe Example")]
+    batch.members = [WhatsAppChatMember(chat_jid="g@g.us", handle="lid:1")]
+    batch.partner_names = {"lid:1": "Zoe Example"}
+
+    match_handles(batch, [{"id": 9, "display_name": "Zoe Example", "phone_numbers": []}])
+
+    assert batch.matched_by_name == 1
+    assert batch.matched_by_phone == 0
+    assert batch.members[0].person_id == 9
+
+    out = import_whatsapp.summary(batch, dry_run=False, deleted=0)
+    assert "phone-matched 0, name-matched 1" in out
+    assert "(matched 1)" in out
+    assert "phone-matched 1" not in out
 
 
 def test_a_missing_store_exits_2_with_the_path_hint(tmp_path, capsys):

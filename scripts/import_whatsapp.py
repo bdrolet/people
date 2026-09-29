@@ -121,7 +121,7 @@ def summary(batch: WhatsAppBatch, *, dry_run: bool, deleted: int) -> str:
         f"name-matched {batch.matched_by_name:,}, unmatched {unmatched:,}, "
         f"unnormalized {batch.handles_unnormalized:,})",
         f"members {len(batch.members):,} rows / {identities:,} identities across "
-        f"{groups:,} groups (phone-matched {members_matched:,})",
+        f"{groups:,} groups (matched {members_matched:,})",
         f"watermark {batch.watermark:,}   mode {batch.mode}",
     ]
     if batch.missing_stanza_ids:
