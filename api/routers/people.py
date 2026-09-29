@@ -7,10 +7,12 @@ from pydantic import BaseModel, field_validator
 
 from api.routers.imessage import IMessageSummary
 from api.routers.linkedin import LinkedInSummary
+from api.routers.whatsapp import WhatsAppSummary
 from clients import db
 from repo import imessage as imessage_repo
 from repo import linkedin as linkedin_repo
 from repo import people
+from repo import whatsapp as whatsapp_repo
 from services import google_contacts_sync, identity, person_create, person_edit
 
 router = APIRouter()
@@ -33,6 +35,7 @@ class PersonOut(BaseModel):
     in_hubspot: bool
     linkedin: LinkedInSummary | None = None
     imessage: IMessageSummary | None = None
+    whatsapp: WhatsAppSummary | None = None
     phone_numbers: list[str] = []
     company: str | None = None
     job_title: str | None = None
@@ -69,6 +72,7 @@ def to_out(
     row: dict,
     linkedin_row: dict | None = None,
     imessage_row: dict | None = None,
+    whatsapp_row: dict | None = None,
     include_contact: bool = False,
 ) -> PersonOut:
     return PersonOut(
@@ -88,6 +92,7 @@ def to_out(
         in_hubspot=bool(row.get("hubspot_contact_id")),
         linkedin=LinkedInSummary.model_validate(linkedin_row) if linkedin_row else None,
         imessage=IMessageSummary.model_validate(imessage_row) if imessage_row else None,
+        whatsapp=WhatsAppSummary.model_validate(whatsapp_row) if whatsapp_row else None,
         phone_numbers=row.get("phone_numbers") or [],
         company=row.get("company"),
         job_title=row.get("job_title"),
@@ -166,7 +171,8 @@ def get_person(ident: str) -> PersonOut:
         row = resolve_person(conn, ident)
         linkedin_row = linkedin_repo.connection_for_person(conn, row["id"])
         imessage_row = imessage_repo.summary_for_person(conn, row["id"])
-    return to_out(row, linkedin_row, imessage_row, include_contact=True)
+        whatsapp_row = whatsapp_repo.summary_for_person(conn, row["id"])
+    return to_out(row, linkedin_row, imessage_row, whatsapp_row, include_contact=True)
 
 
 @router.patch("/people/{ident}", response_model=PersonOut)
@@ -184,6 +190,7 @@ def patch_person(ident: str, body: PersonPatch) -> PersonOut:
             conn.commit()
             linkedin_row = linkedin_repo.connection_for_person(conn, row["id"])
             imessage_row = imessage_repo.summary_for_person(conn, row["id"])
+            whatsapp_row = whatsapp_repo.summary_for_person(conn, row["id"])
     except person_edit.NotFound:
         raise HTTPException(status_code=404)
     except person_edit.NotLinked:
@@ -192,7 +199,7 @@ def patch_person(ident: str, body: PersonPatch) -> PersonOut:
         raise HTTPException(status_code=400, detail=str(e))
     except person_edit.Conflict as e:
         raise HTTPException(status_code=409, detail=str(e))
-    return to_out(row, linkedin_row, imessage_row, include_contact=True)
+    return to_out(row, linkedin_row, imessage_row, whatsapp_row, include_contact=True)
 
 
 @router.post("/people/{ident}/sync", response_model=PersonOut)
