@@ -47,3 +47,6 @@ linkedin-export*/
 # Local Messages database copies — personal data, never committed (iMessage spec §6)
 chat.db*
 imessage-export*/
+
+# Local WhatsApp store copies — personal data, never committed (WhatsApp spec §7)
+ChatStorage.sqlite*
