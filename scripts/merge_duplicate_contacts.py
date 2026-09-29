@@ -61,8 +61,14 @@ from services.contact_fields import WRITABLE_FIELDS
 from services.imessage_export import normalize_handle
 
 # Fields where a difference between copies means "two people", not "one person
-# recorded twice" — a set with one of these is reported, never merged.
-CLASH_FIELDS = ("birthdays", "biographies")
+# recorded twice" — a set with one of these is reported, never merged. Each is
+# compared on the part a human entered: a birthday carries a `text` rendering
+# of its own date ("10/23/1989" vs "1989-10-23"), and comparing that instead of
+# the date would report a clash between two contacts that agree.
+CLASH_KEYS: dict[str, Callable[[dict], Any]] = {
+    "birthdays": lambda v: v.get("date"),
+    "biographies": lambda v: (v.get("value") or "").strip(),
+}
 
 # Single-valued in practice: the survivor's wins, and a loser's is only taken
 # when the survivor has none at all. `biographies` is the contact's notes —
@@ -102,6 +108,14 @@ def _key(field: str, value: dict) -> str:
     if field == "emailAddresses":
         return value.get("value", "").strip().lower()
     return json.dumps(_content(value), sort_keys=True)
+
+
+def _writable(value: dict) -> dict:
+    """A field value with Google's server-owned `metadata` removed. Copying a
+    value from one contact to another carries that contact's
+    `metadata.source.id`, and Google then silently drops the value from the
+    write — no error, no field. Verified against the live API."""
+    return {k: v for k, v in value.items() if k != "metadata"}
 
 
 def _phones(person: dict) -> list[str]:
@@ -178,7 +192,7 @@ def union_fields(copies: list[dict], survivor: dict) -> dict:
         merged: dict[str, dict] = {}
         for person in [survivor, *(c for c in copies if c is not survivor)]:
             for value in person.get(field) or []:
-                merged.setdefault(_key(field, value), value)
+                merged.setdefault(_key(field, value), _writable(value))
         if not merged:
             continue
         values = list(merged.values())
@@ -191,7 +205,7 @@ def union_fields(copies: list[dict], survivor: dict) -> dict:
             continue
         for person in copies:
             if person.get(field):
-                fields[field] = person[field]
+                fields[field] = [_writable(v) for v in person[field]]
                 break
     return fields
 
@@ -200,8 +214,10 @@ def single_valued_clash(copies: list[dict]) -> list[str]:
     """Fields where the copies disagree in a way that means these may not be
     the same person. Such a set is reported and left alone."""
     out = []
-    for field in CLASH_FIELDS:
-        distinct = {json.dumps(_content(p[field]), sort_keys=True) for p in copies if p.get(field)}
+    for field, key in CLASH_KEYS.items():
+        distinct = {
+            json.dumps([key(v) for v in p[field]], sort_keys=True) for p in copies if p.get(field)
+        }
         if len(distinct) > 1:
             out.append(field)
     return out
@@ -296,11 +312,21 @@ def _collapse_rows(conn: Any, survivor: dict, loser_rns: list[str]) -> dict[str,
     return counts
 
 
-def run(get_conn: Callable, *, apply: bool, backup_path: Path) -> dict:
+def run(
+    get_conn: Callable, *, apply: bool, backup_path: Path, only: list[str] | None = None
+) -> dict:
     """Find the duplicate sets, and — with apply — merge the ones that are
-    unambiguous. Returns counts; prints a per-set line naming resourceNames."""
-    contacts, _ = gc.list_connections(None)
-    sets = find_duplicate_sets(contacts)
+    unambiguous. Returns counts; prints a per-set line naming resourceNames.
+
+    `only` merges one explicit set instead — survivor first, then the contacts
+    to fold into it. That is a decision a person has made, so the skip guards
+    do not apply to it; everything else, including the backup, still does."""
+    if only:
+        contacts = [gc.get_person(rn) for rn in only]
+        sets = {"explicit": contacts}
+    else:
+        contacts, _ = gc.list_connections(None)
+        sets = find_duplicate_sets(contacts)
 
     result = {
         "contacts": len(contacts),
@@ -320,10 +346,10 @@ def run(get_conn: Callable, *, apply: bool, backup_path: Path) -> dict:
 
     with get_conn() as conn:
         for copies in sets.values():
-            survivor = choose_survivor(copies)
+            survivor = copies[0] if only else choose_survivor(copies)
             losers = [c for c in copies if c is not survivor]
 
-            clash = single_valued_clash(copies)
+            clash = [] if only else single_valued_clash(copies)
             if clash:
                 result["skipped"] += 1
                 print(
@@ -331,7 +357,11 @@ def run(get_conn: Callable, *, apply: bool, backup_path: Path) -> dict:
                 )
                 continue
 
-            emails = {r["email"] for r in _people_rows(conn, copies) if r.get("email")}
+            emails = (
+                set()
+                if only
+                else {r["email"] for r in _people_rows(conn, copies) if r.get("email")}
+            )
             if len(emails) > 1:
                 result["skipped"] += 1
                 print(
@@ -413,6 +443,12 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--apply", action="store_true", help="actually merge; default is a dry run")
     p.add_argument("--backup", type=Path, help="where to write the pre-delete JSON backup")
+    p.add_argument(
+        "--merge",
+        help="merge one explicit set instead of the detected ones: comma-separated "
+        "resourceNames, survivor first. Bypasses the skip guards, for a set you have "
+        "decided by hand.",
+    )
     args = p.parse_args()
 
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -420,7 +456,10 @@ def main() -> None:
 
     from clients.db import get_conn
 
-    run(get_conn, apply=args.apply, backup_path=backup)
+    only = [rn.strip() for rn in args.merge.split(",")] if args.merge else None
+    if only and len(only) < 2:
+        sys.exit("--merge needs a survivor and at least one contact to merge into it")
+    run(get_conn, apply=args.apply, backup_path=backup, only=only)
 
 
 if __name__ == "__main__":

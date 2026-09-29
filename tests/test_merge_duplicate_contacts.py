@@ -430,3 +430,84 @@ def test_differing_notes_are_a_clash_not_a_merge():
     b = contact("people/b")
     b["biographies"] = [{"value": "a different story"}]
     assert mdc.single_valued_clash([a, b]) == ["biographies"]
+
+
+def test_the_same_birthday_written_two_ways_is_not_a_clash():
+    # Google carries a `text` rendering alongside the date; comparing that
+    # would report a clash between two contacts that agree.
+    a = contact("people/a", birthday={"year": 1989, "month": 10, "day": 23})
+    a["birthdays"][0]["text"] = "10/23/1989"
+    b = contact("people/b", birthday={"year": 1989, "month": 10, "day": 23})
+    b["birthdays"][0]["text"] = "1989-10-23"
+    assert mdc.single_valued_clash([a, b]) == []
+
+
+def test_an_explicit_set_merges_the_named_survivor_past_the_guards(monkeypatch, tmp_path):
+    # Two contacts that the detector would refuse: different birthdays, and a
+    # survivor that is not the most populated one. A person decided this merge.
+    keep = contact("people/keep", phones=["+15550100001"], birthday={"month": 4, "day": 2})
+    drop = contact(
+        "people/drop",
+        phones=["+15550100001"],
+        emails=["a@example.com", "b@example.com"],
+        birthday={"month": 7, "day": 9},
+    )
+    google = FakeGoogle([keep, drop])
+    google.backup_path = tmp_path / "backup.json"
+    _wire_google(monkeypatch, google)
+    monkeypatch.setattr(mdc.gc, "get_person", google.get_person)
+    monkeypatch.setattr(
+        mdc.people_repo,
+        "get_by_phone",
+        lambda conn, ph: [{"id": 1, "email": "one@example.com"}, {"id": 2, "email": "two@x.com"}],
+    )
+    monkeypatch.setattr(mdc.people_repo, "get_by_google_resource", lambda conn, rn: None)
+
+    result = mdc.run(
+        lambda: FakeConn(),
+        apply=True,
+        backup_path=google.backup_path,
+        only=["people/keep", "people/drop"],
+    )
+
+    assert result["merged"] == 1 and result["skipped"] == 0
+    assert google.deleted == ["people/drop"]
+    # choose_survivor would have picked people/drop; the named survivor wins.
+    assert google.updated[0][0] == "people/keep"
+
+
+def test_an_explicit_set_still_writes_the_backup_first(monkeypatch, tmp_path):
+    a = contact("people/keep", phones=["+15550100001"])
+    b = contact("people/drop", phones=["+15550100001"])
+    google = FakeGoogle([a, b])
+    google.backup_path = tmp_path / "backup.json"
+    _wire_google(monkeypatch, google)
+    monkeypatch.setattr(mdc.gc, "get_person", google.get_person)
+    monkeypatch.setattr(mdc.people_repo, "get_by_google_resource", lambda conn, rn: None)
+
+    mdc.run(
+        lambda: FakeConn(),
+        apply=True,
+        backup_path=google.backup_path,
+        only=["people/keep", "people/drop"],
+    )
+    assert google.backup_seen_before_delete == [True]
+
+
+def test_copied_values_are_written_without_googles_metadata():
+    # A value copied from another contact carries that contact's
+    # metadata.source.id, and Google silently drops it from the write.
+    survivor = contact("people/a", emails=["a@example.com"])
+    other = contact("people/b", emails=["b@example.com"])
+    other["emailAddresses"][0]["metadata"] = {"source": {"type": "CONTACT", "id": "deadbeef"}}
+    fields = mdc.union_fields([survivor, other], survivor)
+    assert [e.get("value") for e in fields["emailAddresses"]] == ["a@example.com", "b@example.com"]
+    assert all("metadata" not in e for e in fields["emailAddresses"])
+
+
+def test_a_filled_single_valued_field_also_drops_metadata():
+    survivor = contact("people/a")
+    other = contact("people/b", birthday={"month": 4, "day": 2})
+    other["birthdays"][0]["metadata"] = {"source": {"type": "CONTACT", "id": "deadbeef"}}
+    fields = mdc.union_fields([survivor, other], survivor)
+    assert fields["birthdays"] == [{"date": {"month": 4, "day": 2}}]
