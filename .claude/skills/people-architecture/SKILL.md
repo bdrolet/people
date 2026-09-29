@@ -15,7 +15,9 @@ Cloud Functions never talk to Microsoft Graph — only the local
 `scripts/import_contacts.py` does. Likewise, people's Cloud Functions never
 read `chat.db` — only the local `scripts/import_imessage.py` does, and
 iMessage is not a source of truth for any `people` field (it doesn't affect
-counters, eligibility, or HubSpot ranking).
+counters, eligibility, or HubSpot ranking). Same story for WhatsApp: only the
+local `scripts/import_whatsapp.py` reads its local store, and it is not a
+source of truth for any `people` field either.
 
 ## Event flow
 
@@ -47,10 +49,13 @@ scripts/import_linkedin.py (local, manual) ──LinkedIn data export──▶ l
 
 scripts/import_imessage.py (local, manual, needs Full Disk Access) ──chat.db──▶ imessage_* tables (incremental upsert)
 
+scripts/import_whatsapp.py (local, manual, no Full Disk Access needed) ──ChatStorage.sqlite──▶ whatsapp_* tables (incremental upsert)
+
 inbox-process, Claude Code skills ──Google ID token (Cloud Run IAM)──▶ people-api (Cloud Run)
                                                         GET/PATCH /people/{ident}, POST /people, POST /people/{ident}/sync, POST /search, GET /people,
                                                         GET /linkedin/connections[/{slug}], GET /linkedin/imports/latest,
-                                                        GET /imessage/handles[/{handle}], GET /imessage/imports/latest
+                                                        GET /imessage/handles[/{handle}], GET /imessage/imports/latest,
+                                                        GET /whatsapp/handles[/{handle}], GET /whatsapp/chats, GET /whatsapp/imports/latest
 ```
 
 Full design: `docs/superpowers/specs/2026-09-03-people-service-extraction-design.md`;
@@ -112,10 +117,27 @@ manual run of `scripts/import_imessage.py`; `imessage_imports` is its
 append-only audit. Nothing flows from iMessage to Google Contacts, HubSpot,
 or `people`'s counters/eligibility.
 
-Both child tables link by `person_id` (a foreign key to `people.id`); the
-API still serves `person_email` alongside it by joining `people`, so
-`searching-people`'s read shape is unchanged. See `querying-people-db` for
-the join.
+WhatsApp snapshot tables (five, no cloud component, no Graph/HubSpot/Google
+involvement) — `whatsapp_handles` (PK `handle`, E.164 or `lid:<id>` for a
+Linked ID that carries no phone number, soft link `person_id` →
+`people.id` FK `ON DELETE SET NULL`, per-handle 1:1 and group stats — note
+`group_message_count` here counts messages the handle **sent** in groups,
+unlike `imessage_handles.group_message_count`, which counts every message in
+a group the handle belongs to because `chat.db` cannot attribute group
+senders), `whatsapp_chats`, `whatsapp_chat_members` (the full group roster —
+`handle` is deliberately not a foreign key to `whatsapp_handles`, since most
+members have no row there), `whatsapp_messages` (text lives only here —
+never served by `people-api`) — are incrementally upserted by each manual
+run of `scripts/import_whatsapp.py`; `whatsapp_imports` is its append-only
+audit. Nothing flows from WhatsApp to Google Contacts, HubSpot, or
+`people`'s counters/eligibility. A `match_method` of `name` is the one link
+worth distrusting, since it's the only way a `lid:` handle ever links (no
+phone number to match on).
+
+The `imessage_*` and `whatsapp_*` child tables link by `person_id` (a
+foreign key to `people.id`); the API still serves `person_email` alongside
+it by joining `people`, so `searching-people`'s read shape is unchanged. See
+`querying-people-db` for the join.
 
 `last_interaction` is derived as `GREATEST(last_seen, last_contacted)`, not
 stored. Schema: `repo/schema.sql`, applied via `scripts/migrate_db.py`. Prod
@@ -264,6 +286,7 @@ contacts adopted separately before this endpoint existed.
 | `google_deleted_at` | Google | Set by sync when a linked `resourceName` comes back deleted. Never recreated. |
 | `hubspot_contact_id` | DB (people manages) | Set on create/adopt, cleared on evict/heal. |
 | `phone_numbers`, `company`, `job_title`, `google_fields` | Google Contacts | Google → DB on link, nightly sync, and after every `PATCH`. Event data never writes them; never pushed to HubSpot (contact-field-edits design §4.1). |
+| `whatsapp_*` tables | WhatsApp's local store on Ben's Mac | Store → DB on local import (`scripts/import_whatsapp.py`). Never written back anywhere; WhatsApp is not a source for any `people` field. |
 
 If the DB is lost, everything except the counters rebuilds from Google
 Contacts plus a full sync; counters rebuild via `scripts/import_contacts.py`.
