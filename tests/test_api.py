@@ -708,6 +708,22 @@ def test_post_invalid_is_400_with_the_message(monkeypatch):
     assert "phone number" in r.text
 
 
+def test_post_person_edit_invalid_is_400_with_the_message(monkeypatch):
+    # Fix 1: person_create.create's final step (person_edit.update, applying
+    # notes/relationship_label) can raise person_edit.Invalid, a different
+    # class from person_create.Invalid — must still map to 400, not 500.
+    def boom(conn, **kw):
+        raise person_edit.Invalid("bad biography")
+
+    monkeypatch.setattr("api.routers.people.person_create.create", boom)
+    r = client.post(
+        "/people",
+        json={"contact": {"emailAddresses": [{"value": "a@example.com"}]}, "notes": "hi"},
+    )
+    assert r.status_code == 400
+    assert "bad biography" in r.text
+
+
 def test_post_duplicate_is_409_with_candidates(monkeypatch):
     def boom(conn, **kw):
         raise person_create.Duplicate("person exists", candidates=[11, 12])

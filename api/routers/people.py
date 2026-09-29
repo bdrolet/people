@@ -121,6 +121,10 @@ def create_person(body: PersonCreate) -> PersonOut:
             status_code=409,
             detail={"error": "person exists", "candidates": e.candidates},
         ) from e
+    except person_edit.Invalid as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except person_edit.Conflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except HttpError as e:
         status = e.resp.status
         if 400 <= status < 500:

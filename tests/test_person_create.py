@@ -105,6 +105,7 @@ def test_refuses_a_google_only_duplicate_by_phone(wired, monkeypatch):
     with pytest.raises(person_create.Duplicate) as e:
         person_create.create(None, contact=PHONE_ONLY)
     assert e.value.candidates == []
+    assert wired["created_body"] is None
 
 
 def test_raises_invalid_when_no_row_appears(wired, monkeypatch):
