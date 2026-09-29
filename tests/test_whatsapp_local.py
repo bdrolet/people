@@ -143,3 +143,17 @@ def test_missing_column_fails_naming_it(tmp_path):
 def test_default_store_path_is_the_group_container():
     assert "group.net.whatsapp.WhatsApp.shared" in str(whatsapp_local.DEFAULT_STORE)
     assert whatsapp_local.DEFAULT_STORE.name == "ChatStorage.sqlite"
+
+
+def test_copy_failure_raises_store_unreadable(tmp_path, monkeypatch):
+    """StoreUnreadableError's own docstring says 'could not be found, copied, or
+    opened' — a shutil.copy2 failure (a vanishing sidecar, a permissions error)
+    must surface as that, not a raw OSError."""
+    path = build_store(tmp_path)
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(whatsapp_local.shutil, "copy2", boom)
+    with pytest.raises(whatsapp_local.StoreUnreadableError):
+        whatsapp_local.read(path)

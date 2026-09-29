@@ -112,11 +112,14 @@ def _copied(path: Path) -> Iterator[Path]:
     removed in a finally — including on error (§7)."""
     tmp = Path(tempfile.mkdtemp(prefix="whatsapp-import-"))
     try:
-        shutil.copy2(path, tmp / path.name)
-        for suffix in SIDECARS:
-            side = path.with_name(path.name + suffix)
-            if side.exists():
-                shutil.copy2(side, tmp / side.name)
+        try:
+            shutil.copy2(path, tmp / path.name)
+            for suffix in SIDECARS:
+                side = path.with_name(path.name + suffix)
+                if side.exists():
+                    shutil.copy2(side, tmp / side.name)
+        except OSError as e:
+            raise StoreUnreadableError(str(e)) from e
         yield tmp / path.name
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

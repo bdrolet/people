@@ -402,7 +402,7 @@ Consequences:
   helps; the number is not present.
 - They are real 1:1 conversations and among the most active in the store, so
   dropping them would discard the single largest chat.
-- Their handle is stored as `'lid:<local-part>'` (e.g. `lid:19709655306273`) so
+- Their handle is stored as `'lid:<local-part>'` (e.g. `lid:99900000000001`) so
   the `handle` primary key stays unambiguous and a LID handle can never
   collide with an E.164 one.
 - `ZPARTNERNAME` is populated for them, which enables the narrow name match in

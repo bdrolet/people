@@ -1,5 +1,5 @@
 """Synthetic ChatStorage.sqlite (spec §7: fixtures are synthetic). Invented
-numbers (+1555010…), invented group JIDs, invented names.
+numbers (+1555010…), invented group JIDs, invented @lid ids (999…), invented names.
 
 Shape, so the assertions elsewhere have one place to read:
 
@@ -38,13 +38,13 @@ CREATE TABLE ZWAMESSAGE (Z_PK INTEGER PRIMARY KEY, ZGROUPEVENTTYPE INTEGER, ZISF
 
 ALICE_JID = "15550100001@s.whatsapp.net"
 GROUP_JID = "10000000001-1500000000@g.us"
-LID_JID = "19709655306273@lid"
+LID_JID = "99900000000001@lid"
 # Legacy Mexican mobile form: 52 + 1 + 10 digits (§6.4). Must normalize to
 # +525555555555 by stripping the 1.
 MX_JID = "5215555555555@s.whatsapp.net"
 MEMBER_2_JID = "15550100002@s.whatsapp.net"
 MEMBER_3_JID = "15550100003@s.whatsapp.net"
-MEMBER_LID_JID = "19709655306274@lid"
+MEMBER_LID_JID = "99900000000002@lid"
 
 
 def wa_ts(unix_seconds: int) -> float:

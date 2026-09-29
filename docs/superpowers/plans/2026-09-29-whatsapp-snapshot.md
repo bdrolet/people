@@ -838,13 +838,13 @@ CREATE TABLE ZWAMESSAGE (Z_PK INTEGER PRIMARY KEY, ZGROUPEVENTTYPE INTEGER, ZISF
 
 ALICE_JID = "15550100001@s.whatsapp.net"
 GROUP_JID = "10000000001-1500000000@g.us"
-LID_JID = "19709655306273@lid"
+LID_JID = "99900000000001@lid"
 # Legacy Mexican mobile form: 52 + 1 + 10 digits (§6.4). Must normalize to
 # +525555555555 by stripping the 1.
 MX_JID = "5215555555555@s.whatsapp.net"
 MEMBER_2_JID = "15550100002@s.whatsapp.net"
 MEMBER_3_JID = "15550100003@s.whatsapp.net"
-MEMBER_LID_JID = "19709655306274@lid"
+MEMBER_LID_JID = "99900000000002@lid"
 
 
 def wa_ts(unix_seconds: int) -> float:
@@ -984,7 +984,7 @@ def test_phone_jid_classifies_as_direct_with_an_e164_handle():
 def test_lid_jid_keeps_a_prefixed_handle_and_is_never_phone_matched():
     """§5.5: a LID carries no phone number, ever. The 'lid:' prefix keeps the
     handle primary key unambiguous — a LID can never collide with an E.164."""
-    assert wa.jid_to_handle("19709655306273@lid") == ("lid:19709655306273", "direct")
+    assert wa.jid_to_handle("99900000000001@lid") == ("lid:99900000000001", "direct")
 
 
 def test_status_and_broadcast_jids_are_skipped():
@@ -1351,7 +1351,7 @@ def test_a_direct_chat_denormalizes_the_other_party_s_handle(tmp_path):
     assert chats[ALICE_JID].kind == "direct"
     assert chats[ALICE_JID].handle == "+15550100001"
     assert chats[ALICE_JID].subject == "Alice Example"
-    assert chats[LID_JID].handle == "lid:19709655306273"
+    assert chats[LID_JID].handle == "lid:99900000000001"
     assert chats[MX_JID].handle == "+525555555555"
 
 
@@ -1473,7 +1473,7 @@ def test_only_identities_with_interaction_get_a_handle_row(tmp_path):
     b = batch(tmp_path)
     assert {h.handle for h in b.handles} == {
         "+15550100001",
-        "lid:19709655306273",
+        "lid:99900000000001",
         "+525555555555",
     }
     assert "+15550100002" in {m.handle for m in b.members}
@@ -1485,7 +1485,7 @@ def test_a_handle_keeps_the_raw_jid_and_prefers_the_partner_name(tmp_path):
     handles = {h.handle: h for h in batch(tmp_path).handles}
     assert handles["+15550100001"].jid == ALICE_JID
     assert handles["+15550100001"].display_name == "Alice Example"
-    assert handles["lid:19709655306273"].display_name == "Bob Example"
+    assert handles["lid:99900000000001"].display_name == "Bob Example"
 
 
 def test_handles_are_unique_in_the_batch(tmp_path):
@@ -1497,7 +1497,7 @@ def test_partner_names_come_only_from_direct_sessions(tmp_path):
     """The LID name match reads this map and nothing else, so a group member's
     ZCONTACTNAME must never reach it (§6.5)."""
     b = batch(tmp_path)
-    assert b.partner_names["lid:19709655306273"] == "Bob Example"
+    assert b.partner_names["lid:99900000000001"] == "Bob Example"
     assert "+15550100002" not in b.partner_names
 
 
@@ -1510,7 +1510,7 @@ def test_every_group_member_is_recorded_with_admin_and_active_flags(tmp_path):
         "+15550100001",
         "+15550100002",
         "+15550100003",
-        "lid:19709655306274",
+        "lid:99900000000002",
     }
     assert members["+15550100001"].is_admin is True
     assert members["+15550100001"].is_active is True
@@ -1790,8 +1790,8 @@ def test_a_lid_handle_links_by_an_exact_unique_partner_name(tmp_path):
     """The only way to link a LID chat at all, and the one place a false link can
     occur — so match_method records 'name' and a reader can distrust it (§6.5)."""
     handles = {h.handle: h for h in matched(tmp_path).handles}
-    assert handles["lid:19709655306273"].person_id == 2
-    assert handles["lid:19709655306273"].match_method == "name"
+    assert handles["lid:99900000000001"].person_id == 2
+    assert handles["lid:99900000000001"].match_method == "name"
 
 
 def test_counters_split_phone_from_name(tmp_path):
@@ -1833,25 +1833,25 @@ def test_a_lid_handle_is_never_phone_matched(tmp_path):
     even if some people row happens to carry that digit string (§5.5)."""
     b = batch(tmp_path)
     wa.match_handles(
-        b, [{"id": 9, "display_name": "Nope", "phone_numbers": ["lid:19709655306273"]}]
+        b, [{"id": 9, "display_name": "Nope", "phone_numbers": ["lid:99900000000001"]}]
     )
-    lid = next(h for h in b.handles if h.handle == "lid:19709655306273")
+    lid = next(h for h in b.handles if h.handle == "lid:99900000000001")
     assert lid.person_id is None
 
 
 def test_an_ambiguous_name_links_to_nothing(tmp_path):
     b = batch(tmp_path)
-    b.partner_names["lid:19709655306273"] = "Eve Example"
+    b.partner_names["lid:99900000000001"] = "Eve Example"
     wa.match_handles(b, people_rows())
-    lid = next(h for h in b.handles if h.handle == "lid:19709655306273")
+    lid = next(h for h in b.handles if h.handle == "lid:99900000000001")
     assert lid.person_id is None
 
 
 def test_a_lid_handle_with_no_partner_name_links_to_nothing(tmp_path):
     b = batch(tmp_path)
-    b.partner_names.pop("lid:19709655306273")
+    b.partner_names.pop("lid:99900000000001")
     wa.match_handles(b, people_rows())
-    lid = next(h for h in b.handles if h.handle == "lid:19709655306273")
+    lid = next(h for h in b.handles if h.handle == "lid:99900000000001")
     assert lid.person_id is None
 
 
@@ -3712,8 +3712,8 @@ def test_whatsapp_handle_detail_needs_a_percent_encoded_plus():
 
 def test_a_lid_handle_needs_no_encoding(monkeypatch):
     monkeypatch.setattr(whatsapp_repo, "handle", lambda conn, handle: wa_handle_row(handle))
-    assert client.get("/whatsapp/handles/lid:19709655306273").json()["handle"] == (
-        "lid:19709655306273"
+    assert client.get("/whatsapp/handles/lid:99900000000001").json()["handle"] == (
+        "lid:99900000000001"
     )
 
 
