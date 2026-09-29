@@ -11,7 +11,15 @@ or normalize_handle would be worse (§3).
 import logging
 from typing import Any
 
-from services.imessage_export import normalize_handle
+from clients.whatsapp_local import RawStore
+from models.whatsapp import (
+    WhatsAppBatch,
+    WhatsAppChat,
+    WhatsAppChatMember,
+    WhatsAppHandle,
+    WhatsAppMessage,
+)
+from services.imessage_export import apple_ts, normalize_handle
 
 logger = logging.getLogger(__name__)
 
@@ -118,3 +126,174 @@ def check_session_type(_chat_jid: str, kind: str, session_type: int | None) -> N
         logger.warning(
             "whatsapp session type %s disagrees with a %s JID suffix", session_type, kind
         )
+
+
+def build_batch(raw: RawStore, *, mode: str) -> WhatsAppBatch:
+    """Turn a RawStore into a WhatsAppBatch (§6.3-§6.6).
+
+    Every list is deduplicated on the primary key its table uses, because a
+    multi-row INSERT ... ON CONFLICT DO UPDATE fails outright when one statement
+    touches a key twice — and the store really does contain a duplicate session
+    JID and a duplicate stanza id (§4.2, §4.4).
+
+    Counter semantics for a chat are batch-local: an incremental batch holds only
+    its window's messages, so repo/whatsapp.py recomputes the stored totals in SQL
+    rather than trusting these (§6.7).
+    """
+    batch = WhatsAppBatch(mode=mode, watermark=raw.max_pk)
+
+    chats_by_jid: dict[str, WhatsAppChat] = {}
+    chat_by_session: dict[int, WhatsAppChat] = {}
+    handles: dict[str, WhatsAppHandle] = {}
+
+    for session in raw.sessions:
+        jid = session["ZCONTACTJID"] or ""
+        handle, kind = jid_to_handle(jid)
+        if kind == "skip":
+            batch.sessions_skipped += 1
+            continue
+        if kind == "direct" and handle is None:
+            # A real chat whose number will not normalize: one such chat, with a
+            # 1-digit local part and no messages (§6.4).
+            batch.handles_unnormalized += 1
+            continue
+        check_session_type(jid, kind, session.get("ZSESSIONTYPE"))
+        existing = chats_by_jid.get(jid)
+        if existing is not None:
+            batch.duplicate_jids += 1
+            chat_by_session[session["Z_PK"]] = existing
+            continue
+        chat = WhatsAppChat(
+            chat_jid=jid,
+            kind=kind,
+            subject=session.get("ZPARTNERNAME"),
+            handle=handle,
+            created_at=apple_ts(session.get("ZGROUPCREATIONDATE")),
+        )
+        chats_by_jid[jid] = chat
+        chat_by_session[session["Z_PK"]] = chat
+        batch.chats.append(chat)
+        if kind == "direct" and handle is not None:
+            name = session.get("ZPARTNERNAME")
+            handles[handle] = WhatsAppHandle(handle=handle, jid=jid, display_name=name)
+            if name:
+                batch.partner_names[handle] = name
+
+    members_seen: set[tuple[str, str]] = set()
+    member_names: dict[str, str] = {}
+    for row in raw.members:
+        member_chat = chat_by_session.get(row["ZCHATSESSION"])
+        if member_chat is None or member_chat.kind != "group":
+            continue
+        member_handle, _kind = jid_to_handle(row["ZMEMBERJID"] or "")
+        if member_handle is None:
+            batch.handles_unnormalized += 1
+            continue
+        key = (member_chat.chat_jid, member_handle)
+        if key in members_seen:
+            continue
+        members_seen.add(key)
+        batch.members.append(
+            WhatsAppChatMember(
+                chat_jid=member_chat.chat_jid,
+                handle=member_handle,
+                is_admin=bool(row.get("ZISADMIN")),
+                is_active=bool(row.get("ZISACTIVE")),
+            )
+        )
+        member_chat.member_count += 1
+        if row.get("ZCONTACTNAME"):
+            member_names.setdefault(member_handle, row["ZCONTACTNAME"])
+
+    # ZWAMESSAGE.ZGROUPMEMBER -> ZWAGROUPMEMBER.Z_PK -> the member's handle/raw JID
+    # (§5.4). Read across every group member regardless of chat validity, since a
+    # message's ZGROUPMEMBER always points at a ZWAGROUPMEMBER row, not at the
+    # (already-filtered) batch.members list.
+    member_handle_by_pk: dict[int, str | None] = {}
+    member_jid_by_pk: dict[int, str | None] = {}
+    for row in raw.members:
+        member_handle_by_pk[row["Z_PK"]] = jid_to_handle(row["ZMEMBERJID"] or "")[0]
+        member_jid_by_pk[row["Z_PK"]] = row.get("ZMEMBERJID")
+
+    messages_seen: set[tuple[str, str]] = set()
+    for row in raw.messages:
+        msg_chat = chat_by_session.get(row["ZCHATSESSION"])
+        if msg_chat is None:
+            continue  # a skipped session, or one whose handle did not normalize
+
+        stanza_id = (row.get("ZSTANZAID") or "").strip()
+        if not stanza_id:
+            batch.missing_stanza_ids += 1
+            continue
+
+        group_member_pk: int | None = row.get("ZGROUPMEMBER")
+        from_me = bool(row.get("ZISFROMME"))
+        if from_me:
+            sender_handle = None
+        elif msg_chat.kind == "direct":
+            sender_handle = msg_chat.handle
+        else:
+            sender_handle = (
+                member_handle_by_pk.get(group_member_pk) if group_member_pk is not None else None
+            )
+            if sender_handle is None:
+                # sender_handle=None is documented to mean from_me, so an inbound
+                # message attributed to nobody would be indistinguishable from Ben's
+                # own and cannot be ranked. Same ruling as iMessage (§5.4). ZFROMJID
+                # cannot rescue this: on the real store it holds the group's own JID
+                # on every senderless inbound, never a sender's.
+                batch.senderless_dropped += 1
+                continue
+
+        key = (msg_chat.chat_jid, stanza_id)
+        if key in messages_seen:
+            batch.duplicate_stanza_ids += 1
+            continue
+        messages_seen.add(key)
+
+        has_media, media_kind = classify_media(row)
+        text = row.get("ZTEXT")
+        sent_at = apple_ts(row.get("ZMESSAGEDATE"))
+        batch.messages.append(
+            WhatsAppMessage(
+                chat_jid=msg_chat.chat_jid,
+                stanza_id=stanza_id,
+                sender_handle=sender_handle,
+                from_me=from_me,
+                sent_at=sent_at,
+                text=text if (text or "").strip() else None,
+                message_type=row.get("ZMESSAGETYPE"),
+                has_media=has_media,
+                media_kind=media_kind,
+                source_pk=row["Z_PK"],
+            )
+        )
+
+        msg_chat.message_count += 1
+        if from_me:
+            msg_chat.my_message_count += 1
+        if sent_at is not None and (
+            msg_chat.last_message_at is None or sent_at > msg_chat.last_message_at
+        ):
+            msg_chat.last_message_at = sent_at
+
+        # §4.1: a group sender earns a handle row on the run that sees it talk, so
+        # the interaction rule needs no backfill. The raw jid comes from the group
+        # member's own ZMEMBERJID, not the message's ZFROMJID — on a group row
+        # ZFROMJID holds the group's own JID, not the sender's, so using it here
+        # would put a @g.us JID on a person's handle row.
+        if sender_handle is not None and msg_chat.kind == "group":
+            handle_row = handles.get(sender_handle)
+            if handle_row is None:
+                handles[sender_handle] = WhatsAppHandle(
+                    handle=sender_handle,
+                    jid=(
+                        member_jid_by_pk.get(group_member_pk)
+                        if group_member_pk is not None
+                        else None
+                    ),
+                    display_name=row.get("ZPUSHNAME") or member_names.get(sender_handle),
+                )
+
+    batch.handles = list(handles.values())
+    return batch
