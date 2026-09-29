@@ -3,6 +3,7 @@ is set, e.g. postgresql://localhost/people_schema_test."""
 
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 import psycopg
@@ -340,3 +341,74 @@ def test_handle_stats_default_to_zero(conn):
         " last_message_at, match_method from whatsapp_handles"
     ).fetchone()
     assert row == (0, 0, 0, 0, None, None)
+
+
+def test_an_incremental_run_does_not_null_other_chats_last_message_at(conn):
+    """Review Focus 3, and the bug the iMessage import shipped once (§6.7): an
+    incremental batch legitimately contains no messages for most chats."""
+    from models.whatsapp import WhatsAppChat
+    from repo import whatsapp as wa_repo
+
+    old, new = "1-1@g.us", "2-2@g.us"
+    wa_repo.upsert_chats(
+        conn,
+        [
+            WhatsAppChat(
+                chat_jid=old, kind="group", last_message_at=datetime(2025, 1, 1, tzinfo=UTC)
+            ),
+            WhatsAppChat(chat_jid=new, kind="group"),
+        ],
+    )
+    conn.execute(
+        "INSERT INTO whatsapp_messages (chat_jid, stanza_id, from_me, sent_at, source_pk)"
+        " VALUES (%s, 's1', false, %s, 1)",
+        (old, datetime(2025, 1, 1, tzinfo=UTC)),
+    )
+    wa_repo.recompute_chat_stats(conn)
+    # A later incremental run whose window holds only the other chat.
+    wa_repo.upsert_chats(conn, [WhatsAppChat(chat_jid=new, kind="group")])
+    wa_repo.recompute_chat_stats(conn)
+    rows = dict(
+        conn.execute(
+            "SELECT chat_jid, last_message_at FROM whatsapp_chats ORDER BY chat_jid"
+        ).fetchall()
+    )
+    assert rows[old] is not None
+    assert rows[new] is None
+
+
+def test_handle_stats_recompute_over_real_rows(conn):
+    """Pins the two semantics that are easy to get backwards: a 1:1 count includes
+    Ben's own messages (whose sender_handle is NULL), and a group count is only
+    what that handle sent (§4.1)."""
+    from models.whatsapp import WhatsAppChat, WhatsAppChatMember, WhatsAppHandle
+    from repo import whatsapp as wa_repo
+
+    handle, direct, group = "+15550100001", "15550100001@s.whatsapp.net", "1-2@g.us"
+    wa_repo.upsert_chats(
+        conn,
+        [
+            WhatsAppChat(chat_jid=direct, kind="direct", handle=handle),
+            WhatsAppChat(chat_jid=group, kind="group"),
+        ],
+    )
+    wa_repo.upsert_handles(conn, [WhatsAppHandle(handle=handle)])
+    wa_repo.replace_members(
+        conn, [WhatsAppChatMember(chat_jid=group, handle=handle, is_active=True)]
+    )
+    conn.execute(
+        "INSERT INTO whatsapp_messages (chat_jid, stanza_id, sender_handle, from_me, sent_at,"
+        " source_pk) VALUES"
+        " (%s, 'a', %s, false, now(), 1),"
+        " (%s, 'b', NULL,  true,  now(), 2),"
+        " (%s, 'c', %s, false, now(), 3),"
+        " (%s, 'd', NULL,  true,  now(), 4)",
+        (direct, handle, direct, group, handle, group),
+    )
+    wa_repo.recompute_handle_stats(conn)
+    row = conn.execute(
+        "SELECT message_count, my_message_count, group_message_count, group_count"
+        " FROM whatsapp_handles WHERE handle = %s",
+        (handle,),
+    ).fetchone()
+    assert row == (2, 1, 1, 1)  # both sides of the 1:1; only what they sent in the group

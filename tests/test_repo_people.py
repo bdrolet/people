@@ -6,6 +6,7 @@ from repo import people
 class FakeCursor:
     def __init__(self, rows):
         self._rows = rows
+        self.rowcount = len(rows)
 
     def fetchone(self):
         return self._rows[0] if self._rows else None
