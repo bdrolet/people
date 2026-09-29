@@ -27,12 +27,14 @@ LENGTH_MARKER = 0x2B  # b"+"
 EXTENDED_LENGTH_SIZES = {0x81: 2, 0x82: 3, 0x84: 4}
 
 
-def apple_ts(value: int | None) -> datetime | None:
+def apple_ts(value: int | float | None) -> datetime | None:
     """Convert an Apple `date` column value to a UTC datetime.
 
     Nanoseconds since 2001-01-01 UTC on current macOS; values below
     10**11 are treated as legacy seconds-since-2001 (spec §5.2, no real
-    rows observed but kept as a defensive guard). 0/None mean missing.
+    rows observed but kept as a defensive guard). WhatsApp's ZMESSAGEDATE
+    takes that seconds branch for real, and Core Data hands it back as a
+    float (WhatsApp spec §3). 0/None mean missing.
     """
     if not value:
         return None
