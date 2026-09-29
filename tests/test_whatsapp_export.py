@@ -388,3 +388,133 @@ def test_a_member_of_a_skipped_or_missing_chat_is_ignored(tmp_path):
 def test_mode_is_carried_through(tmp_path):
     raw = whatsapp_local.read(build_store(tmp_path))
     assert wa.build_batch(raw, mode="incremental").mode == "incremental"
+
+
+# --- Matching (§6.5) ---------------------------------------------------------
+
+
+def people_rows():
+    return [
+        {"id": 1, "display_name": "Alice Example", "phone_numbers": ["+15550100001"]},
+        {"id": 2, "display_name": "Bob Example", "phone_numbers": []},
+        {"id": 3, "display_name": "Dana Example", "phone_numbers": ["+15550100002"]},
+        # A household number on two rows: 34 such numbers exist today.
+        {"id": 4, "display_name": "Shared One", "phone_numbers": ["+15550100003"]},
+        {"id": 5, "display_name": "Shared Two", "phone_numbers": ["+15550100003"]},
+        # Two people with the same name: a LID name match must refuse both.
+        {"id": 6, "display_name": "Eve Example", "phone_numbers": []},
+        {"id": 7, "display_name": "eve example", "phone_numbers": []},
+    ]
+
+
+def matched(tmp_path, rows=None):
+    b = batch(tmp_path)
+    wa.match_handles(b, people_rows() if rows is None else rows)
+    return b
+
+
+def test_a_handle_matching_exactly_one_phone_links_by_phone(tmp_path):
+    handles = {h.handle: h for h in matched(tmp_path).handles}
+    assert handles["+15550100001"].person_id == 1
+    assert handles["+15550100001"].match_method == "phone"
+
+
+def test_a_lid_handle_links_by_an_exact_unique_partner_name(tmp_path):
+    """The only way to link a LID chat at all, and the one place a false link can
+    occur — so match_method records 'name' and a reader can distrust it (§6.5)."""
+    handles = {h.handle: h for h in matched(tmp_path).handles}
+    assert handles["lid:99900000000001"].person_id == 2
+    assert handles["lid:99900000000001"].match_method == "name"
+
+
+def test_counters_split_phone_from_name(tmp_path):
+    b = matched(tmp_path)
+    assert b.matched_by_phone == 1
+    assert b.matched_by_name == 1
+
+
+def test_a_handle_with_no_candidate_links_to_nothing(tmp_path):
+    handles = {h.handle: h for h in matched(tmp_path).handles}
+    assert handles["+525555555555"].person_id is None
+    assert handles["+525555555555"].match_method is None
+
+
+def test_a_phone_on_two_people_links_to_neither(tmp_path):
+    """Review Focus 1: ambiguity is an error, not a guess — the same position
+    repo/people.py::get_by_phone takes for the API (§6.5)."""
+    b = batch(tmp_path)
+    b.handles.append(wa.WhatsAppHandle(handle="+15550100003", jid="x"))
+    wa.match_handles(b, people_rows())
+    shared = next(h for h in b.handles if h.handle == "+15550100003")
+    assert shared.person_id is None
+    assert shared.match_method is None
+    assert b.matched_by_phone == 1  # Alice only
+
+
+def test_a_non_lid_handle_is_never_name_matched(tmp_path):
+    """A handle with a phone that does not match means 'no match'; falling back to
+    the name would manufacture false links (§6.5, Decisions)."""
+    b = batch(tmp_path)
+    b.partner_names["+525555555555"] = "Alice Example"
+    wa.match_handles(b, people_rows())
+    carmen = next(h for h in b.handles if h.handle == "+525555555555")
+    assert carmen.person_id is None
+
+
+def test_a_lid_handle_is_never_phone_matched(tmp_path):
+    """Nothing about a LID is a phone number, so it must not be looked up as one
+    even if some people row happens to carry that digit string (§5.5)."""
+    b = batch(tmp_path)
+    wa.match_handles(
+        b, [{"id": 9, "display_name": "Nope", "phone_numbers": ["lid:99900000000001"]}]
+    )
+    lid = next(h for h in b.handles if h.handle == "lid:99900000000001")
+    assert lid.person_id is None
+
+
+def test_an_ambiguous_name_links_to_nothing(tmp_path):
+    b = batch(tmp_path)
+    b.partner_names["lid:99900000000001"] = "Eve Example"
+    wa.match_handles(b, people_rows())
+    lid = next(h for h in b.handles if h.handle == "lid:99900000000001")
+    assert lid.person_id is None
+
+
+def test_a_lid_handle_with_no_partner_name_links_to_nothing(tmp_path):
+    b = batch(tmp_path)
+    b.partner_names.pop("lid:99900000000001")
+    wa.match_handles(b, people_rows())
+    lid = next(h for h in b.handles if h.handle == "lid:99900000000001")
+    assert lid.person_id is None
+
+
+def test_members_are_matched_by_the_same_function(tmp_path):
+    """375 people already in `people` share a group with Ben and have never
+    messaged him; without person_id here they are invisible to people-api (§4.3)."""
+    members = {m.handle: m for m in matched(tmp_path).members}
+    assert members["+15550100001"].person_id == 1
+    assert members["+15550100002"].person_id == 3  # a member with no handle row
+    assert members["+15550100003"].person_id is None  # the shared household number
+
+
+def test_matching_is_idempotent_and_clears_a_stale_link(tmp_path):
+    b = batch(tmp_path)
+    for handle in b.handles:
+        handle.person_id, handle.match_method = 99, "phone"
+    wa.match_handles(b, people_rows())
+    handles = {h.handle: h for h in b.handles}
+    assert handles["+525555555555"].person_id is None
+    assert handles["+15550100001"].person_id == 1
+
+
+def test_a_person_row_with_no_phone_numbers_key_is_tolerated(tmp_path):
+    b = batch(tmp_path)
+    wa.match_handles(b, [{"id": 1, "display_name": "Alice Example"}])
+    assert all(h.person_id is None for h in b.handles)
+
+
+def test_no_email_matching_happens(tmp_path):
+    """WhatsApp has no email addresses (§6.5)."""
+    b = batch(tmp_path)
+    wa.match_handles(b, [{"id": 1, "display_name": "Alice Example", "email": "alice@example.com"}])
+    assert all(h.person_id is None for h in b.handles)

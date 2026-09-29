@@ -227,3 +227,11 @@ def test_update_from_google_writes_email_when_passed():
     sql, params = conn.calls[0]
     assert "email = %s" in sql
     assert "alice@example.com" in params
+
+
+def test_rows_for_whatsapp_matching_selects_phones_and_names():
+    conn = FakeConn(results=[[{"id": 1, "display_name": "A", "phone_numbers": ["+15550100001"]}]])
+    rows = people.rows_for_whatsapp_matching(conn)
+    sql, _ = conn.calls[0]
+    assert sql == "SELECT id, display_name, phone_numbers FROM people"
+    assert rows[0]["phone_numbers"] == ["+15550100001"]

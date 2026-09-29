@@ -20,6 +20,7 @@ from models.whatsapp import (
     WhatsAppMessage,
 )
 from services.imessage_export import apple_ts, normalize_handle
+from services.linkedin_export import normalize_name
 
 logger = logging.getLogger(__name__)
 
@@ -297,3 +298,55 @@ def build_batch(raw: RawStore, *, mode: str) -> WhatsAppBatch:
 
     batch.handles = list(handles.values())
     return batch
+
+
+LID_PREFIX = "lid:"
+
+
+def match_handles(batch: WhatsAppBatch, people_rows: list[dict[str, Any]]) -> None:
+    """Link handles and group members to `people` rows (§6.5).
+
+    Two rules and no others. By phone: an E.164 handle matching exactly one row
+    links to it; more than one links to nothing, because ambiguity is an error,
+    not a guess. By name: a LID handle — and only a LID handle, since a LID
+    carries no phone number by construction — links to a row whose display name
+    is exactly (normalized-case, trimmed) its ZPARTNERNAME, and only when that
+    name is unique on both sides.
+
+    A handle with a phone that does not match means "no match": falling back to
+    the name there would manufacture false links. Mutates the batch in place, and
+    always rewrites person_id/match_method so a stale link is cleared.
+    """
+    ids_by_phone: dict[str, set[int]] = {}
+    ids_by_name: dict[str, set[int]] = {}
+    for row in people_rows:
+        for phone in row.get("phone_numbers") or []:
+            ids_by_phone.setdefault(phone, set()).add(row["id"])
+        name = normalize_name(row.get("display_name"))
+        if name:
+            ids_by_name.setdefault(name, set()).add(row["id"])
+
+    links: dict[str, tuple[int, str]] = {}
+    targets = {h.handle for h in batch.handles} | {m.handle for m in batch.members}
+    for handle in sorted(targets):
+        if handle.startswith(LID_PREFIX):
+            name = normalize_name(batch.partner_names.get(handle))
+            candidates = ids_by_name.get(name, set()) if name else set()
+            method = "name"
+        else:
+            candidates = ids_by_phone.get(handle, set())
+            method = "phone"
+        if len(candidates) == 1:
+            links[handle] = (next(iter(candidates)), method)
+
+    batch.matched_by_phone = batch.matched_by_name = 0
+    for handle_row in batch.handles:
+        link = links.get(handle_row.handle)
+        handle_row.person_id, handle_row.match_method = link if link else (None, None)
+        if link and link[1] == "phone":
+            batch.matched_by_phone += 1
+        elif link:
+            batch.matched_by_name += 1
+    for member in batch.members:
+        link = links.get(member.handle)
+        member.person_id = link[0] if link else None

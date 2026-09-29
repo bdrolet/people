@@ -330,3 +330,9 @@ def rows_for_imessage_matching(conn: Any) -> list[dict]:
     return conn.execute(
         "SELECT id, email, display_name, google_resource_name FROM people"
     ).fetchall()
+
+
+def rows_for_whatsapp_matching(conn: Any) -> list[dict]:
+    """Id, display name and phone numbers for scripts/import_whatsapp.py's soft
+    link (WhatsApp spec §6.5). No email column: WhatsApp has no email addresses."""
+    return conn.execute("SELECT id, display_name, phone_numbers FROM people").fetchall()
