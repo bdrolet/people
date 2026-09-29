@@ -231,11 +231,16 @@ correct rather than destructive.
 
 `person_id` is resolved here too, by the same matcher (§6.5), and it is the
 reason this table carries the link rather than relying on a join through
-`whatsapp_handles`: **375 people already in `people` are in a group with Ben and
-have never messaged him** — no 1:1 chat, never spoke in the group. They get no
-`whatsapp_handles` row under the §4.1 rule, so without `person_id` here they
-would be invisible to `people-api` entirely, and "I share a group with them" is
-real signal worth keeping.
+`whatsapp_handles`: **1 person already in `people` is in a group with Ben and
+has never messaged him** (measured 2026-09-29 against the real store — an
+earlier probe recorded 375 here, which four independent matching strategies
+could not reproduce; see §12's dated note) — no 1:1 chat, never spoke in the
+group. They get no `whatsapp_handles` row under the §4.1 rule, so without
+`person_id` here they would be invisible to `people-api` entirely, and "I
+share a group with them" is real signal worth keeping even when today it is
+one person rather than hundreds — the column costs nothing to carry, and
+WhatsApp's LID migration (§5.5) will keep moving this number as members who
+still have a matchable phone number today migrate away from one.
 
 A member's handle is deliberately **not** a foreign key to `whatsapp_handles` —
 most members have no row there by design (§4.1), so the constraint would be
@@ -790,6 +795,61 @@ difference means either the store changed or the import is wrong.
 | date range | 2019-07-23 → run date |
 
 Distinct `people` phone numbers available for matching at probe time: 723.
+
+**Re-measured against the first real `--full` run (2026-09-29, same day, later).**
+Almost every figure above reproduced within ordinary live-store drift — including
+the two figures anchored elsewhere in this doc, `whatsapp_handles` phone-matched
+(69, exact) and the MX/AR rule's 1:1-chat count (60, exact) — and the chat total
+landed at 199, matching the correction this doc's own reviewers already expected
+given the duplicate-JID collapse and the one unnormalized session (102+99=201 was
+never internally consistent; 100+99=199 is). One figure did not reproduce and was
+investigated rather than copied forward: **membership-only identities
+phone-matched, measured 1, not 375.** Four independent match strategies — exact
+E.164 against `people.phone_numbers`, last-10/9/8/7-digit suffix matching, and a
+lookup against Google Contacts' own phone index (726 numbers) — all agree on 26
+total matched member identities (1 of which is membership-only; the other 25 are
+also 1:1 partners or group senders with a `whatsapp_handles` row already). No
+matching rule, tight or loose, reproduces 375, and the ambiguous-phone rule is not
+the cause: none of the 26 matches are ambiguous. The conclusion is that 375 was an
+error in the original probe, not a change in the data or a defect in the shipped
+matcher — corrected below and in §4.3.
+
+| Quantity | Measured 2026-09-29 (real run) |
+|---|---|
+| messages in the store | 10,332 |
+| messages stored | 10,225 |
+| duplicate stanza ids collapsed | 1 |
+| messages from Ben | 3,190 |
+| messages with non-empty text | 8,169 |
+| messages with real media | 1,553 |
+| chat sessions in the store | 208 rows / 207 distinct JIDs |
+| sessions skipped (status/broadcast) | 7 |
+| `whatsapp_chats` rows | 199 (100 direct + 99 group, one duplicate JID collapsed, one unnormalized session dropped) |
+| direct chats | 100 (96 `@s.whatsapp.net` + 4 `@lid`) |
+| group chats | 99 |
+| messages in 1:1 `@s.whatsapp.net` chats | 5,918 |
+| messages in group chats | 3,182 |
+| messages in `@lid` chats | 1,125 |
+| group member rows | 9,213 across 99 groups |
+| distinct group-member identities | 5,991 |
+| group members who ever sent a message | 540 |
+| `whatsapp_handles` rows (interaction only, §4.1) | 623 |
+| `whatsapp_handles` phone-matched to a `people` row | 69 |
+| membership-only identities | 5,451 |
+| membership-only identities phone-matched | **1** (was recorded as 375 above; not reproducible — see note) |
+| 1:1 chats normalized to E.164 | 96 of 97 |
+| 1:1 chats phone-matched to a `people` row | 60 |
+| messages in phone-matched 1:1 chats | 5,846 |
+| member rows in groups of 200+ | 7,416 of 9,213 |
+| largest two groups | 1,213 and 1,190 members |
+| date range | 2019-07-23 → run date |
+
+Distinct `people` phone numbers available for matching at probe time: 724.
+Roughly 57% of distinct group-member identities are now `lid:` rather than a
+phone number (up from an unstated share at the original baseline) — consistent
+with §5.5/§13's expectation that WhatsApp's LID migration keeps eating into the
+phone-matchable population over time; the falling membership-only match count
+sits on the same trend, not a separate one.
 
 ## 13. Decisions
 
