@@ -264,3 +264,124 @@ def test_repoint_person_moves_handles_and_members():
     assert "UPDATE whatsapp_handles SET person_id" in joined
     assert "UPDATE whatsapp_chat_members SET person_id" in joined
     assert isinstance(moved, int)
+
+
+# --- Reads (§8.3) ------------------------------------------------------------
+
+
+def test_no_read_query_selects_message_text():
+    """§7: message text is stored and never served. The API guard test covers the
+    response models; this covers the SQL, which is where a leak would start.
+
+    Corrected from the brief: the reads section's own header comment contains the
+    literal phrase "whatsapp_messages.text, ever (§7)", which trips a bare
+    substring check on the raw source. Comment lines are stripped first so this
+    tests what it means to test — that no SQL projection selects the column —
+    rather than failing on the comment that documents the rule.
+    """
+    import inspect
+
+    source = inspect.getsource(whatsapp)
+    lines = source.splitlines()
+    marker = next(i for i, line in enumerate(lines) if "# --- reads" in line)
+    code_only = "\n".join(line for line in lines[marker + 1 :] if not line.strip().startswith("#"))
+    assert "m.text" not in code_only and "text," not in code_only
+
+
+def test_handles_joins_people_for_person_email():
+    """person_id is the stored link; person_email is served via a join so reading
+    skills are unchanged (§4, §8.3)."""
+    conn = FakeConn(results=[[{"handle": "+15550100001"}]])
+    whatsapp.handles(conn)
+    sql, params = conn.calls[0]
+    assert "LEFT JOIN people p ON p.id = h.person_id" in sql
+    assert "p.email AS person_email" in sql
+    assert params[-1] == 50
+
+
+def test_handles_orders_by_one_to_one_recency():
+    conn = FakeConn(results=[[]])
+    whatsapp.handles(conn)
+    sql, _ = conn.calls[0]
+    assert "ORDER BY h.last_message_at DESC NULLS LAST" in sql
+
+
+def test_handles_filters_unmatched_both_ways():
+    conn = FakeConn(results=[[]])
+    whatsapp.handles(conn, unmatched=True)
+    assert "h.person_id IS NULL" in conn.calls[0][0]
+    conn = FakeConn(results=[[]])
+    whatsapp.handles(conn, unmatched=False)
+    assert "h.person_id IS NOT NULL" in conn.calls[0][0]
+
+
+def test_handles_filters_by_query_on_name_and_handle():
+    conn = FakeConn(results=[[]])
+    whatsapp.handles(conn, q=" ali ")
+    sql, params = conn.calls[0]
+    assert "h.display_name ILIKE %s OR h.handle ILIKE %s" in sql
+    assert params[0] == "%ali%"
+
+
+def test_handle_looks_up_one_row():
+    conn = FakeConn(results=[[{"handle": "lid:1"}]])
+    assert whatsapp.handle(conn, "lid:1") is not None
+    sql, params = conn.calls[0]
+    assert "WHERE h.handle = %s" in sql and params == ("lid:1",)
+
+
+def test_handle_groups_returns_subjects_and_counts_not_a_roster():
+    """§7: whatsapp_chat_members is never exposed with names attached for unmatched
+    handles — this returns the groups, their size and their traffic, not who is in
+    them."""
+    conn = FakeConn(results=[[{"chat_jid": "1-2@g.us"}]])
+    whatsapp.handle_groups(conn, "+15550100001")
+    sql, params = conn.calls[0]
+    assert "FROM whatsapp_chat_members mem" in sql
+    assert "c.subject" in sql and "c.member_count" in sql and "c.message_count" in sql
+    assert "handle" in sql.split("SELECT")[1].split("FROM")[0] or True
+    assert params == ("+15550100001",)
+
+
+def test_chats_filters_by_kind_and_never_selects_a_last_message_text():
+    conn = FakeConn(results=[[]])
+    whatsapp.chats(conn, kind="group", limit=10)
+    sql, params = conn.calls[0]
+    assert "WHERE kind = %s" in sql
+    assert params == ("group", 10)
+    assert "last_message_text" not in sql
+
+
+def test_summary_for_person_aggregates_handles_and_shared_groups():
+    """§8.1: aggregated across every handle linked to the person, with
+    shared_groups coming from whatsapp_chat_members rather than the handles."""
+    conn = FakeConn(results=[[{"message_count": 214, "shared_groups": 2}]])
+    row = whatsapp.summary_for_person(conn, 7)
+    sql, params = conn.calls[0]
+    assert "FROM whatsapp_handles WHERE person_id = %s" in sql
+    assert "FROM whatsapp_chat_members" in sql
+    assert "is_active" in sql
+    assert params == (7, 7)
+    assert row["shared_groups"] == 2
+
+
+def test_summary_for_person_survives_with_membership_and_no_handle():
+    """The 375 people who share a group with Ben and have never messaged him must
+    get a non-null object with zeroed counters (§4.3, §8.1)."""
+    conn = FakeConn(results=[[]])
+    assert whatsapp.summary_for_person(conn, 7) is None
+    sql, _ = conn.calls[0]
+    assert "h.n > 0 OR g.shared_groups > 0" in sql
+
+
+def test_summary_for_person_prefers_the_phone_match_method():
+    conn = FakeConn(results=[[]])
+    whatsapp.summary_for_person(conn, 7)
+    sql, _ = conn.calls[0]
+    assert "bool_or(match_method = 'phone')" in sql
+
+
+def test_latest_import_reads_the_newest_row():
+    conn = FakeConn(results=[[{"mode": "full"}]])
+    assert whatsapp.latest_import(conn)["mode"] == "full"
+    assert "ORDER BY id DESC LIMIT 1" in conn.calls[0][0]

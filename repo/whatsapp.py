@@ -359,3 +359,128 @@ def repoint_person(conn: Any, from_id: int, to_id: int) -> int:
         (to_id, from_id),
     ).rowcount
     return moved
+
+
+# --- reads (§8.3). No query here selects whatsapp_messages.text, ever (§7). ---
+
+# person_id is the stored FK to people(id); person_email is served by joining people
+# rather than being stored, so reading skills are unchanged (§4, §8).
+_HANDLE_OUT = """
+    h.handle, h.jid, h.display_name, h.person_id, p.email AS person_email, h.match_method,
+    h.message_count, h.my_message_count, h.last_message_at, h.last_my_message_at,
+    h.group_message_count, h.last_group_message_at, h.group_count, h.updated_at
+"""
+_HANDLES_JOIN = "whatsapp_handles h LEFT JOIN people p ON p.id = h.person_id"
+
+
+def handles(
+    conn: Any,
+    *,
+    q: str | None = None,
+    unmatched: bool | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    where: list[str] = []
+    params: list[Any] = []
+    if q:
+        where.append("(h.display_name ILIKE %s OR h.handle ILIKE %s)")
+        like = f"%{q.strip()}%"
+        params += [like, like]
+    if unmatched is not None:
+        where.append("h.person_id IS NULL" if unmatched else "h.person_id IS NOT NULL")
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    return conn.execute(
+        f"""
+        SELECT {_HANDLE_OUT} FROM {_HANDLES_JOIN} {clause}
+        ORDER BY h.last_message_at DESC NULLS LAST LIMIT %s
+        """,
+        (*params, limit),
+    ).fetchall()
+
+
+def handle(conn: Any, handle: str) -> dict | None:
+    return conn.execute(
+        f"SELECT {_HANDLE_OUT} FROM {_HANDLES_JOIN} WHERE h.handle = %s", (handle,)
+    ).fetchone()
+
+
+def handle_groups(conn: Any, handle: str) -> list[dict]:
+    """The groups this handle is a member of (§8.3): subject, size, traffic. Never
+    the roster — §7 keeps other members' names out of API responses."""
+    return conn.execute(
+        """
+        SELECT c.chat_jid, c.subject, c.member_count, c.message_count, c.my_message_count,
+               c.last_message_at, mem.is_admin, mem.is_active
+        FROM whatsapp_chat_members mem
+        JOIN whatsapp_chats c ON c.chat_jid = mem.chat_jid
+        WHERE mem.handle = %s
+        ORDER BY c.last_message_at DESC NULLS LAST
+        """,
+        (handle,),
+    ).fetchall()
+
+
+def chats(conn: Any, *, kind: str | None = None, limit: int = 50) -> list[dict]:
+    clause = "WHERE kind = %s" if kind else ""
+    params: tuple = (kind, limit) if kind else (limit,)
+    return conn.execute(
+        f"""
+        SELECT chat_jid, kind, subject, handle, created_at, member_count, message_count,
+               my_message_count, last_message_at, updated_at
+        FROM whatsapp_chats {clause}
+        ORDER BY last_message_at DESC NULLS LAST LIMIT %s
+        """,
+        params,
+    ).fetchall()
+
+
+def summary_for_person(conn: Any, person_id: int) -> dict | None:
+    """Aggregated over every handle linked to this person, plus shared groups (§8.1).
+
+    Returns a row when the person has either a handle or an active membership, so
+    the 375 people who share a group with Ben and have never messaged him still get
+    an object — with zeroed counters and a null match_method, which is accurate
+    (§4.3). Returns None only when there is neither.
+    """
+    return conn.execute(
+        """
+        WITH h AS (
+            SELECT array_agg(handle ORDER BY handle) AS handles,
+                   COALESCE(SUM(message_count), 0) AS message_count,
+                   COALESCE(SUM(my_message_count), 0) AS my_message_count,
+                   MAX(last_message_at) AS last_message_at,
+                   MAX(last_my_message_at) AS last_my_message_at,
+                   COALESCE(SUM(group_message_count), 0) AS group_message_count,
+                   COALESCE(SUM(group_count), 0) AS group_count,
+                   CASE
+                       WHEN bool_or(match_method = 'phone') THEN 'phone'
+                       WHEN bool_or(match_method = 'name') THEN 'name'
+                   END AS match_method,
+                   MAX(updated_at) AS imported_at,
+                   COUNT(*) AS n
+            FROM whatsapp_handles WHERE person_id = %s
+        ), g AS (
+            SELECT COUNT(DISTINCT chat_jid) AS shared_groups
+            FROM whatsapp_chat_members WHERE person_id = %s AND is_active
+        )
+        SELECT COALESCE(h.handles, ARRAY[]::text[]) AS handles,
+               h.message_count, h.my_message_count, h.last_message_at, h.last_my_message_at,
+               h.group_message_count, h.group_count, g.shared_groups, h.match_method,
+               h.imported_at
+        FROM h CROSS JOIN g
+        WHERE h.n > 0 OR g.shared_groups > 0
+        """,
+        (person_id, person_id),
+    ).fetchone()
+
+
+def latest_import(conn: Any) -> dict | None:
+    return conn.execute(
+        """
+        SELECT started_at, finished_at, mode, watermark, chats_upserted, members_upserted,
+               handles_upserted, messages_upserted, messages_deleted, senderless_dropped,
+               duplicate_stanza_ids, sessions_skipped, handles_unnormalized,
+               matched_by_phone, matched_by_name
+        FROM whatsapp_imports ORDER BY id DESC LIMIT 1
+        """
+    ).fetchone()
