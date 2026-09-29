@@ -122,6 +122,21 @@ def check_phone_removal(email: str | None, submitted: list[dict]) -> None:
     )
 
 
+def identifiers(contact: dict) -> tuple[list[str], list[str]]:
+    """(emails, phones) a submitted contact map would give a person.
+    Emails are normalized; phones are E.164 and exclude anything
+    normalize_handle rejects. Either list may be empty."""
+    raw_emails = (str(e.get("value") or "") for e in contact.get("emailAddresses", []))
+    emails = list(dict.fromkeys(normalized for e in raw_emails if (normalized := normalize(e))))
+
+    raw_phones = (str(p.get("value") or "") for p in contact.get("phoneNumbers", []))
+    phones = list(
+        dict.fromkeys(handle for p in raw_phones if (handle := normalize_handle(p)) is not None)
+    )
+
+    return emails, phones
+
+
 def _primary_organization(organizations: list[dict]) -> dict | None:
     if not organizations:
         return None
