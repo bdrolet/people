@@ -747,6 +747,13 @@ The script is local, so it flushes OTel explicitly before exit, as
    is not optional and belongs in the same PR as the schema.
 6. **Skills and CLAUDE.md** (§9).
 
+> **Status note (added during implementation):** step 5 could not be completed in
+> this PR — `scripts/merge_duplicate_contacts.py` is not on `main`, it is on the
+> unmerged `merge-duplicate-contacts` branch (PR #18). `repo/whatsapp.py::repoint_person`
+> is implemented and tested; the call site must be added to `_collapse_rows`
+> whichever of the two branches merges second. Until then, a contact merge silently
+> unlinks WhatsApp handles and memberships via `ON DELETE SET NULL`.
+
 ## 12. Measured baseline (2026-09-29)
 
 An implementer should reproduce these from a real `--full` run. A material
