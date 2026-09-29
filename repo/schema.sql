@@ -280,3 +280,100 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS imessage_handles_person_id_idx     ON imessage_handles (person_id);
 CREATE INDEX IF NOT EXISTS linkedin_connections_person_id_idx ON linkedin_connections (person_id);
+
+-- WhatsApp snapshot (docs/superpowers/specs/2026-09-29-whatsapp-snapshot-design.md §4).
+-- Upserted incrementally by scripts/import_whatsapp.py; message text is stored here
+-- but is never served by people-api. Appended last on purpose: whatsapp_handles
+-- references people(id), which only becomes a primary key in the person-identity
+-- migration above.
+
+CREATE TABLE IF NOT EXISTS whatsapp_handles (
+    handle                 TEXT PRIMARY KEY,   -- E.164, or 'lid:<id>' (§6.4)
+    jid                    TEXT,               -- the raw JID last seen for this handle
+    display_name           TEXT,               -- ZPARTNERNAME, else ZPUSHNAME (§6.6)
+    person_id              BIGINT REFERENCES people(id) ON DELETE SET NULL,
+    match_method           TEXT,               -- 'phone' | 'name' | NULL
+    message_count          INT NOT NULL DEFAULT 0,   -- 1:1 chats only
+    my_message_count       INT NOT NULL DEFAULT 0,   -- 1:1 chats only
+    last_message_at        TIMESTAMPTZ,
+    last_my_message_at     TIMESTAMPTZ,
+    -- Messages this handle SENT in group chats. Deliberately different from
+    -- imessage_handles.group_message_count, which counts every message in a group the
+    -- handle belongs to because chat.db cannot attribute group senders; WhatsApp can,
+    -- via ZWAMESSAGE.ZGROUPMEMBER (§4.1, §5.4). Never compare the two naively.
+    group_message_count    INT NOT NULL DEFAULT 0,
+    last_group_message_at  TIMESTAMPTZ,
+    group_count            INT NOT NULL DEFAULT 0,   -- active group memberships
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS whatsapp_handles_person_idx ON whatsapp_handles (person_id);
+CREATE INDEX IF NOT EXISTS whatsapp_handles_name_trgm_idx
+    ON whatsapp_handles USING gin (display_name gin_trgm_ops);
+
+CREATE TABLE IF NOT EXISTS whatsapp_chats (
+    chat_jid          TEXT PRIMARY KEY,        -- ZWACHATSESSION.ZCONTACTJID; 208 sessions
+    kind              TEXT NOT NULL,           -- 'direct' | 'group'
+    subject           TEXT,                    -- group subject, or the 1:1 partner name
+    handle            TEXT,                    -- 'direct' only: the other party's handle
+    created_at        TIMESTAMPTZ,             -- ZWAGROUPINFO.ZCREATIONDATE (groups only)
+    member_count      INT NOT NULL DEFAULT 0,  -- groups only; bimodal, see §5.7
+    message_count     INT NOT NULL DEFAULT 0,
+    my_message_count  INT NOT NULL DEFAULT 0,
+    last_message_at   TIMESTAMPTZ,
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS whatsapp_chats_handle_idx ON whatsapp_chats (handle);
+
+-- The roster: 10,090 rows across 99 groups. A member who never posts leaves no
+-- messages, so this is not derivable from traffic (§4.3). handle is deliberately
+-- NOT a foreign key to whatsapp_handles — most members have no row there (§4.1).
+CREATE TABLE IF NOT EXISTS whatsapp_chat_members (
+    chat_jid   TEXT NOT NULL REFERENCES whatsapp_chats (chat_jid) ON DELETE CASCADE,
+    handle     TEXT NOT NULL,
+    person_id  BIGINT REFERENCES people (id) ON DELETE SET NULL,
+    is_admin   BOOLEAN NOT NULL DEFAULT FALSE,
+    is_active  BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (chat_jid, handle)
+);
+CREATE INDEX IF NOT EXISTS whatsapp_chat_members_handle_idx ON whatsapp_chat_members (handle);
+CREATE INDEX IF NOT EXISTS whatsapp_chat_members_person_idx ON whatsapp_chat_members (person_id);
+
+-- ZSTANZAID is almost unique but not quite (10,328 distinct across 10,329 rows), and
+-- the one duplicate pair sits inside a single chat, so this key collapses it into one
+-- row — reported as duplicate_stanza_ids rather than collapsed silently (§4.4).
+CREATE TABLE IF NOT EXISTS whatsapp_messages (
+    chat_jid       TEXT NOT NULL REFERENCES whatsapp_chats (chat_jid) ON DELETE CASCADE,
+    stanza_id      TEXT NOT NULL,       -- ZWAMESSAGE.ZSTANZAID
+    sender_handle  TEXT,                -- NULL when from_me
+    from_me        BOOLEAN NOT NULL,
+    sent_at        TIMESTAMPTZ,
+    text           TEXT,                -- never served by people-api (§7)
+    message_type   INT,                 -- raw ZMESSAGETYPE; never used to filter (§5.3)
+    has_media      BOOLEAN NOT NULL DEFAULT FALSE,
+    media_kind     TEXT,                -- 'image'|'video'|'audio'|'document'|'vcard'|'other'
+    source_pk      BIGINT NOT NULL,     -- ZWAMESSAGE.Z_PK, the watermark column
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (chat_jid, stanza_id)
+);
+CREATE INDEX IF NOT EXISTS whatsapp_messages_sender_idx ON whatsapp_messages (sender_handle);
+CREATE INDEX IF NOT EXISTS whatsapp_messages_sent_idx ON whatsapp_messages (sent_at DESC);
+CREATE INDEX IF NOT EXISTS whatsapp_messages_source_pk_idx ON whatsapp_messages (source_pk);
+
+CREATE TABLE IF NOT EXISTS whatsapp_imports (
+    id                     BIGSERIAL PRIMARY KEY,
+    started_at             TIMESTAMPTZ NOT NULL,
+    finished_at            TIMESTAMPTZ NOT NULL,
+    mode                   TEXT NOT NULL CHECK (mode IN ('incremental', 'full')),
+    watermark              BIGINT,              -- highest source_pk seen
+    chats_upserted         INT NOT NULL DEFAULT 0,
+    members_upserted       INT NOT NULL DEFAULT 0,
+    handles_upserted       INT NOT NULL DEFAULT 0,
+    messages_upserted      INT NOT NULL DEFAULT 0,
+    messages_deleted       INT NOT NULL DEFAULT 0,
+    senderless_dropped     INT NOT NULL DEFAULT 0,
+    duplicate_stanza_ids   INT NOT NULL DEFAULT 0,
+    sessions_skipped       INT NOT NULL DEFAULT 0,
+    handles_unnormalized   INT NOT NULL DEFAULT 0,
+    matched_by_phone       INT NOT NULL DEFAULT 0,
+    matched_by_name        INT NOT NULL DEFAULT 0
+);

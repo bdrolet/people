@@ -244,3 +244,99 @@ def test_promoting_to_a_claimed_address_violates_the_unique_index(conn):
         conn.execute(
             "UPDATE people SET email = 'taken@example.com' WHERE google_resource_name = 'people/c1'"
         )
+
+
+# --- WhatsApp snapshot (spec 2026-09-29-whatsapp-snapshot-design.md §4) -------
+
+
+def _wa_chat(conn, chat_jid="1234-5678@g.us", kind="group"):
+    conn.execute("INSERT INTO whatsapp_chats (chat_jid, kind) VALUES (%s, %s)", (chat_jid, kind))
+
+
+def test_whatsapp_tables_exist(conn):
+    names = {
+        r[0]
+        for r in conn.execute(
+            "select table_name from information_schema.tables where table_name like 'whatsapp%%'"
+        ).fetchall()
+    }
+    assert names == {
+        "whatsapp_handles",
+        "whatsapp_chats",
+        "whatsapp_chat_members",
+        "whatsapp_messages",
+        "whatsapp_imports",
+    }
+
+
+def test_whatsapp_handle_person_id_must_exist(conn):
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        conn.execute(
+            "INSERT INTO whatsapp_handles (handle, person_id) VALUES (%s, %s)",
+            ("+15550100001", 999999),
+        )
+
+
+def test_deleting_person_nulls_whatsapp_links(conn):
+    _person(conn)
+    pid = conn.execute("select id from people where email = 'alice@example.com'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO whatsapp_handles (handle, person_id) VALUES ('+15550100001', %s)", (pid,)
+    )
+    _wa_chat(conn)
+    conn.execute(
+        "INSERT INTO whatsapp_chat_members (chat_jid, handle, person_id)"
+        " VALUES ('1234-5678@g.us', '+15550100002', %s)",
+        (pid,),
+    )
+    conn.execute("DELETE FROM people WHERE email = 'alice@example.com'")
+    assert conn.execute("SELECT person_id FROM whatsapp_handles").fetchone()[0] is None
+    assert conn.execute("SELECT person_id FROM whatsapp_chat_members").fetchone()[0] is None
+
+
+def test_deleting_chat_cascades_to_members_and_messages(conn):
+    """A membership or message row is meaningless without its chat, and both sides
+    are import-owned, so CASCADE here is correct rather than destructive (§4.3)."""
+    _wa_chat(conn)
+    conn.execute(
+        "INSERT INTO whatsapp_chat_members (chat_jid, handle) VALUES ('1234-5678@g.us', '+1555010000')"
+    )
+    conn.execute(
+        "INSERT INTO whatsapp_messages (chat_jid, stanza_id, from_me, source_pk)"
+        " VALUES ('1234-5678@g.us', 's1', false, 1)"
+    )
+    conn.execute("DELETE FROM whatsapp_chats WHERE chat_jid = '1234-5678@g.us'")
+    assert conn.execute("SELECT COUNT(*) FROM whatsapp_chat_members").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM whatsapp_messages").fetchone()[0] == 0
+
+
+def test_member_handle_is_not_a_foreign_key_to_handles(conn):
+    """Most group members have no whatsapp_handles row by design (§4.1/§4.3), so
+    the constraint would be wrong, not merely inconvenient."""
+    _wa_chat(conn)
+    conn.execute(
+        "INSERT INTO whatsapp_chat_members (chat_jid, handle) VALUES ('1234-5678@g.us', '+15550109999')"
+    )
+    assert conn.execute("SELECT COUNT(*) FROM whatsapp_chat_members").fetchone()[0] == 1
+
+
+def test_message_key_is_chat_jid_and_stanza_id(conn):
+    _wa_chat(conn)
+    conn.execute(
+        "INSERT INTO whatsapp_messages (chat_jid, stanza_id, from_me, source_pk)"
+        " VALUES ('1234-5678@g.us', 's1', false, 1)"
+    )
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        conn.execute(
+            "INSERT INTO whatsapp_messages (chat_jid, stanza_id, from_me, source_pk)"
+            " VALUES ('1234-5678@g.us', 's1', false, 2)"
+        )
+
+
+def test_handle_stats_default_to_zero(conn):
+    conn.execute("INSERT INTO whatsapp_handles (handle) VALUES ('lid:123')")
+    row = conn.execute(
+        "select message_count, my_message_count, group_message_count, group_count,"
+        " last_message_at, match_method from whatsapp_handles"
+    ).fetchone()
+    assert row == (0, 0, 0, 0, None, None)
