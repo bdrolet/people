@@ -203,3 +203,50 @@ def test_update_fields_with_no_fields_does_not_call_google(monkeypatch):
 
     monkeypatch.setattr(gc, "_svc", boom)
     assert gc.update_fields("people/c1", "etag-1", {}) == {}
+
+
+def test_create_person_sends_the_body_and_group(monkeypatch):
+    calls = []
+
+    class FakeReq:
+        def execute(self):
+            return {"resourceName": "people/c1"}
+
+    class FakePeople:
+        def createContact(self, **kw):
+            calls.append(kw)
+            return FakeReq()
+
+    class FakeService:
+        def people(self):
+            return FakePeople()
+
+    monkeypatch.setattr(gc, "_svc", lambda: FakeService())
+    gc.create_person({"phoneNumbers": [{"value": "+15550100001"}]}, "contactGroups/abc")
+    body = calls[0]["body"]
+    assert body["phoneNumbers"] == [{"value": "+15550100001"}]
+    assert body["memberships"] == [
+        {"contactGroupMembership": {"contactGroupResourceName": "contactGroups/abc"}}
+    ]
+    assert calls[0]["personFields"] == gc.PERSON_FIELDS
+
+
+def test_create_person_without_a_group_sends_no_membership(monkeypatch):
+    calls = []
+
+    class FakeReq:
+        def execute(self):
+            return {"resourceName": "people/c1"}
+
+    class FakePeople:
+        def createContact(self, **kw):
+            calls.append(kw)
+            return FakeReq()
+
+    class FakeService:
+        def people(self):
+            return FakePeople()
+
+    monkeypatch.setattr(gc, "_svc", lambda: FakeService())
+    gc.create_person({"names": [{"givenName": "Alice"}]}, None)
+    assert "memberships" not in calls[0]["body"]
