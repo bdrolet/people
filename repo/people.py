@@ -277,6 +277,26 @@ def create_from_google(
     ).fetchone()
 
 
+def relink_google(conn: Any, person_id: int, *, resource_name: str, etag: str | None) -> None:
+    """Point an existing row at a different Google contact. Used when duplicate
+    contacts are merged and the surviving contact has no row of its own — the
+    best of the losers' rows is re-linked rather than orphaned."""
+    conn.execute(
+        """
+        UPDATE people SET google_resource_name = %s, google_etag = %s,
+                          google_deleted_at = NULL, updated_at = now()
+        WHERE id = %s
+        """,
+        (resource_name, etag, person_id),
+    )
+
+
+def delete(conn: Any, person_id: int) -> None:
+    """Remove a row outright. Child tables reference people(id) ON DELETE SET
+    NULL, so callers that care about those links must re-point them first."""
+    conn.execute("DELETE FROM people WHERE id = %s", (person_id,))
+
+
 def set_hubspot(conn: Any, email: str, contact_id: str) -> None:
     conn.execute(
         "UPDATE people SET hubspot_contact_id = %s, hubspot_synced_at = now(), updated_at = now() WHERE email = %s",

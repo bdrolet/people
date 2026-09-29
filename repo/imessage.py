@@ -297,6 +297,14 @@ def handle_groups(conn: Any, handle: str) -> list[dict]:
     ).fetchall()
 
 
+def repoint_person(conn: Any, from_id: int, to_id: int) -> int:
+    """Move every handle linked to from_id onto to_id, and report how many moved."""
+    return conn.execute(
+        "UPDATE imessage_handles SET person_id = %s WHERE person_id = %s",
+        (to_id, from_id),
+    ).rowcount
+
+
 def summary_for_person(conn: Any, person_id: int) -> dict | None:
     """Aggregated over every handle linked to this person (§7.1 IMessageSummary)."""
     return conn.execute(
