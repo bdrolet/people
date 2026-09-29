@@ -7,13 +7,15 @@ Shape, so the assertions elsewhere have one place to read:
                a second row for alice's JID (duplicate, no messages),
                a legacy-MX direct chat, an unnormalizable 1-digit JID,
                a JID with no '@' at all
-  messages 13: covers from_me, empty text, a group message via ZGROUPMEMBER,
+  messages 14: covers from_me, empty text, a group message via ZGROUPMEMBER,
                a senderless group inbound, Ben's own group message with no
                ZGROUPMEMBER, a LID chat message, a duplicate stanza id, real
-               media, the §5.3 media trap, a vcard, and a message in a skipped
-               session
-  members   4: an admin who also messages, a named member, an inactive member,
-               and a @lid member
+               media, the §5.3 media trap, a vcard, a message in a skipped
+               session, and a group-only sender (attributed via ZGROUPMEMBER,
+               with ZFROMJID deliberately set to the group's own JID, as the
+               real store does) who has no direct chat of their own
+  members   5: an admin who also messages, a named member, an inactive member,
+               a @lid member, and a group-only sender with no direct chat
 """
 
 import sqlite3
@@ -45,6 +47,8 @@ MX_JID = "5215555555555@s.whatsapp.net"
 MEMBER_2_JID = "15550100002@s.whatsapp.net"
 MEMBER_3_JID = "15550100003@s.whatsapp.net"
 MEMBER_LID_JID = "99900000000002@lid"
+# A group-only sender with no direct chat of their own (§4.1's second clause).
+MEMBER_4_JID = "15550100004@s.whatsapp.net"
 
 
 def wa_ts(unix_seconds: int) -> float:
@@ -86,6 +90,7 @@ def build_store(tmp_path: Path) -> Path:
             (2, 2, 0, 1, "Dana Example", MEMBER_2_JID),
             (3, 2, 0, 0, None, MEMBER_3_JID),  # inactive, never posts
             (4, 2, 0, 1, "Eve Example", MEMBER_LID_JID),
+            (5, 2, 0, 1, "Frank Example", MEMBER_4_JID),  # group-only sender
         ],
     )
     db.executemany(
@@ -121,6 +126,25 @@ def build_store(tmp_path: Path) -> Path:
             # In a skipped (status) session: never stored.
             (12, 0, 0, 0, 4, None, None, wa_ts(T0 + 870), None, "s12", "A status", None),
             (13, 7, 0, 4, 1, None, 3, wa_ts(T0 + 900), "Alice", "s13", None, ALICE_JID),
+            # Group-only sender, attributed via ZGROUPMEMBER: on the real store
+            # ZFROMJID on a group row holds the group's own JID, never the
+            # sender's, so it's set to GROUP_JID here too — the resulting
+            # handle's jid must come from ZMEMBERJID (via ZGROUPMEMBER), not
+            # this column (§4.1, §5.4).
+            (
+                14,
+                7,
+                0,
+                0,
+                2,
+                5,
+                None,
+                wa_ts(T0 + 650),
+                "Frank",
+                "s14",
+                "Group only sender",
+                GROUP_JID,
+            ),
         ],
     )
     db.commit()

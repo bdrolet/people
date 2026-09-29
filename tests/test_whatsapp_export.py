@@ -2,7 +2,14 @@ import logging
 
 from clients import whatsapp_local
 from services import whatsapp_export as wa
-from tests.fixtures.whatsapp import ALICE_JID, GROUP_JID, LID_JID, MX_JID, build_store
+from tests.fixtures.whatsapp import (
+    ALICE_JID,
+    GROUP_JID,
+    LID_JID,
+    MEMBER_4_JID,
+    MX_JID,
+    build_store,
+)
 
 # --- JID classification (§6.3) ------------------------------------------------
 
@@ -170,7 +177,7 @@ def test_a_group_chat_carries_its_subject_creation_date_and_member_count(tmp_pat
     assert group.subject == "Soccer Carpool"
     assert group.created_at is not None
     assert group.handle is None
-    assert group.member_count == 4
+    assert group.member_count == 5
 
 
 def test_a_direct_chat_denormalizes_the_other_party_s_handle(tmp_path):
@@ -186,7 +193,7 @@ def test_chat_counters_are_set_from_the_batch_s_messages(tmp_path):
     chats = {c.chat_jid: c for c in batch(tmp_path).chats}
     assert chats[ALICE_JID].message_count == 6  # s1,s2,s3,s9,s10,s13
     assert chats[ALICE_JID].my_message_count == 1
-    assert chats[GROUP_JID].message_count == 2  # s4 and Ben's s6
+    assert chats[GROUP_JID].message_count == 3  # s4, Ben's s6, and s14
     assert chats[GROUP_JID].my_message_count == 1
     assert chats[ALICE_JID].last_message_at is not None
 
@@ -280,8 +287,8 @@ def test_media_flags_come_from_real_content(tmp_path):
 
 def test_source_pk_and_watermark_track_the_store(tmp_path):
     b = batch(tmp_path)
-    assert b.watermark == 13
-    assert max(m.source_pk for m in b.messages) == 13
+    assert b.watermark == 14
+    assert max(m.source_pk for m in b.messages) == 14
 
 
 def test_sent_at_reads_seconds_since_2001(tmp_path):
@@ -302,6 +309,7 @@ def test_only_identities_with_interaction_get_a_handle_row(tmp_path):
         "+15550100001",
         "lid:99900000000001",
         "+525555555555",
+        "+15550100004",  # the group-only sender: earns a handle by talking
     }
     assert "+15550100002" in {m.handle for m in b.members}
 
@@ -313,6 +321,22 @@ def test_a_handle_keeps_the_raw_jid_and_prefers_the_partner_name(tmp_path):
     assert handles["+15550100001"].jid == ALICE_JID
     assert handles["+15550100001"].display_name == "Alice Example"
     assert handles["lid:99900000000001"].display_name == "Bob Example"
+
+
+def test_a_group_only_sender_earns_a_handle_from_zmemberjid_not_zfromjid(tmp_path):
+    """§4.1's second clause: a person with no direct chat still earns a handle
+    row the moment they talk in a group — this is the entire reason the real
+    table holds 621 rows instead of 6,767. On the real store ZFROMJID on a
+    group row holds the group's own JID, never the sender's (measured on all 83
+    senderless group inbounds), so the fixture sets ZFROMJID to GROUP_JID on
+    this row too. If the handle's jid ever regressed to reading ZFROMJID, this
+    assertion would catch it: it would see GROUP_JID, a @g.us address, sitting
+    on a person's handle row."""
+    handles = {h.handle: h for h in batch(tmp_path).handles}
+    frank = handles["+15550100004"]
+    assert frank.jid == MEMBER_4_JID
+    assert frank.jid != GROUP_JID
+    assert frank.display_name == "Frank"
 
 
 def test_handles_are_unique_in_the_batch(tmp_path):
@@ -338,6 +362,7 @@ def test_every_group_member_is_recorded_with_admin_and_active_flags(tmp_path):
         "+15550100002",
         "+15550100003",
         "lid:99900000000002",
+        "+15550100004",
     }
     assert members["+15550100001"].is_admin is True
     assert members["+15550100001"].is_active is True
@@ -357,7 +382,7 @@ def test_a_member_of_a_skipped_or_missing_chat_is_ignored(tmp_path):
     raw = whatsapp_local.read(build_store(tmp_path))
     raw.members.append({**raw.members[0], "Z_PK": 98, "ZCHATSESSION": 4})  # the status session
     raw.members.append({**raw.members[0], "Z_PK": 97, "ZCHATSESSION": 999})  # no such session
-    assert len(wa.build_batch(raw, mode="full").members) == 4
+    assert len(wa.build_batch(raw, mode="full").members) == 5
 
 
 def test_mode_is_carried_through(tmp_path):

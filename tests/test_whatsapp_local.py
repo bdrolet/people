@@ -10,9 +10,9 @@ from tests.fixtures.whatsapp import build_store
 def test_read_returns_sessions_messages_and_members(tmp_path):
     raw = whatsapp_local.read(build_store(tmp_path))
     assert len(raw.sessions) == 8
-    assert len(raw.messages) == 13
-    assert len(raw.members) == 4
-    assert raw.max_pk == 13
+    assert len(raw.messages) == 14
+    assert len(raw.members) == 5
+    assert raw.max_pk == 14
 
 
 def test_group_creation_date_comes_through_the_join(tmp_path):
@@ -34,8 +34,8 @@ def test_media_columns_come_through_the_join(tmp_path):
 
 def test_incremental_selection_uses_the_watermark(tmp_path):
     raw = whatsapp_local.read(build_store(tmp_path), since_pk=11)
-    assert {m["ZSTANZAID"] for m in raw.messages} == {"s12", "s13"}
-    assert raw.max_pk == 13  # the store's max, not the selection's
+    assert {m["ZSTANZAID"] for m in raw.messages} == {"s12", "s13", "s14"}
+    assert raw.max_pk == 14  # the store's max, not the selection's
 
 
 def test_window_start_pulls_older_rows_back_in(tmp_path):
@@ -44,12 +44,12 @@ def test_window_start_pulls_older_rows_back_in(tmp_path):
     raw = whatsapp_local.read(
         build_store(tmp_path), since_pk=13, window_start=datetime(2025, 6, 1, tzinfo=UTC)
     )
-    assert len(raw.messages) == 13
+    assert len(raw.messages) == 14
 
 
 def test_full_ignores_the_watermark(tmp_path):
     raw = whatsapp_local.read(build_store(tmp_path), since_pk=13, full=True)
-    assert len(raw.messages) == 13
+    assert len(raw.messages) == 14
 
 
 def test_the_store_is_copied_not_opened_in_place(tmp_path, monkeypatch):
