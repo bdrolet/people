@@ -1,4 +1,5 @@
 import pathlib
+import re
 from datetime import UTC, datetime
 
 import pytest
@@ -320,7 +321,18 @@ def test_merge_duplicate_contacts_calls_repoint_person():
             "(PR #18, unmerged) — once it lands, this test must assert its "
             "_collapse_rows calls repo/whatsapp.py::repoint_person"
         )
-    assert "repoint_person" in path.read_text()
+    # A bare `"repoint_person" in text` would pass the moment PR #18 lands: its
+    # _collapse_rows already calls imessage_repo.repoint_person and
+    # linkedin_repo.repoint_person, so the substring is present without any
+    # WhatsApp re-point. Match the WhatsApp call specifically, or this guard is
+    # inert exactly when it is supposed to fire.
+    assert re.search(r"whatsapp\w*\.repoint_person\s*\(", path.read_text()), (
+        "scripts/merge_duplicate_contacts.py exists but its _collapse_rows never calls "
+        "repo/whatsapp.py::repoint_person. Add it beside the iMessage and LinkedIn "
+        "re-points: both WhatsApp person_id foreign keys are ON DELETE SET NULL, so "
+        "deleting a loser `people` row unlinks its whatsapp_handles and "
+        "whatsapp_chat_members rows (CLAUDE.md, spec §4 and §11 step 5)."
+    )
 
 
 # --- Reads (§8.3) ------------------------------------------------------------
