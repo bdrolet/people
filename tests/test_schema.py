@@ -3,6 +3,7 @@ is set, e.g. postgresql://localhost/people_schema_test."""
 
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 import psycopg
@@ -244,3 +245,229 @@ def test_promoting_to_a_claimed_address_violates_the_unique_index(conn):
         conn.execute(
             "UPDATE people SET email = 'taken@example.com' WHERE google_resource_name = 'people/c1'"
         )
+
+
+# --- WhatsApp snapshot (spec 2026-09-29-whatsapp-snapshot-design.md §4) -------
+
+
+def _wa_chat(conn, chat_jid="1234-5678@g.us", kind="group"):
+    conn.execute("INSERT INTO whatsapp_chats (chat_jid, kind) VALUES (%s, %s)", (chat_jid, kind))
+
+
+def test_whatsapp_tables_exist(conn):
+    names = {
+        r[0]
+        for r in conn.execute(
+            "select table_name from information_schema.tables where table_name like 'whatsapp%%'"
+        ).fetchall()
+    }
+    assert names == {
+        "whatsapp_handles",
+        "whatsapp_chats",
+        "whatsapp_chat_members",
+        "whatsapp_messages",
+        "whatsapp_imports",
+    }
+
+
+def test_whatsapp_handle_person_id_must_exist(conn):
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        conn.execute(
+            "INSERT INTO whatsapp_handles (handle, person_id) VALUES (%s, %s)",
+            ("+15550100001", 999999),
+        )
+
+
+def test_deleting_person_nulls_whatsapp_links(conn):
+    _person(conn)
+    pid = conn.execute("select id from people where email = 'alice@example.com'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO whatsapp_handles (handle, person_id) VALUES ('+15550100001', %s)", (pid,)
+    )
+    _wa_chat(conn)
+    conn.execute(
+        "INSERT INTO whatsapp_chat_members (chat_jid, handle, person_id)"
+        " VALUES ('1234-5678@g.us', '+15550100002', %s)",
+        (pid,),
+    )
+    conn.execute("DELETE FROM people WHERE email = 'alice@example.com'")
+    assert conn.execute("SELECT person_id FROM whatsapp_handles").fetchone()[0] is None
+    assert conn.execute("SELECT person_id FROM whatsapp_chat_members").fetchone()[0] is None
+
+
+def test_deleting_chat_cascades_to_members_and_messages(conn):
+    """A membership or message row is meaningless without its chat, and both sides
+    are import-owned, so CASCADE here is correct rather than destructive (§4.3)."""
+    _wa_chat(conn)
+    conn.execute(
+        "INSERT INTO whatsapp_chat_members (chat_jid, handle) VALUES ('1234-5678@g.us', '+1555010000')"
+    )
+    conn.execute(
+        "INSERT INTO whatsapp_messages (chat_jid, stanza_id, from_me, source_pk)"
+        " VALUES ('1234-5678@g.us', 's1', false, 1)"
+    )
+    conn.execute("DELETE FROM whatsapp_chats WHERE chat_jid = '1234-5678@g.us'")
+    assert conn.execute("SELECT COUNT(*) FROM whatsapp_chat_members").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM whatsapp_messages").fetchone()[0] == 0
+
+
+def test_member_handle_is_not_a_foreign_key_to_handles(conn):
+    """Most group members have no whatsapp_handles row by design (§4.1/§4.3), so
+    the constraint would be wrong, not merely inconvenient."""
+    _wa_chat(conn)
+    conn.execute(
+        "INSERT INTO whatsapp_chat_members (chat_jid, handle) VALUES ('1234-5678@g.us', '+15550109999')"
+    )
+    assert conn.execute("SELECT COUNT(*) FROM whatsapp_chat_members").fetchone()[0] == 1
+
+
+def test_message_key_is_chat_jid_and_stanza_id(conn):
+    _wa_chat(conn)
+    conn.execute(
+        "INSERT INTO whatsapp_messages (chat_jid, stanza_id, from_me, source_pk)"
+        " VALUES ('1234-5678@g.us', 's1', false, 1)"
+    )
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        conn.execute(
+            "INSERT INTO whatsapp_messages (chat_jid, stanza_id, from_me, source_pk)"
+            " VALUES ('1234-5678@g.us', 's1', false, 2)"
+        )
+
+
+def test_handle_stats_default_to_zero(conn):
+    conn.execute("INSERT INTO whatsapp_handles (handle) VALUES ('lid:123')")
+    row = conn.execute(
+        "select message_count, my_message_count, group_message_count, group_count,"
+        " last_message_at, match_method from whatsapp_handles"
+    ).fetchone()
+    assert row == (0, 0, 0, 0, None, None)
+
+
+def test_an_incremental_run_does_not_null_other_chats_last_message_at(conn):
+    """Review Focus 3, and the bug the iMessage import shipped once (§6.7): an
+    incremental batch legitimately contains no messages for most chats."""
+    from models.whatsapp import WhatsAppChat
+    from repo import whatsapp as wa_repo
+
+    old, new = "1-1@g.us", "2-2@g.us"
+    wa_repo.upsert_chats(
+        conn,
+        [
+            WhatsAppChat(
+                chat_jid=old, kind="group", last_message_at=datetime(2025, 1, 1, tzinfo=UTC)
+            ),
+            WhatsAppChat(chat_jid=new, kind="group"),
+        ],
+    )
+    conn.execute(
+        "INSERT INTO whatsapp_messages (chat_jid, stanza_id, from_me, sent_at, source_pk)"
+        " VALUES (%s, 's1', false, %s, 1)",
+        (old, datetime(2025, 1, 1, tzinfo=UTC)),
+    )
+    wa_repo.recompute_chat_stats(conn)
+    # A later incremental run whose window holds only the other chat.
+    wa_repo.upsert_chats(conn, [WhatsAppChat(chat_jid=new, kind="group")])
+    wa_repo.recompute_chat_stats(conn)
+    rows = dict(
+        conn.execute(
+            "SELECT chat_jid, last_message_at FROM whatsapp_chats ORDER BY chat_jid"
+        ).fetchall()
+    )
+    assert rows[old] is not None
+    assert rows[new] is None
+
+
+def test_handle_stats_recompute_over_real_rows(conn):
+    """Pins the two semantics that are easy to get backwards: a 1:1 count includes
+    Ben's own messages (whose sender_handle is NULL), and a group count is only
+    what that handle sent (§4.1)."""
+    from models.whatsapp import WhatsAppChat, WhatsAppChatMember, WhatsAppHandle
+    from repo import whatsapp as wa_repo
+
+    handle, direct, group = "+15550100001", "15550100001@s.whatsapp.net", "1-2@g.us"
+    wa_repo.upsert_chats(
+        conn,
+        [
+            WhatsAppChat(chat_jid=direct, kind="direct", handle=handle),
+            WhatsAppChat(chat_jid=group, kind="group"),
+        ],
+    )
+    wa_repo.upsert_handles(conn, [WhatsAppHandle(handle=handle)])
+    wa_repo.replace_members(
+        conn, [WhatsAppChatMember(chat_jid=group, handle=handle, is_active=True)]
+    )
+    conn.execute(
+        "INSERT INTO whatsapp_messages (chat_jid, stanza_id, sender_handle, from_me, sent_at,"
+        " source_pk) VALUES"
+        " (%s, 'a', %s, false, now(), 1),"
+        " (%s, 'b', NULL,  true,  now(), 2),"
+        " (%s, 'c', %s, false, now(), 3),"
+        " (%s, 'd', NULL,  true,  now(), 4)",
+        (direct, handle, direct, group, handle, group),
+    )
+    wa_repo.recompute_handle_stats(conn)
+    row = conn.execute(
+        "SELECT message_count, my_message_count, group_message_count, group_count"
+        " FROM whatsapp_handles WHERE handle = %s",
+        (handle,),
+    ).fetchone()
+    assert row == (2, 1, 1, 1)  # both sides of the 1:1; only what they sent in the group
+
+
+def test_rematch_stored_handles_relinks_nulls_ambiguity_and_spares_lid(conn):
+    """Final-review Finding A, end to end against real Postgres: a group-only
+    sender's handle whose stored link went stale gets picked up on the next
+    run's rematch, an ambiguous phone links to nothing, and a `lid:` handle's
+    name match survives untouched (§6.5)."""
+    from repo import whatsapp as wa_repo
+
+    stale, ambiguous, lid = "+15550100010", "+15550100020", "lid:99900000000123"
+
+    # A person the stale handle used to be (wrongly) linked to, with no phone
+    # number of its own, and the person whose phone number it actually
+    # matches now.
+    conn.execute(
+        "INSERT INTO people (email, phone_numbers, first_seen) VALUES"
+        " ('wrong@example.com', %s, now()),"
+        " (NULL, %s, now())",
+        ([], [stale]),
+    )
+    correct_id = conn.execute(
+        "SELECT id FROM people WHERE phone_numbers = %s", ([stale],)
+    ).fetchone()[0]
+    wrong_id = conn.execute("SELECT id FROM people WHERE email = 'wrong@example.com'").fetchone()[0]
+
+    # The number `ambiguous` is shared by two distinct people rows on purpose —
+    # 34 real numbers are shared this way in production (CLAUDE.md).
+    conn.execute(
+        "INSERT INTO people (email, phone_numbers, first_seen) VALUES"
+        " (NULL, %s, now()), (NULL, %s, now())",
+        ([ambiguous], [ambiguous]),
+    )
+
+    # A person the LID handle is matched to by name — this SQL must never touch it.
+    conn.execute(
+        "INSERT INTO people (email, display_name, first_seen) VALUES"
+        " ('lid-match@example.com', 'Zoe Example', now())"
+    )
+    lid_person_id = conn.execute(
+        "SELECT id FROM people WHERE email = 'lid-match@example.com'"
+    ).fetchone()[0]
+
+    conn.execute(
+        "INSERT INTO whatsapp_handles (handle, person_id, match_method) VALUES"
+        " (%s, %s, 'phone'),"  # stale: linked to the wrong person
+        " (%s, %s, 'phone'),"  # ambiguous today: was matched once, must be nulled
+        " (%s, %s, 'name')",  # lid: must survive untouched
+        (stale, wrong_id, ambiguous, wrong_id, lid, lid_person_id),
+    )
+
+    wa_repo.rematch_stored_handles(conn)
+
+    all_rows = conn.execute(
+        "SELECT handle, person_id, match_method FROM whatsapp_handles"
+    ).fetchall()
+    rows = {r[0]: (r[1], r[2]) for r in all_rows}
+    assert rows[stale] == (correct_id, "phone")
+    assert rows[ambiguous] == (None, None)
+    assert rows[lid] == (lid_person_id, "name")

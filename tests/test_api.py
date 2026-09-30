@@ -9,6 +9,7 @@ import clients.db as db
 import repo.imessage as imessage_repo
 import repo.linkedin as linkedin_repo
 import repo.people as people_repo
+import repo.whatsapp as whatsapp_repo
 import services.google_contacts_sync as gsync
 import services.person_create as person_create
 import services.person_edit as person_edit
@@ -141,6 +142,98 @@ def group_row(**kw):
     return base
 
 
+def whatsapp_summary_row(**kw):
+    base = {
+        "handles": ["+15550100001"],
+        "message_count": 214,
+        "my_message_count": 98,
+        "last_message_at": TS,
+        "last_my_message_at": TS,
+        "group_message_count": 31,
+        "group_count": 3,
+        "shared_groups": 2,
+        "match_method": "phone",
+        "imported_at": TS,
+    }
+    base.update(kw)
+    return base
+
+
+def wa_handle_row(handle="+15550100001", **kw):
+    base = {
+        "handle": handle,
+        "jid": "15550100001@s.whatsapp.net",
+        "display_name": "Alice",
+        "person_id": 1,
+        "person_email": "alice@x.com",
+        "match_method": "phone",
+        "message_count": 214,
+        "my_message_count": 98,
+        "last_message_at": TS,
+        "last_my_message_at": TS,
+        "group_message_count": 31,
+        "last_group_message_at": TS,
+        "group_count": 3,
+        "updated_at": TS,
+    }
+    base.update(kw)
+    return base
+
+
+def wa_group_row(**kw):
+    base = {
+        "chat_jid": "1-2@g.us",
+        "subject": "Soccer Carpool",
+        "member_count": 8,
+        "message_count": 140,
+        "my_message_count": 20,
+        "last_message_at": TS,
+        "is_admin": False,
+        "is_active": True,
+    }
+    base.update(kw)
+    return base
+
+
+def wa_chat_row(**kw):
+    base = {
+        "chat_jid": "1-2@g.us",
+        "kind": "group",
+        "subject": "Soccer Carpool",
+        "handle": None,
+        "created_at": TS,
+        "member_count": 8,
+        "message_count": 140,
+        "my_message_count": 20,
+        "last_message_at": TS,
+        "updated_at": TS,
+    }
+    base.update(kw)
+    return base
+
+
+def wa_import_row(**kw):
+    base = {
+        "started_at": TS,
+        "finished_at": TS,
+        "mode": "full",
+        "watermark": 10329,
+        "chats_upserted": 201,
+        "members_upserted": 10090,
+        "handles_upserted": 621,
+        "messages_upserted": 10245,
+        "messages_deleted": 0,
+        "senderless_dropped": 83,
+        "duplicate_stanza_ids": 1,
+        "sessions_skipped": 7,
+        "handles_unnormalized": 1,
+        "matched_by_phone": 69,
+        "matched_by_name": 0,
+    }
+    base.update(kw)
+    return base
+
+
 class Conn:
     def __enter__(self):
         return self
@@ -190,6 +283,16 @@ def _wire(monkeypatch):
     )
     monkeypatch.setattr(imessage_repo, "handle_groups", lambda conn, handle: [group_row()])
     monkeypatch.setattr(imessage_repo, "latest_import", lambda conn: None)
+    monkeypatch.setattr(whatsapp_repo, "summary_for_person", lambda conn, pid: None)
+    monkeypatch.setattr(whatsapp_repo, "handles", lambda conn, **kw: [wa_handle_row()])
+    monkeypatch.setattr(
+        whatsapp_repo,
+        "handle",
+        lambda conn, handle: wa_handle_row(handle) if handle == "+15550100001" else None,
+    )
+    monkeypatch.setattr(whatsapp_repo, "handle_groups", lambda conn, handle: [wa_group_row()])
+    monkeypatch.setattr(whatsapp_repo, "chats", lambda conn, **kw: [wa_chat_row()])
+    monkeypatch.setattr(whatsapp_repo, "latest_import", lambda conn: None)
 
 
 client = TestClient(app)
@@ -756,3 +859,142 @@ def test_post_google_5xx_propagates(monkeypatch):
     monkeypatch.setattr("api.routers.people.person_create.create", boom)
     with pytest.raises(HttpError):
         client.post("/people", json={"contact": {"emailAddresses": [{"value": "a@example.com"}]}})
+
+
+# --- WhatsApp snapshot (spec 2026-09-29-whatsapp-snapshot-design.md §8) -------
+
+
+def test_person_includes_the_whatsapp_summary(monkeypatch):
+    monkeypatch.setattr(
+        whatsapp_repo, "summary_for_person", lambda conn, pid: whatsapp_summary_row()
+    )
+    body = client.get("/people/alice@x.com").json()
+    assert body["whatsapp"]["message_count"] == 214
+    assert body["whatsapp"]["shared_groups"] == 2
+    assert body["whatsapp"]["match_method"] == "phone"
+
+
+def test_person_whatsapp_is_null_when_there_is_nothing():
+    assert client.get("/people/alice@x.com").json()["whatsapp"] is None
+
+
+def test_person_whatsapp_survives_membership_with_no_handle(monkeypatch):
+    """§8.1: for the group-only person (measured 2026-09-29: 1, not the 375 an
+    earlier probe recorded — §4.3, §12) the counters are all zero and
+    match_method is null, which is accurate — nothing has been exchanged."""
+    monkeypatch.setattr(
+        whatsapp_repo,
+        "summary_for_person",
+        lambda conn, pid: whatsapp_summary_row(
+            handles=[],
+            message_count=0,
+            my_message_count=0,
+            last_message_at=None,
+            last_my_message_at=None,
+            group_message_count=0,
+            group_count=0,
+            shared_groups=1,
+            match_method=None,
+        ),
+    )
+    body = client.get("/people/alice@x.com").json()
+    assert body["whatsapp"]["shared_groups"] == 1
+    assert body["whatsapp"]["handles"] == []
+    assert body["whatsapp"]["match_method"] is None
+
+
+def test_list_and_search_omit_whatsapp(monkeypatch):
+    def fail(conn, pid):
+        raise AssertionError("list responses must not look up whatsapp per row")
+
+    monkeypatch.setattr(whatsapp_repo, "summary_for_person", fail)
+    assert client.get("/people?recent=5").json()["results"][0]["whatsapp"] is None
+    assert client.post("/search", json={"q": "ali"}).json()["results"][0]["whatsapp"] is None
+
+
+def test_search_response_gains_no_whatsapp_results():
+    """§8.2: search stays email/name/company-driven."""
+    assert "whatsapp_results" not in client.post("/search", json={"q": "ali"}).json()
+
+
+def test_patch_person_includes_whatsapp(monkeypatch):
+    monkeypatch.setattr(
+        whatsapp_repo, "summary_for_person", lambda conn, pid: whatsapp_summary_row()
+    )
+    monkeypatch.setattr(person_edit, "update", lambda conn, pid, **kw: row())
+    body = client.patch("/people/alice@x.com", json={"notes": "hi"}).json()
+    assert body["whatsapp"]["message_count"] == 214
+
+
+def test_whatsapp_handles_list_carries_the_person_join():
+    body = client.get("/whatsapp/handles?limit=1").json()["results"][0]
+    assert body["person_id"] == 1
+    assert body["person_email"] == "alice@x.com"
+    assert body["group_count"] == 3
+
+
+def test_whatsapp_handles_passes_its_filters_through(monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr(
+        whatsapp_repo, "handles", lambda conn, **kw: (seen.update(kw), [wa_handle_row()])[1]
+    )
+    client.get("/whatsapp/handles?unmatched=true&q=ali&limit=7")
+    assert seen == {"q": "ali", "unmatched": True, "limit": 7}
+
+
+def test_whatsapp_handles_limit_is_bounded():
+    assert client.get("/whatsapp/handles?limit=501").status_code == 422
+    assert client.get("/whatsapp/handles?limit=0").status_code == 422
+
+
+def test_whatsapp_handle_detail_needs_a_percent_encoded_plus():
+    body = client.get("/whatsapp/handles/%2B15550100001").json()
+    assert body["handle"] == "+15550100001"
+    assert body["groups"][0]["subject"] == "Soccer Carpool"
+    assert client.get("/whatsapp/handles/%2B15550100002").status_code == 404
+
+
+def test_a_lid_handle_needs_no_encoding(monkeypatch):
+    monkeypatch.setattr(whatsapp_repo, "handle", lambda conn, handle: wa_handle_row(handle))
+    assert client.get("/whatsapp/handles/lid:99900000000001").json()["handle"] == (
+        "lid:99900000000001"
+    )
+
+
+def test_whatsapp_chats_filters_by_kind(monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr(
+        whatsapp_repo, "chats", lambda conn, **kw: (seen.update(kw), [wa_chat_row()])[1]
+    )
+    body = client.get("/whatsapp/chats?kind=group&limit=5").json()
+    assert seen == {"kind": "group", "limit": 5}
+    assert body["results"][0]["member_count"] == 8
+
+
+def test_whatsapp_chats_rejects_an_unknown_kind():
+    assert client.get("/whatsapp/chats?kind=nonsense").status_code == 422
+
+
+def test_whatsapp_latest_import_404s_when_there_is_none():
+    assert client.get("/whatsapp/imports/latest").status_code == 404
+
+
+def test_whatsapp_latest_import_returns_the_audit_row(monkeypatch):
+    monkeypatch.setattr(whatsapp_repo, "latest_import", lambda conn: wa_import_row())
+    body = client.get("/whatsapp/imports/latest").json()
+    assert body["messages_upserted"] == 10245
+    assert body["senderless_dropped"] == 83
+
+
+def test_no_whatsapp_response_model_exposes_message_text():
+    """§7: people-api never serves WhatsApp content — no endpoint, no field, no
+    include= parameter."""
+    from pydantic import BaseModel
+
+    import api.routers.whatsapp as mod
+
+    banned = {"text", "content", "body", "message", "messages", "last_message_text"}
+    for name in dir(mod):
+        obj = getattr(mod, name)
+        if isinstance(obj, type) and issubclass(obj, BaseModel):
+            assert not (set(obj.model_fields) & banned), f"{name} exposes message content"

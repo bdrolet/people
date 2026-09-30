@@ -64,7 +64,16 @@ person), `display_name`, `first_seen`, `last_seen`, `last_contacted`,
 `imessage` (null, or an aggregate over every iMessage handle linked to this
 person: `handles`, `message_count`, `my_message_count`, `last_message_at`,
 `last_my_message_at`, `group_message_count`, `last_group_message_at`,
-`imported_at`), `phone_numbers` (list of E.164 strings), `company`,
+`imported_at`), `whatsapp` (null, or an aggregate over every WhatsApp handle
+linked to this person: `handles`, `message_count`, `my_message_count`,
+`last_message_at`, `last_my_message_at`, `group_message_count`, `group_count`,
+`shared_groups`, `match_method`, `imported_at` — non-null with every counter
+**zeroed** and `match_method: null` when the person only shares a group with
+Ben and has no handle row of their own, i.e. `shared_groups > 0` but no
+direct interaction; that's accurate, not a bug. `match_method: "name"` is
+the one link worth distrusting — it's the only way a `lid:`-prefixed handle
+(WhatsApp's phone-less Linked ID) ever links to a person), `phone_numbers`
+(list of E.164 strings), `company`,
 `job_title` (both from the contact's primary — or first — organization, null
 if none), `contact` (the full allowlisted Google field blob this response
 was derived from, e.g. `addresses`, `birthdays`, `urls` — present here since
@@ -98,6 +107,7 @@ notes: <notes, if set — this is the Google contact's biography>
 Google Contacts: <yes/no>   HubSpot: <yes/no>
 LinkedIn: <company> · <position> · <message_count> msgs / <my_message_count> from Ben · last <last_message_at> (snapshot <snapshot_at date>)   ← only if linkedin is set
 iMessage: <message_count> msgs / <my_message_count> from Ben · last <last_message_at> · groups <group_message_count>   ← only if imessage is set
+WhatsApp: <message_count> msgs / <my_message_count> from Ben · last <last_message_at> · groups <group_count> (sent in groups <group_message_count>) · shared groups <shared_groups>   ← only if whatsapp is set; all zero + match_method null just means group-only overlap
 ```
 
 `email` may be null (a phone-only person) — fall back to `display_name`,
@@ -135,3 +145,17 @@ curl -s "$BASE/imessage/handles/<handle>" -H "Authorization: Bearer $TOKEN" | py
 URL-encode a `+` in a phone handle as `%2B` (e.g. `%2B15550100001`). `404` =
 unknown handle. This response, like the `imessage` summary above, never
 carries message text — only direct DB queries do (**querying-people-db**).
+
+## WhatsApp detail
+
+`whatsapp.handles` lists the phone numbers (or `lid:<id>` Linked IDs) linked
+to this person. Fetch one for its link fields and the groups it's in:
+
+```bash
+curl -s "$BASE/whatsapp/handles/<handle>" -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+```
+
+URL-encode a `+` in a phone handle as `%2B`; a `lid:` handle needs no
+encoding. `404` = unknown handle. This response, like the `whatsapp` summary
+above, never carries message text or the group roster — only direct DB
+queries do (**querying-people-db**).

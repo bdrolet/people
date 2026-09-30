@@ -32,6 +32,9 @@ hubspot_engagements_logged: metrics.Counter = metrics.NoOpMeter("noop").create_c
 external_errors: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
 api_requests: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
 errors: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
+whatsapp_import_messages: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
+whatsapp_import_handles: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
+whatsapp_import_duration: metrics.Histogram = metrics.NoOpMeter("noop").create_histogram("noop")
 
 
 def setup_telemetry(service_name: str) -> None:
@@ -43,6 +46,7 @@ def setup_telemetry(service_name: str) -> None:
     global events_received, people_upserts, eligibility_changes, google_contacts_created
     global google_sync_changes, hubspot_contacts_created, hubspot_evictions
     global hubspot_engagements_logged, external_errors, api_requests, errors
+    global whatsapp_import_messages, whatsapp_import_handles, whatsapp_import_duration
 
     endpoint = os.environ.get("GRAFANA_OTLP_ENDPOINT")
     if not endpoint:
@@ -87,6 +91,18 @@ def setup_telemetry(service_name: str) -> None:
         "people.api_requests", description="people-api requests by route/status"
     )
     errors = meter.create_counter("people.errors", description="Handler errors by handler")
+    whatsapp_import_messages = meter.create_counter(
+        "people.whatsapp_import_messages",
+        description="WhatsApp import messages by mode and outcome",
+    )
+    whatsapp_import_handles = meter.create_counter(
+        "people.whatsapp_import_handles", description="WhatsApp import handles by match method"
+    )
+    whatsapp_import_duration = meter.create_histogram(
+        "people.whatsapp_import_duration_seconds",
+        unit="s",
+        description="WhatsApp import wall time",
+    )
 
     # --- Logs ---
     log_provider = LoggerProvider(resource=resource)

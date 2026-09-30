@@ -57,6 +57,7 @@ from clients import google_contacts as gc
 from repo import imessage as imessage_repo
 from repo import linkedin as linkedin_repo
 from repo import people as people_repo
+from repo import whatsapp as whatsapp_repo
 from services.contact_fields import WRITABLE_FIELDS
 from services.imessage_export import normalize_handle
 
@@ -289,6 +290,12 @@ def _preview_rows(conn: Any, survivor: dict, loser_rns: list[str]) -> dict[str, 
         counts["links_repointed"] += len(summary["handles"] or []) if summary else 0
         if linkedin_repo.connection_for_person(conn, row["id"]):
             counts["links_repointed"] += 1
+        # Approximate, deliberately: repoint_person moves handle rows plus one
+        # member row per shared chat, and shared_groups counts only the active
+        # memberships. A dry run reports the scale, not an exact rowcount.
+        wa = whatsapp_repo.summary_for_person(conn, row["id"])
+        if wa:
+            counts["links_repointed"] += len(wa["handles"] or []) + (wa["shared_groups"] or 0)
     return counts
 
 
@@ -307,6 +314,11 @@ def _collapse_rows(conn: Any, survivor: dict, loser_rns: list[str]) -> dict[str,
     for row in losers:
         counts["links_repointed"] += imessage_repo.repoint_person(conn, row["id"], keeper["id"])
         counts["links_repointed"] += linkedin_repo.repoint_person(conn, row["id"], keeper["id"])
+        # whatsapp_handles.person_id and whatsapp_chat_members.person_id are both
+        # ON DELETE SET NULL too (WhatsApp spec §4, §11 step 5). The next import
+        # would re-derive most of them, but moving them here closes the window in
+        # which people-api reports no WhatsApp activity for the survivor.
+        counts["links_repointed"] += whatsapp_repo.repoint_person(conn, row["id"], keeper["id"])
         people_repo.delete(conn, row["id"])
         counts["rows_deleted"] += 1
     return counts
@@ -399,7 +411,7 @@ def run(
                 f"{result['skipped']} skipped.\n"
                 f"Applying would delete {result['contacts_deleted']} Google contacts and "
                 f"{result['rows_deleted']} people rows, re-pointing "
-                f"{result['links_repointed']} iMessage/LinkedIn links, re-linking "
+                f"{result['links_repointed']} iMessage/LinkedIn/WhatsApp links, re-linking "
                 f"{result['rows_relinked']} rows onto a surviving contact, and moving "
                 f"{result['groups_moved']} contact-group memberships."
             )

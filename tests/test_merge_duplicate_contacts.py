@@ -156,7 +156,13 @@ def wired(monkeypatch, tmp_path):
     b = contact("people/b", phones=["+15550100001"], emails=["b@example.com"])
     google = FakeGoogle([a, b])
     conn = FakeConn()
-    state = {"repointed": [], "deleted_rows": [], "order": [], "handles": []}
+    state = {
+        "repointed": [],
+        "repointed_whatsapp": [],
+        "deleted_rows": [],
+        "order": [],
+        "handles": [],
+    }
 
     monkeypatch.setattr(mdc.gc, "list_connections", google.list_connections)
     monkeypatch.setattr(mdc.gc, "get_person", google.get_person)
@@ -199,6 +205,22 @@ def wired(monkeypatch, tmp_path):
     monkeypatch.setattr(mdc.linkedin_repo, "repoint_person", lambda c, frm, to: 0)
     monkeypatch.setattr(mdc.people_repo, "delete", delete_row)
 
+    # WhatsApp carries the same ON DELETE SET NULL links as the other two snapshots
+    # (WhatsApp spec §4, §11 step 5), so _collapse_rows re-points it too and
+    # _preview_rows counts it. Stubbed the same way, and recorded in the shared
+    # order list so the "links move before the row is deleted" test covers it.
+    def repoint_wa(c, frm, to):
+        state["repointed_whatsapp"].append((frm, to))
+        state["order"].append("repoint")
+        return 1
+
+    monkeypatch.setattr(
+        mdc.whatsapp_repo,
+        "summary_for_person",
+        lambda c, pid: {"handles": ["+15550100001"], "shared_groups": 2},
+    )
+    monkeypatch.setattr(mdc.whatsapp_repo, "repoint_person", repoint_wa)
+
     google.backup_path = tmp_path / "backup.json"
     return {"google": google, "conn": conn, "state": state, "backup": google.backup_path}
 
@@ -213,7 +235,9 @@ def test_dry_run_writes_nothing_anywhere(wired):
     # A dry run still reports what applying would cost, locally as well as in Google.
     assert result["contacts_deleted"] == 1
     assert result["rows_deleted"] == 1
-    assert result["links_repointed"] == 1
+    # 1 iMessage handle + 0 LinkedIn + the WhatsApp preview's 1 handle and 2 shared
+    # groups. The WhatsApp figure is deliberately approximate (see _preview_rows).
+    assert result["links_repointed"] == 4
 
 
 def test_apply_merges_google_then_collapses_the_row(wired):
@@ -233,9 +257,12 @@ def test_backup_is_written_before_any_delete(wired):
 
 
 def test_links_are_repointed_before_the_row_is_deleted(wired):
-    # ON DELETE SET NULL means the reverse order silently drops the links.
+    # ON DELETE SET NULL means the reverse order silently drops the links. Both
+    # re-points that report a moved row — iMessage and WhatsApp — must land before
+    # the delete; LinkedIn's stub moves nothing here so it records nothing.
     mdc.run(lambda: wired["conn"], apply=True, backup_path=wired["backup"])
-    assert wired["state"]["order"] == ["repoint", "delete_row"]
+    assert wired["state"]["order"] == ["repoint", "repoint", "delete_row"]
+    assert wired["state"]["repointed_whatsapp"] == [(2, 1)]
 
 
 def test_a_birthday_clash_is_skipped_with_no_writes(monkeypatch, tmp_path):
@@ -327,6 +354,7 @@ def test_a_surviving_contact_with_no_row_adopts_the_best_loser_row(monkeypatch, 
     monkeypatch.setattr(mdc.people_repo, "delete", lambda conn, pid: deleted.append(pid))
     monkeypatch.setattr(mdc.imessage_repo, "repoint_person", lambda conn, frm, to: 1)
     monkeypatch.setattr(mdc.linkedin_repo, "repoint_person", lambda conn, frm, to: 0)
+    monkeypatch.setattr(mdc.whatsapp_repo, "repoint_person", lambda conn, frm, to: 1)
 
     result = mdc.run(lambda: FakeConn(), apply=True, backup_path=google.backup_path)
 
@@ -334,7 +362,7 @@ def test_a_surviving_contact_with_no_row_adopts_the_best_loser_row(monkeypatch, 
     assert relinked == [(3, "people/a", "etag-people/a")]
     assert deleted == [2]
     assert result["rows_relinked"] == 1 and result["rows_deleted"] == 1
-    assert result["links_repointed"] == 1
+    assert result["links_repointed"] == 2  # 1 iMessage + 0 LinkedIn + 1 WhatsApp
 
 
 def test_no_rows_at_all_leaves_the_local_side_alone(monkeypatch, tmp_path):

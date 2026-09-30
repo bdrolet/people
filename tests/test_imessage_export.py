@@ -31,6 +31,13 @@ def test_apple_ts_treats_zero_and_none_as_missing():
     assert ex.apple_ts(0) is None and ex.apple_ts(None) is None
 
 
+def test_apple_ts_accepts_a_float_from_core_data():
+    """WhatsApp's ZMESSAGEDATE is seconds since 2001-01-01 and Core Data hands
+    it back as a float; the seconds branch already handled the arithmetic, only
+    the annotation was too narrow (WhatsApp spec §3)."""
+    assert ex.apple_ts(783_000_000.5) == datetime(2025, 10, 24, 12, 0, 0, 500000, tzinfo=UTC)
+
+
 def test_decode_attributed_body_extracts_text():
     assert ex.decode_attributed_body(ATTR_BODY) == "Attr only body"
 

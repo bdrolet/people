@@ -35,7 +35,7 @@ This overrides the default "commit or push only when asked" behavior for code ch
 | **Events CF** | `people-process` — Pub/Sub trigger on the inbox-owned `email-events` topic (data source), entry point `process` in `main.py`; handles `email_classified` and `email_sent`, ignores everything else |
 | **Sync CF** | `people-sync` — HTTP trigger, entry point `sync`; POST with `Authorization: Bearer <people-sync-token>`; Cloud Scheduler `people-sync` at `0 4 * * *` America/New_York (before inbox's 5 AM sweep) — Google Contacts incremental sync (**adopts** an email-less contact with a usable phone number, `email IS NULL`; counts the rest `skipped`), then HubSpot reconcile |
 | **API** | `people-api` — Cloud Run FastAPI service (`api/`); auth is Cloud Run IAM — `roles/run.invoker` granted per caller in `terraform/api.tf`; callers send `gcloud auth print-identity-token`; image in Artifact Registry repo `people`, deployed by `.github/workflows/deploy-api.yml`; `https://people-api.drolet.cloud` (Cloud Run domain mapping in `terraform/api.tf`; the CNAME lives in `~/src/infra` `cloudflare/drolet-cloud.tf`); the raw run.app URL is `terraform output -raw people_api_url` |
-| **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people` (incl. editable-contact-field columns `phone_numbers`, `company`, `job_title`, `google_fields` — see the source-of-truth table below), `sync_state`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`, `imessage_handles`, `imessage_chats`, `imessage_messages`, `imessage_imports`; schema in `repo/schema.sql` |
+| **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people` (incl. editable-contact-field columns `phone_numbers`, `company`, `job_title`, `google_fields` — see the source-of-truth table below), `sync_state`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`, `imessage_handles`, `imessage_chats`, `imessage_messages`, `imessage_imports`, `whatsapp_handles`, `whatsapp_chats`, `whatsapp_chat_members`, `whatsapp_messages`, `whatsapp_imports`; schema in `repo/schema.sql` |
 | **Google Contacts** | People API v1 via `clients/google_contacts.py` — OAuth refresh-token creds, scope `https://www.googleapis.com/auth/contacts`; reuses schedule's OAuth client (`google-calendar-client-id`/`-secret`, data sources), a people-owned refresh token (`google-contacts-refresh-token`) |
 | **HubSpot** | `clients/hubspot.py` (ported from inbox) — contacts search/create/update/archive, email engagement create; bounded mirror, see §HubSpot below |
 | **Local Graph import** | `clients/graph_local.py` — device-code MSAL auth for `scripts/import_contacts.py` only; people's Cloud Functions never call Graph |
@@ -55,6 +55,7 @@ models/
   events.py                 EmailClassifiedEvent / EmailSentEvent TypedDicts — mirror inbox's payload
   linkedin.py               LinkedInConnection/Message/Recommendation/Snapshot dataclasses
   imessage.py               IMessageHandle/Chat/Message/Batch dataclasses
+  whatsapp.py               WhatsAppHandle/Chat/ChatMember/Message/Batch dataclasses
   types.py                  IngestResult dataclass
 clients/
   db.py                     Cloud SQL connector (pg8000) / local psycopg3
@@ -62,6 +63,7 @@ clients/
   hubspot.py                contacts search/create/update/archive, engagements
   graph_local.py            device-code MSAL for scripts/import_contacts.py only
   imessage_local.py         read-only chat.db access for scripts/import_imessage.py only
+  whatsapp_local.py         read-only ChatStorage.sqlite access for scripts/import_whatsapp.py only
   otel.py                   OTel setup + counters (people.* instruments)
 repo/
   schema.sql                people (incl. contact-field columns), sync_state tables
@@ -69,6 +71,8 @@ repo/
   sync_state.py             google_contacts sync token + status
   linkedin.py               linkedin_* snapshot: replace_snapshot + API read queries
   imessage.py               imessage_* snapshot: upserts, stats recompute, API read queries
+  whatsapp.py               whatsapp_* snapshot: upserts, stats recompute, audit and re-point,
+                             API read queries
 services/
   eligibility.py            is_automated / inbound_eligible (spec §5) — pure functions over env
   ingest.py                 record_inbound / record_outbound — counters + eligibility, shared by
@@ -87,6 +91,8 @@ services/
   linkedin_export.py        parse a LinkedIn data export (dir/zip) → snapshot; match_people
   imessage_export.py        pure chat.db logic: timestamps, attributedBody decode, handle
                              normalization, filtering, 1:1/group classification, handle matching
+  whatsapp_export.py        pure ChatStorage.sqlite logic: JID/phone normalization, media
+                             classification, batch building, handle matching
 handlers/
   email_classified.py       ingest → eligible? → Google + HubSpot side effects → log_email
   email_sent.py             per-recipient ingest (To+Cc, Bcc excluded) → side effects
@@ -101,6 +107,7 @@ api/
     search.py                 POST /search
     linkedin.py              GET /linkedin/connections[/{slug}], GET /linkedin/imports/latest
     imessage.py              GET /imessage/handles[/{handle}], GET /imessage/imports/latest
+    whatsapp.py              GET /whatsapp/handles[/{handle}], /whatsapp/chats, /whatsapp/imports/latest
 scripts/
   import_contacts.py        bulk backfill (spec §12) — --dry-run, --reset-counters
   get_google_contacts_token.py  mint the Google refresh token (contacts scope)
@@ -112,6 +119,7 @@ scripts/
   link-skills.sh             symlink searching-people/fetching-person/editing-person into ~/.claude/skills/
   import_linkedin.py        load a LinkedIn export snapshot — --dry-run, --me
   import_imessage.py        import chat.db into the imessage_* tables — --full, --dry-run, --db
+  import_whatsapp.py        import ChatStorage.sqlite into the whatsapp_* tables — --full, --dry-run, --db
 terraform/                  main, variables, secrets, cloudsql, pubsub, cloud_functions, iam, api, scheduler
 tests/                      one test module per unit
 .github/workflows/          ci.yml, deploy.yml (Functions), deploy-api.yml (Cloud Run)
@@ -119,7 +127,7 @@ tests/                      one test module per unit
                              adding-people-secret, adding-observability, querying-grafana-metrics,
                              testing-people-handlers, verifying-pr-locally, importing-contacts,
                              searching-people, fetching-person, editing-person, creating-person,
-                             importing-linkedin, importing-imessage
+                             importing-linkedin, importing-imessage, importing-whatsapp
 ```
 
 ## Event schema
@@ -158,12 +166,20 @@ exactly as tasks and schedule do.
 | A hand-created row's identity | Google, same as everyone else | `POST /people` (§Piece 3 below) writes the Google Contact **first**; the `people` row is then derived from what Google returned, via the same `apply_person` path the nightly sync uses — a hand-created person is byte-identical in shape to one the sync created or adopted. If the Google write fails, nothing local is written. |
 | `linkedin_*` tables | LinkedIn data export | Export → DB on manual import (`scripts/import_linkedin.py`). Never written back anywhere; LinkedIn is not a source for any `people` field. |
 | `imessage_*` tables | `chat.db` on Ben's Mac | chat.db → DB on local import (`scripts/import_imessage.py`). Never written back anywhere; iMessage is not a source for any `people` field. |
+| `whatsapp_*` tables | WhatsApp's local store on Ben's Mac | Store → DB on local import (`scripts/import_whatsapp.py`). Never written back anywhere; WhatsApp is not a source for any `people` field. |
 | `phone_numbers`, `company`, `job_title`, `google_fields` | Google Contacts | Google → DB on link, nightly sync, and after every `PATCH`. Event data never writes them; never pushed to HubSpot (contact-field-edits design §4.1). |
 
 If the DB is lost, everything except the counters rebuilds from Google
 Contacts plus a full sync; counters rebuild via `scripts/import_contacts.py`.
 The LinkedIn snapshot rebuilds by re-running `scripts/import_linkedin.py` on the latest export.
 The iMessage snapshot rebuilds by re-running `scripts/import_imessage.py --full` against `chat.db`.
+The WhatsApp snapshot rebuilds by re-running `scripts/import_whatsapp.py --full` against the local store.
+
+`scripts/merge_duplicate_contacts.py` (not yet on this branch — PR #18) must call
+`repo/whatsapp.py::repoint_person` from its `_collapse_rows`, beside its iMessage and
+LinkedIn re-points, before deleting the loser `people` row: both `whatsapp_handles.person_id`
+and `whatsapp_chat_members.person_id` are `ON DELETE SET NULL`, so a merge that deletes
+first silently unlinks WhatsApp handles and memberships rather than moving them.
 
 ### Identity: id, email, phone (2026-09-24 design; adoption 2026-09-28)
 
@@ -357,6 +373,11 @@ iMessage snapshot (see `importing-imessage`; requires Full Disk Access on the
 terminal): `.venv/bin/python scripts/import_imessage.py --full --dry-run`,
 then `--full`; routine runs after that are `.venv/bin/python
 scripts/import_imessage.py` (incremental).
+
+WhatsApp snapshot (see `importing-whatsapp`; **no** Full Disk Access needed):
+`.venv/bin/python scripts/import_whatsapp.py --full --dry-run`, then `--full`;
+routine runs after that are `.venv/bin/python scripts/import_whatsapp.py`
+(incremental).
 
 ## Deployment
 

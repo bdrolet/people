@@ -62,6 +62,11 @@ connection paths (Cloud SQL connector and local direct psycopg3).
 | `imessage_chats` | PK `chat_guid`: `display_name` (group name, if set), `is_group`, `participant_handles` (text[], excludes Ben), `last_message_at` |
 | `imessage_messages` | PK `guid`: `chat_guid`, `sender_handle` (NULL when `from_me`), `from_me`, `sent_at`, **`text`** (NULL if undecodable or retracted), `service` (`iMessage`/`SMS`/`RCS`), `has_attachments`, `edited_at`, `retracted` — **message text lives only here; `people-api` never serves it, by design (spec §6)** |
 | `imessage_imports` | append-only audit of `scripts/import_imessage.py` runs: `ran_at`, `mode` (`incremental`/`full`), `max_rowid` (watermark), row counts, `matched_by_email`, `matched_by_google`, `linked_to_people` |
+| `whatsapp_handles` | WhatsApp snapshot, PK `handle` (E.164 phone, or `lid:<id>` for a Linked ID that carries no phone number): `jid` (raw JID last seen), `display_name`, `person_id` (FK → `people.id`, `ON DELETE SET NULL`), `match_method` (`phone`/`name`/null — `name` is the only match method worth distrusting, since it's the sole way a `lid:` handle links), `message_count`/`my_message_count`/`last_message_at`/`last_my_message_at` (1:1 chats only), `group_message_count` (messages this handle **sent** in groups — **not** every message in a group the handle belongs to, which is what `imessage_handles.group_message_count` means; never compare the two directly), `last_group_message_at`, `group_count` (active memberships — **not** a closeness signal; check the group's `member_count` first), `updated_at` |
+| `whatsapp_chats` | PK `chat_jid`: `kind` (`direct`/`group`), `subject` (group subject, or the 1:1 partner name), `handle` (direct only), `created_at`, `member_count` (groups only — bimodal: most groups are small, a handful are large communities), `message_count`, `my_message_count`, `last_message_at`, `updated_at` |
+| `whatsapp_chat_members` | the full group roster, PK `(chat_jid, handle)`: `person_id` (FK → `people.id`, `ON DELETE SET NULL`), `is_admin`, `is_active`. `handle` is deliberately **not** a foreign key to `whatsapp_handles` — most members have no row there, since membership alone isn't interaction (§4.1). A member row carries no `match_method` of its own |
+| `whatsapp_messages` | PK `(chat_jid, stanza_id)`: `sender_handle` (NULL when `from_me`), `from_me`, `sent_at`, **`text`** (the only place WhatsApp message text lives — `people-api` never serves it, by design, spec §7), `message_type` (raw, never used to filter), `has_media`, `media_kind` (`image`/`video`/`audio`/`document`/`vcard`/`other`), `source_pk` (the watermark column) |
+| `whatsapp_imports` | append-only audit of `scripts/import_whatsapp.py` runs: `started_at`, `finished_at`, `mode` (`incremental`/`full`), `watermark`, row counts, `senderless_dropped`, `duplicate_stanza_ids`, `sessions_skipped`, `handles_unnormalized`, `matched_by_phone`, `matched_by_name` |
 
 `last_interaction` (`GREATEST(last_seen, last_contacted)`) is derived, not
 stored — repeat the expression below rather than looking for a column.
@@ -251,4 +256,40 @@ LIMIT 50;
 **iMessage snapshot age:**
 ```sql
 SELECT * FROM imessage_imports ORDER BY id DESC LIMIT 5;
+```
+
+**People with WhatsApp activity but no email address** (§8, identity design):
+```sql
+SELECT p.id, p.display_name, h.handle, h.message_count, h.last_message_at
+FROM whatsapp_handles h
+JOIN people p ON p.id = h.person_id
+WHERE p.email IS NULL
+ORDER BY h.last_message_at DESC NULLS LAST;
+```
+
+**Group co-membership that is actually meaningful: small groups only**
+(most member rows sit in groups of 200+, where co-membership says nothing
+about a relationship — spec §5.7):
+```sql
+SELECT c.subject, c.member_count, COUNT(*) FILTER (WHERE mem.person_id IS NOT NULL) AS known
+FROM whatsapp_chats c
+JOIN whatsapp_chat_members mem ON mem.chat_jid = c.chat_jid
+WHERE c.kind = 'group' AND c.member_count < 50
+GROUP BY c.chat_jid, c.subject, c.member_count
+ORDER BY known DESC;
+```
+
+**Message text with one WhatsApp chat** (the only way to read it —
+`people-api` never serves it):
+```sql
+SELECT sent_at, from_me, left(text, 200) AS text
+FROM whatsapp_messages
+WHERE chat_jid = (SELECT chat_jid FROM whatsapp_chats WHERE handle = '+15550100001')
+ORDER BY sent_at DESC
+LIMIT 50;
+```
+
+**WhatsApp snapshot age:**
+```sql
+SELECT * FROM whatsapp_imports ORDER BY id DESC LIMIT 5;
 ```
