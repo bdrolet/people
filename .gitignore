@@ -47,3 +47,6 @@ linkedin-export*/
 # Local Messages database copies — personal data, never committed (iMessage spec §6)
 chat.db*
 imessage-export*/
+
+# Contact merge backups (full Google contact JSON — never committed)
+contact-merge-backup-*.json

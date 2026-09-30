@@ -297,6 +297,25 @@ def handle_groups(conn: Any, handle: str) -> list[dict]:
     ).fetchall()
 
 
+def repoint_person(conn: Any, from_id: int, to_id: int) -> int:
+    """Move every handle linked to from_id onto to_id, and report how many moved."""
+    return conn.execute(
+        "UPDATE imessage_handles SET person_id = %s WHERE person_id = %s",
+        (to_id, from_id),
+    ).rowcount
+
+
+def repoint_google_resource(conn: Any, from_rn: str, to_rn: str) -> int:
+    """Move handles matched to one Google contact onto another, and report how
+    many moved. Used when duplicate contacts are merged: the handle's
+    google_resource_name is its own match record, independent of person_id, so
+    it would otherwise be left naming a contact that no longer exists."""
+    return conn.execute(
+        "UPDATE imessage_handles SET google_resource_name = %s WHERE google_resource_name = %s",
+        (to_rn, from_rn),
+    ).rowcount
+
+
 def summary_for_person(conn: Any, person_id: int) -> dict | None:
     """Aggregated over every handle linked to this person (§7.1 IMessageSummary)."""
     return conn.execute(

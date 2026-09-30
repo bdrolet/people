@@ -147,6 +147,14 @@ _ORDER = "ORDER BY last_message_at DESC NULLS LAST, connected_on DESC NULLS LAST
 _PARTICIPANTS = "(recipient_profile_urls || ARRAY[sender_profile_url])"
 
 
+def repoint_person(conn: Any, from_id: int, to_id: int) -> int:
+    """Move every connection linked to from_id onto to_id, and report how many moved."""
+    return conn.execute(
+        "UPDATE linkedin_connections SET person_id = %s WHERE person_id = %s",
+        (to_id, from_id),
+    ).rowcount
+
+
 def connection_for_person(conn: Any, person_id: int) -> dict | None:
     return conn.execute(
         f"SELECT {_CONNECTION_COLUMNS} FROM {_CONNECTIONS_JOIN} WHERE lc.person_id = %s {_ORDER} LIMIT 1",
