@@ -122,6 +122,12 @@ def update_fields(resource_name: str, etag: str, fields: dict) -> dict:
     )
 
 
+def delete_person(resource_name: str) -> None:
+    """Delete a contact outright. Only scripts/merge_duplicate_contacts.py calls
+    this — nothing in the nightly sync or the API ever deletes a Google contact."""
+    _svc().people().deleteContact(resourceName=resource_name).execute()
+
+
 def list_groups() -> dict[str, dict]:
     out: dict[str, dict] = {}
     token = None

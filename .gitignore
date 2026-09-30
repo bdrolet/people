@@ -50,3 +50,6 @@ imessage-export*/
 
 # Local WhatsApp store copies — personal data, never committed (WhatsApp spec §7)
 ChatStorage.sqlite*
+
+# Contact merge backups (full Google contact JSON — never committed)
+contact-merge-backup-*.json
