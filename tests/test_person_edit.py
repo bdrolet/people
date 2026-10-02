@@ -181,6 +181,17 @@ def test_label_google_4xx_is_invalid_and_still_resyncs(wire, monkeypatch):
     assert ("sync", "a@x.com") in wire
 
 
+def test_validate_labels_does_no_google_writes(wire):
+    person_edit.validate_labels({"add": ["Climbing", "colleague"], "remove": ["family"]})
+    assert wire == []
+
+
+def test_validate_labels_rejects_blank_name(wire):
+    with pytest.raises(person_edit.Invalid):
+        person_edit.validate_labels({"add": [" "]})
+    assert wire == []
+
+
 def test_notes_uses_live_etag(wire, monkeypatch):
     monkeypatch.setattr(
         gc,

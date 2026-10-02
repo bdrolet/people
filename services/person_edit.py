@@ -91,10 +91,16 @@ def _plan_labels(live: dict, change: dict) -> _LabelPlan:
     return plan
 
 
+def validate_labels(change: dict) -> None:
+    """Run the labels planning against an empty person, discarding the plan, so
+    a caller can reject a bad change before any Google write (design §5.1).
+    Raises Invalid / Conflict exactly as update() does."""
+    _plan_labels({}, change)
+
+
 def _apply_labels(person_rn: str, plan: _LabelPlan) -> None:
-    for name in plan.create:
-        plan.add.append(gc.ensure_group(name))
-    for g in plan.add:
+    adds = plan.add + [gc.ensure_group(n) for n in plan.create]
+    for g in adds:
         gc.modify_group_members(g, [person_rn], [])
     for g in plan.remove:
         gc.modify_group_members(g, [], [person_rn])

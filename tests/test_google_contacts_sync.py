@@ -377,7 +377,6 @@ def test_sync_one_derives_contact_fields(monkeypatch):
     }
     captured = {}
     monkeypatch.setattr(sync.gc, "get_person", lambda rn: p)
-    monkeypatch.setattr(sync.gc, "list_groups", lambda: GROUPS)
     monkeypatch.setattr(
         sync.people, "get_by_google_resource", lambda conn, rn: {"email": "alice@example.com"}
     )
@@ -506,7 +505,6 @@ def test_run_sync_counts_skipped(monkeypatch):
             "tok",
         ),
     )
-    monkeypatch.setattr(sync.gc, "list_groups", lambda: {})
     monkeypatch.setattr(sync.sync_state, "get_token", lambda conn: None)
     monkeypatch.setattr(sync.sync_state, "set_token", lambda conn, t, s: None)
     monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)

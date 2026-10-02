@@ -68,6 +68,9 @@ def create(
     if google_only:
         raise Duplicate("person exists", candidates=[])
 
+    if labels:
+        person_edit.validate_labels({"add": labels})
+
     groups = gc.list_groups()
     target = (groups.get(gsync.group_name()) or {}).get("resourceName") or gc.ensure_group(
         gsync.group_name()

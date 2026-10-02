@@ -1,6 +1,7 @@
 import pytest
 
 from services import person_create
+from services import person_edit as person_edit_real
 
 
 @pytest.fixture
@@ -13,6 +14,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(person_create.gc, "search_by_email", lambda email: None)
     monkeypatch.setattr(person_create.gc, "list_phone_index", lambda: {})
     monkeypatch.setattr(person_create.gc, "list_groups", lambda: {})
+    monkeypatch.setattr(person_create.gc, "list_groups_by_rn", lambda: {})
     monkeypatch.setattr(person_create.gc, "ensure_group", lambda name: "contactGroups/abc")
 
     def fake_create_person(body, group):
@@ -123,3 +125,38 @@ def test_raises_invalid_when_no_row_appears(wired, monkeypatch):
     monkeypatch.setattr(person_create.people, "get_by_google_resource", lambda conn, rn: None)
     with pytest.raises(person_create.Invalid):
         person_create.create(None, contact=PHONE_ONLY)
+
+
+USER = "USER_CONTACT_GROUP"
+
+
+def _groups(monkeypatch, extra=None):
+    by_rn = {"contactGroups/inbox1": {"name": "Inbox", "formattedName": "Inbox", "groupType": USER}}
+    by_rn.update(extra or {})
+    monkeypatch.setattr(person_create.gc, "list_groups_by_rn", lambda: by_rn)
+
+
+def test_invalid_label_rejects_before_google_create(wired, monkeypatch):
+    _groups(monkeypatch)
+    with pytest.raises(person_edit_real.Invalid):
+        person_create.create(None, contact=PHONE_ONLY, labels=["Inbox"])
+    assert wired["created_body"] is None
+
+
+def test_ambiguous_label_rejects_before_google_create(wired, monkeypatch):
+    _groups(
+        monkeypatch,
+        {
+            "contactGroups/v1": {"name": "VIP", "formattedName": "VIP", "groupType": USER},
+            "contactGroups/v2": {"name": "vip", "formattedName": "vip", "groupType": USER},
+        },
+    )
+    with pytest.raises(person_edit_real.Conflict):
+        person_create.create(None, contact=PHONE_ONLY, labels=["Vip"])
+    assert wired["created_body"] is None
+
+
+def test_valid_label_still_creates(wired, monkeypatch):
+    _groups(monkeypatch)
+    person_create.create(None, contact=PHONE_ONLY, labels=["Climbing"])
+    assert wired["created_body"] is not None
