@@ -74,7 +74,7 @@ def create(
     )
 
     created = gc.create_person(fields, target)
-    gsync.apply_person(conn, created, groups)
+    gsync.apply_person(conn, created)
     row = people.get_by_google_resource(conn, created["resourceName"])
     if row is None:
         raise Invalid(

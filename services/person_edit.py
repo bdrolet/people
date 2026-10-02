@@ -12,6 +12,7 @@ import clients.google_contacts as gc
 from repo import people
 from services import contact_fields
 from services import google_contacts_sync as gsync
+from services import labels as label_rules
 
 logger = logging.getLogger(__name__)
 
@@ -63,16 +64,19 @@ def _set_label(person_rn: str, live: dict, label: str) -> None:
         (
             g["resourceName"]
             for n, g in groups.items()
-            if g.get("groupType") != gsync.SYSTEM_GROUP_TYPE and n.lower() == wanted.lower()
+            if g.get("groupType") != label_rules.SYSTEM_GROUP_TYPE and n.lower() == wanted.lower()
         ),
         None,
     ) or gc.ensure_group(wanted)
-    current = gsync.relationship_label(live, groups)
+    user = label_rules.user_groups(gc.list_groups_by_rn(), gsync.group_name())
+    current = next(
+        (user[rn].lower() for rn in label_rules.membership_rns(live) if rn in user), None
+    )
     if current is not None and current != wanted.lower():
         old_rn = next(
             g["resourceName"]
             for n, g in groups.items()
-            if g.get("groupType") != gsync.SYSTEM_GROUP_TYPE and n.lower() == current
+            if g.get("groupType") != label_rules.SYSTEM_GROUP_TYPE and n.lower() == current
         )
         gc.modify_group_members(old_rn, [], [person_rn])
     gc.modify_group_members(target, [person_rn], [])

@@ -23,7 +23,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(
         person_create.gsync,
         "apply_person",
-        lambda conn, person, groups: state.__setitem__("applied", person) or "created",
+        lambda conn, person: state.__setitem__("applied", person) or "created",
     )
     monkeypatch.setattr(
         person_create.people,

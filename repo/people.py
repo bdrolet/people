@@ -145,7 +145,6 @@ def set_google(
     etag: str | None,
     display_name: str | None = None,
     notes: str | None = None,
-    relationship_label: str | None = None,
     phone_numbers: list[str],
     company: str | None,
     job_title: str | None,
@@ -158,7 +157,6 @@ def set_google(
             google_etag          = %s,
             display_name         = COALESCE(%s, display_name),
             notes                = COALESCE(%s, notes),
-            relationship_label   = COALESCE(%s, relationship_label),
             phone_numbers        = %s::text[],
             company              = %s,
             job_title            = %s,
@@ -171,7 +169,6 @@ def set_google(
             etag,
             display_name,
             notes,
-            relationship_label,
             phone_numbers,
             company,
             job_title,
@@ -188,7 +185,6 @@ def update_from_google(
     etag: str | None,
     display_name: str | None,
     notes: str | None,
-    relationship_label: str | None,
     phone_numbers: list[str],
     company: str | None,
     job_title: str | None,
@@ -205,7 +201,6 @@ def update_from_google(
         "google_etag = %s",
         "display_name = COALESCE(%s, display_name)",
         "notes = %s",
-        "relationship_label = %s",
         "phone_numbers = %s::text[]",
         "company = %s",
         "job_title = %s",
@@ -216,7 +211,6 @@ def update_from_google(
         etag,
         display_name,
         notes,
-        relationship_label,
         phone_numbers,
         company,
         job_title,
@@ -258,7 +252,6 @@ def create_from_google(
     resource_name: str,
     etag: str | None,
     notes: str | None,
-    relationship_label: str | None,
     phone_numbers: list[str],
     company: str | None,
     job_title: str | None,
@@ -268,14 +261,14 @@ def create_from_google(
     return conn.execute(
         f"""
         INSERT INTO people (email, display_name, first_seen, eligible, automated,
-                            google_resource_name, google_etag, notes, relationship_label,
+                            google_resource_name, google_etag, notes,
                             phone_numbers, company, job_title, google_fields)
-        VALUES (%s, %s, now(), TRUE, FALSE, %s, %s, %s, %s, %s::text[], %s, %s, %s::jsonb)
+        VALUES (%s, %s, now(), TRUE, FALSE, %s, %s, %s, %s::text[], %s, %s, %s::jsonb)
         ON CONFLICT (email) DO UPDATE SET
             google_resource_name = EXCLUDED.google_resource_name,
             google_etag = EXCLUDED.google_etag,
             display_name = COALESCE(EXCLUDED.display_name, people.display_name),
-            notes = EXCLUDED.notes, relationship_label = EXCLUDED.relationship_label,
+            notes = EXCLUDED.notes,
             phone_numbers = EXCLUDED.phone_numbers, company = EXCLUDED.company,
             job_title = EXCLUDED.job_title, google_fields = EXCLUDED.google_fields,
             eligible = TRUE, updated_at = now()
@@ -287,7 +280,6 @@ def create_from_google(
             resource_name,
             etag,
             notes,
-            relationship_label,
             phone_numbers,
             company,
             job_title,

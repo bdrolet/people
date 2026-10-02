@@ -30,6 +30,14 @@ def wire(monkeypatch):
     monkeypatch.setattr(gc, "list_groups", lambda: GROUPS)
     monkeypatch.setattr(
         gc,
+        "list_groups_by_rn",
+        lambda: {
+            g["resourceName"]: {"name": n, "formattedName": n, "groupType": g["groupType"]}
+            for n, g in GROUPS.items()
+        },
+    )
+    monkeypatch.setattr(
+        gc,
         "ensure_group",
         lambda name: GROUPS.get(name, {"resourceName": f"contactGroups/new-{name}"})[
             "resourceName"
@@ -116,6 +124,14 @@ def test_label_leaves_unrelated_groups_alone(wire, monkeypatch):
         "Book Club": {"resourceName": "contactGroups/bc1", "groupType": "USER_CONTACT_GROUP"},
     }
     monkeypatch.setattr(gc, "list_groups", lambda: groups)
+    monkeypatch.setattr(
+        gc,
+        "list_groups_by_rn",
+        lambda: {
+            g["resourceName"]: {"name": n, "formattedName": n, "groupType": g["groupType"]}
+            for n, g in groups.items()
+        },
+    )
     person_edit.update(None, 1, relationship_label="colleague")
     group_calls = [c for c in wire if c[0] == "group"]
     assert not any("contactGroups/bc1" in c[3] for c in group_calls)
