@@ -429,7 +429,43 @@ def test_patch_invalid_label_is_400(monkeypatch):
 def test_person_out_carries_labels():
     r = client.get("/people/alice@x.com")
     assert r.json()["labels"] == ["family"]
-    assert "relationship_label" not in r.json()
+    # transitional read-only field for inbox: first label, lowercased
+    assert r.json()["relationship_label"] == "family"
+
+
+def test_person_out_relationship_label_null_without_labels():
+    from api.routers.people import to_out
+
+    assert to_out(row(labels=[])).relationship_label is None
+    assert to_out(row(labels=["VIP", "Zed"])).relationship_label == "vip"
+
+
+def test_patch_rejects_relationship_label_with_422():
+    r = client.patch("/people/alice@x.com", json={"relationship_label": "x"})
+    assert r.status_code == 422
+
+
+def test_create_rejects_unknown_field_with_422():
+    r = client.post("/people", json={"contact": {}, "relationship_label": "x"})
+    assert r.status_code == 422
+
+
+def test_label_change_rejects_unknown_field_with_422():
+    r = client.patch("/people/alice@x.com", json={"labels": {"add": ["a"], "bogus": 1}})
+    assert r.status_code == 422
+
+
+def test_people_with_label_name_containing_slash(monkeypatch):
+    seen = {}
+
+    def find(conn, name):
+        seen["name"] = name
+        return [{"resource_name": "contactGroups/s", "name": name}]
+
+    monkeypatch.setattr(labels_repo, "find_by_name", find)
+    monkeypatch.setattr(people_repo, "with_label", lambda conn, rn: [])
+    r = client.get("/labels/a%2Fb")
+    assert r.status_code == 200 and seen["name"] == "a/b"
 
 
 def test_patch_not_linked_is_409(monkeypatch):

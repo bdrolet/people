@@ -18,9 +18,25 @@ pytestmark = pytest.mark.skipif(not URL, reason="TEST_DATABASE_URL not set")
 SCHEMA = Path(__file__).resolve().parent.parent / "repo" / "schema.sql"
 
 
+class _Row(tuple):
+    """Tuple rows that also answer by column name, like production's dict_row."""
+
+    _names: tuple = ()
+
+    def __getitem__(self, i):
+        if isinstance(i, str):
+            return super().__getitem__(self._names.index(i))
+        return super().__getitem__(i)
+
+
+def _row_factory(cursor):
+    names = tuple(d.name for d in cursor.description or [])
+    return lambda values: type("Row", (_Row,), {"_names": names})(values)
+
+
 @pytest.fixture
 def conn():
-    with psycopg.connect(URL, autocommit=True) as c:
+    with psycopg.connect(URL, autocommit=True, row_factory=_row_factory) as c:
         c.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
         c.execute(SCHEMA.read_text())
         yield c
@@ -497,6 +513,12 @@ def test_returning_columns_includes_labels(conn):
         "SELECT labels FROM (SELECT " + people_repo._COLUMNS + " FROM people) s"
     ).fetchall()
     assert [r[0] for r in got] == [[], []]
+
+    # event path against a person who has a membership: ON CONFLICT ... RETURNING
+    labels_repo.replace_groups(conn, {"contactGroups/a": "Climbing"})
+    labels_repo.set_contact_labels(conn, "people/c1", ["contactGroups/a"])
+    again = people_repo.upsert_inbound(conn, "a@example.com", None, datetime.now(UTC))
+    assert again["labels"] == ["Climbing"]
 
 
 def test_labels_join_reflects_a_rename(conn):

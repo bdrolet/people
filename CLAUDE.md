@@ -287,7 +287,9 @@ groups), replacing the single `relationship_label`. `PATCH` takes
 `{"labels": {"add": [...], "remove": [...]}}`; `POST /people` takes
 `labels: [...]`, validated before the Google contact is created; `GET /labels`
 and `GET /labels/{name}` list labels and their members. `people.relationship_label`
-is unused and dropped in a follow-up. See
+is unused and dropped in a follow-up; `PersonOut.relationship_label` is a
+transitional read-only copy (first label, lowercased) kept for inbox's
+classifier until it reads `labels`. See
 `docs/superpowers/specs/2026-10-02-multiple-labels-design.md` and
 `.claude/skills/editing-person/SKILL.md`.
 

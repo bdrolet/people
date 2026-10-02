@@ -2,16 +2,46 @@ from repo import labels
 from tests.test_repo_people import FakeConn
 
 
-def test_replace_groups_upserts_each_then_deletes_the_rest():
-    conn = FakeConn()
+def _writes(conn):
+    return [(s, p) for s, p in conn.calls if not s.startswith("SELECT")]
+
+
+def test_replace_groups_unchanged_makes_no_writes():
+    conn = FakeConn(results=[[{"resource_name": "contactGroups/a", "name": "Climbing"}]])
+    labels.replace_groups(conn, {"contactGroups/a": "Climbing"})
+    assert conn.calls[0][0].startswith("SELECT resource_name, name FROM contact_groups")
+    assert _writes(conn) == []
+
+
+def test_replace_groups_inserts_only_new():
+    conn = FakeConn(results=[[{"resource_name": "contactGroups/a", "name": "Climbing"}]])
     labels.replace_groups(conn, {"contactGroups/a": "Climbing", "contactGroups/b": "investor"})
-    sqls = [s for s, _ in conn.calls]
-    assert sum("INSERT INTO contact_groups" in s for s in sqls) == 2
-    assert "ON CONFLICT (resource_name) DO UPDATE SET name = EXCLUDED.name" in sqls[0]
-    assert conn.calls[0][1] == ("contactGroups/a", "Climbing")
-    delete_sql, delete_params = conn.calls[-1]
-    assert "DELETE FROM contact_groups" in delete_sql and "ANY(%s::text[])" in delete_sql
-    assert delete_params == (["contactGroups/a", "contactGroups/b"],)
+    [(sql, params)] = _writes(conn)
+    assert "INSERT INTO contact_groups" in sql
+    assert params == ("contactGroups/b", "investor")
+
+
+def test_replace_groups_updates_only_renamed():
+    conn = FakeConn(results=[[{"resource_name": "contactGroups/a", "name": "Climbing"}]])
+    labels.replace_groups(conn, {"contactGroups/a": "Bouldering"})
+    [(sql, params)] = _writes(conn)
+    assert "UPDATE contact_groups" in sql
+    assert params == ("Bouldering", "contactGroups/a")
+
+
+def test_replace_groups_deletes_only_removed():
+    conn = FakeConn(
+        results=[
+            [
+                {"resource_name": "contactGroups/a", "name": "Climbing"},
+                {"resource_name": "contactGroups/b", "name": "investor"},
+            ]
+        ]
+    )
+    labels.replace_groups(conn, {"contactGroups/a": "Climbing"})
+    [(sql, params)] = _writes(conn)
+    assert "DELETE FROM contact_groups" in sql and "ANY(%s::text[])" in sql
+    assert params == (["contactGroups/b"],)
 
 
 def test_set_contact_labels_replaces_by_resource_name():

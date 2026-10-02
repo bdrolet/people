@@ -7,19 +7,27 @@ from typing import Any
 def replace_groups(conn: Any, groups: dict[str, str]) -> None:
     """Make contact_groups exactly `groups` (rn -> name). A group no longer
     listed is deleted, and its people_labels rows cascade with it."""
+    existing = {
+        r["resource_name"]: r["name"]
+        for r in conn.execute("SELECT resource_name, name FROM contact_groups").fetchall()
+    }
     for rn, name in groups.items():
+        if rn not in existing:
+            conn.execute(
+                "INSERT INTO contact_groups (resource_name, name) VALUES (%s, %s)",
+                (rn, name),
+            )
+        elif existing[rn] != name:
+            conn.execute(
+                "UPDATE contact_groups SET name = %s, updated_at = now() WHERE resource_name = %s",
+                (name, rn),
+            )
+    gone = [rn for rn in existing if rn not in groups]
+    if gone:
         conn.execute(
-            """
-            INSERT INTO contact_groups (resource_name, name) VALUES (%s, %s)
-            ON CONFLICT (resource_name) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
-            WHERE contact_groups.name IS DISTINCT FROM EXCLUDED.name
-            """,
-            (rn, name),
+            "DELETE FROM contact_groups WHERE resource_name = ANY(%s::text[])",
+            (gone,),
         )
-    conn.execute(
-        "DELETE FROM contact_groups WHERE NOT (resource_name = ANY(%s::text[]))",
-        (list(groups),),
-    )
 
 
 def set_contact_labels(conn: Any, resource_name: str, group_rns: list[str]) -> None:

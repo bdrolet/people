@@ -117,6 +117,8 @@ then a phone number, then `person <id>`, and drop the `mailto:` link.
 Google contact's labels (contact groups), excluding system groups and the
 internal "Inbox" group people uses to mark contacts it created. Both
 are edited with **editing-person**, which writes through to Google first.
+The response also carries a deprecated read-only `relationship_label` (first
+label, lowercased) kept for inbox; use `labels`.
 
 ## LinkedIn detail
 

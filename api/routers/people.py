@@ -3,7 +3,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from googleapiclient.errors import HttpError
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from api.routers.imessage import IMessageSummary
 from api.routers.linkedin import LinkedInSummary
@@ -28,6 +28,10 @@ class PersonOut(BaseModel):
     message_count: int
     my_response_count: int
     labels: list[str] = []
+    # Deprecated, transitional, read-only: first label lowercased. Kept only
+    # because inbox's classifier still reads it; removed with the column-drop
+    # follow-up once inbox reads `labels`. Not accepted on PATCH/POST.
+    relationship_label: str | None = None
     notes: str | None
     eligible: bool
     automated: bool
@@ -47,17 +51,23 @@ class PersonList(BaseModel):
 
 
 class PersonCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     contact: dict
     notes: str | None = None
     labels: list[str] | None = None
 
 
 class LabelChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     add: list[str] = []
     remove: list[str] = []
 
 
 class PersonPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     notes: str | None = None
     labels: LabelChange | None = None
     contact: dict | None = None
@@ -70,6 +80,7 @@ def to_out(
     whatsapp_row: dict | None = None,
     include_contact: bool = False,
 ) -> PersonOut:
+    labels = row.get("labels") or []
     return PersonOut(
         id=row["id"],
         email=row["email"],
@@ -79,7 +90,8 @@ def to_out(
         last_contacted=row.get("last_contacted"),
         message_count=row.get("message_count") or 0,
         my_response_count=row.get("my_response_count") or 0,
-        labels=row.get("labels") or [],
+        labels=labels,
+        relationship_label=labels[0].lower() if labels else None,
         notes=row.get("notes"),
         eligible=bool(row.get("eligible")),
         automated=bool(row.get("automated")),

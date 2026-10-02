@@ -138,7 +138,7 @@ mail from).
 ```bash
 TOKEN=$(gcloud auth print-identity-token)
 curl -s -H "Authorization: Bearer $TOKEN" https://people-api.drolet.cloud/labels
-curl -s -H "Authorization: Bearer $TOKEN" "https://people-api.drolet.cloud/labels/$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))' "Book Club")"
+curl -s -H "Authorization: Bearer $TOKEN" "https://people-api.drolet.cloud/labels/$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1], safe=""))' "Book Club")"
 ```
 
 `GET /labels` lists every label with its member count; `GET /labels/{name}`

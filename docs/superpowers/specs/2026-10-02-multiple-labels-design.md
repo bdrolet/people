@@ -58,11 +58,11 @@ Google stays the source of truth. The DB only ever reflects what Google holds.
 |---|---|---|
 | `repo/schema.sql` | repo | **New** tables `contact_groups`, `people_labels` (§4.1). Additive only; `people.relationship_label` is left in place, unused, and dropped in a follow-up (§8). |
 | `repo/labels.py` | repo | **New.** `replace_groups(conn, groups)` — make `contact_groups` exactly match Google's user-defined groups; `set_contact_labels(conn, resource_name, group_rns)` — replace one person's memberships, joining against `contact_groups`; `list_with_counts(conn)`; `find_by_name(conn, name) -> list[dict]` (case-insensitive). |
-| `repo/people.py` | repo | `_COLUMNS` gains a `labels` array (§6.1). `relationship_label` leaves `_COLUMNS` and every write signature. **New** `with_label(conn, group_rn) -> list[dict]`. |
+| `repo/people.py` | repo | `_COLUMNS` gains a `labels` array (§6.1). `relationship_label` leaves `_COLUMNS` and every write signature (`PersonOut` derives its transitional copy from `labels`, §6.1). **New** `with_label(conn, group_rn) -> list[dict]`. |
 | `clients/google_contacts.py` | clients | **New** `list_groups_by_rn() -> dict[str, dict]` keyed by `resourceName`, each value `{name, formattedName, groupType}`, so a user group named "Family" can't collide with the built-in "Family" system group (`list_groups()`'s name-keyed dict lets one overwrite the other). Label code uses only the new function; `list_groups()`, `ensure_group` and `modify_group_members` are unchanged. |
 | `services/labels.py` | services | **New**, pure. `user_groups(groups_by_rn) -> dict[str, str]` (rn → name, system and `GOOGLE_CONTACT_GROUP` filtered out); `membership_rns(person) -> list[str]` (every group rn on the contact, unfiltered); `normalize_change(add, remove)` (§5.2); `match_name(candidates, name)` and `resolve` (case-insensitive name matching, exact case wins a tie, else ambiguous). |
 | `services/google_contacts_sync.py` | services | `relationship_label()` is deleted. `run_sync` and `sync_one` refresh `contact_groups` before applying persons (§4.2); `apply_person` writes `people_labels` for the row it touched (§4.3). |
-| `services/person_edit.py` | services | `relationship_label=` becomes `labels: dict | None` (`{"add": [...], "remove": [...]}`); `_set_label` becomes `_apply_labels` (§5.1). |
+| `services/person_edit.py` | services | `relationship_label=` becomes `labels: dict | None` (`{"add": [...], "remove": [...]}`); `_set_label` becomes `_apply_labels`; new `validate_labels` lets `person_create` reject before any Google write (§5.1). |
 | `services/person_create.py` | services | `relationship_label=` becomes `labels: list[str] | None`, applied after creation as `person_edit.update(..., labels={"add": labels})`. |
 | `services/contact_fields.py` | services | `OWNED_ELSEWHERE["memberships"]` names `labels` instead of `relationship_label`. |
 | `api/routers/people.py` | api | `PersonOut.relationship_label` → `labels: list[str]`; `PersonPatch.labels`, `PersonCreate.labels` (§5). |
@@ -106,8 +106,11 @@ case; §5.2 says what happens when a name is ambiguous.
 `gc.list_groups_by_rn()` instead, then `labels_repo.replace_groups(conn,
 labels.user_groups(...))` **before** applying any person:
 
-- new groups are inserted, renamed ones get the new `name` and `updated_at`;
-- groups no longer present are deleted, cascading their `people_labels` rows.
+- existing rows are read first, then only new groups are inserted, only renamed
+  ones updated (`name`, `updated_at`), and only vanished ones deleted,
+  cascading their `people_labels` rows. An unchanged group issues no write, so
+  the nightly transaction holds no row locks that would block a concurrent
+  `PATCH` refresh.
 
 `sync_one` (the post-PATCH refresh and `POST /people/{ident}/sync`) does the
 same, so a label created by a `PATCH` exists in `contact_groups` before the
@@ -151,8 +154,10 @@ Either list may be omitted or empty. `labels` sits alongside `notes` and
 
 `person_edit.update(..., labels=...)`:
 
-1. `validate_change` (§5.2) — **before** any write, as `contact` validation is
-   today, so a rejected request changes nothing.
+1. `person_edit.validate_labels` (§5.2: `labels.normalize_change`, then
+   `labels.resolve` per name) — **before** any write, as `contact` validation is
+   today, so a rejected request changes nothing. Failures surface as
+   `person_edit.Invalid` (400) or `person_edit.Conflict` (409, an ambiguous name).
 2. Fetch user groups (`list_groups_by_rn` → `user_groups`). Resolve each name
    case-insensitively.
 3. For each **add**: an existing group → its rn; no group by that name →
@@ -172,12 +177,14 @@ write (notes, contact) happens first, then label changes, then the refresh.
 
 ### 5.2 Validation (400)
 
-`validate_change(add, remove)` raises `Invalid` for:
+`labels.normalize_change(add, remove)` and `labels.resolve(...)` (surfaced as
+`person_edit.Invalid` / `Conflict`) reject:
 
 - a blank or whitespace-only name (names are stripped; surrounding whitespace
   is not significant);
 - the same name, case-insensitively, in both `add` and `remove`;
-- a **reserved** name: the reserved group (`GOOGLE_CONTACT_GROUP`), always; or
+- a **reserved** name: the reserved group (`GOOGLE_CONTACT_GROUP`), always — the
+  comparison is case-insensitive, here and in the `user_groups` filter (§4.2); or
   a name that matches no user label but does match a Google system group
   (`name` or `formattedName`). A user label sharing a system group's name
   ("Family") is an ordinary label. Reserved names are checked against the live
@@ -222,7 +229,10 @@ Still rejected inside the `contact` map with a `400`; the message now names
 
 `PersonOut.relationship_label: str | None` is replaced by
 `labels: list[str]` — names as Google spells them, sorted case-insensitively,
-`[]` when none. It's present on every response that carries a person: single
+`[]` when none. A deprecated, **transitional** read-only `relationship_label`
+(`labels[0].lower()`, or `null`) stays on `PersonOut` only because inbox's
+classifier still reads it (§9); it is never accepted on `PATCH`/`POST`, and goes
+away with the column-drop follow-up (§8). It's present on every response that carries a person: single
 fetch, `GET /people?recent=`, `POST /search`, `PATCH`, `POST /people`.
 
 `repo/people.py::_COLUMNS` gains:
@@ -261,10 +271,11 @@ Both are served from the DB alone — no Google calls on the read path.
 ## 7. Testing
 
 - **`tests/test_labels.py`** (pure): `user_groups` drops system groups and
-  `GOOGLE_CONTACT_GROUP`; `person_labels` returns *every* user group, not the
-  first; `validate_change` covers blank, add/remove overlap, in-list duplicates.
+  `GOOGLE_CONTACT_GROUP`; `membership_rns` returns *every* group rn, not the
+  first; `normalize_change` covers blank, add/remove overlap, in-list duplicates;
+  the reserved-group check is case-insensitive.
 - **`tests/test_repo_labels.py`**: `replace_groups` inserts, renames, and
-  deletes (asserting the cascade removes memberships); `set_person_labels`
+  deletes (asserting the cascade removes memberships); `set_contact_labels`
   replaces rather than appends; `_COLUMNS`' `labels` array is sorted and
   reflects a rename without touching `people_labels`.
 - **`tests/test_google_contacts_sync.py`**: a contact in two user groups plus
@@ -295,13 +306,21 @@ Both are served from the DB alone — no Google calls on the read path.
    contacts changed since the last run.
 4. **Verify the backfill**: every row with a non-null `relationship_label`
    has a `people_labels` row whose group name lowercases to it. Any exception
-   is investigated before step 6.
+   is investigated before step 7.
 5. **Verify UI edits propagate**: add a label to a contact in the Contacts UI,
    run `people-sync`, confirm it appears.
-6. **Follow-up PR**: `ALTER TABLE people DROP COLUMN IF EXISTS
-   relationship_label;` in `repo/schema.sql`, then `migrate_db.py`. It can't
+6. **Inbox PR**: inbox's classifier (`clients/people_api.py`,
+   `services/classification.py`) reads `relationship_label`; switch it to
+   `labels` before step 7.
+7. **Follow-up PR**: `ALTER TABLE people DROP COLUMN IF EXISTS
+   relationship_label;` in `repo/schema.sql`, then `migrate_db.py`, and remove
+   the transitional `PersonOut.relationship_label`. It must not merge before
+   inbox reads `labels`. It can't
    ship in this PR: `migrate_db.py` executes the whole file, and dropping the
    column before the new code is live breaks the old code's `_COLUMNS`.
+
+Rolling back to pre-labels code before the drop PR serves frozen
+`relationship_label` values (nothing writes the column after merge).
 
 The first full sync re-reads every contact; expect `updated` counts near the
 contact total for that one run.
@@ -317,7 +336,7 @@ replacing every `relationship_label` example), `creating-person`,
 
 | Decision | Choice | Why |
 |---|---|---|
-| Fate of `relationship_label` | Replaced by `labels` | No callers outside this repo and its skills; two overlapping concepts would need a rule for which group is "primary". |
+| Fate of `relationship_label` | Replaced by `labels`; a read-only `relationship_label` (first label, lowercased) stays on `PersonOut` transitionally | Inbox's classifier reads it (fail-open: it would silently lose the context), so it is kept until inbox reads `labels`, then removed with the column drop. Two *writable* overlapping concepts would need a rule for which group is "primary"; the shim is derived, never written. |
 | Storage | `contact_groups` + `people_labels`, joined at read | A rename changes no contact etag, so a per-person name array would go stale; the group list is already fetched every sync. |
 | Storage, rejected: `labels TEXT[]` on `people` | — | Simplest, but stale on rename (above). |
 | Storage, rejected: read live from Google | — | One API call per lookup; "list everyone tagged X" would hit rate limits, and every other read is served from the index. |

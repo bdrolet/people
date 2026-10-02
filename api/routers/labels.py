@@ -29,7 +29,7 @@ def list_labels() -> LabelList:
     return LabelList(results=[LabelOut.model_validate(r) for r in rows])
 
 
-@router.get("/labels/{name}", response_model=PersonList)
+@router.get("/labels/{name:path}", response_model=PersonList)
 def people_with_label(name: str) -> PersonList:
     with db.get_conn() as conn:
         candidates = {r["resource_name"]: r["name"] for r in labels_repo.find_by_name(conn, name)}
