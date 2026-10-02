@@ -35,7 +35,7 @@ This overrides the default "commit or push only when asked" behavior for code ch
 | **Events CF** | `people-process` — Pub/Sub trigger on the inbox-owned `email-events` topic (data source), entry point `process` in `main.py`; handles `email_classified` and `email_sent`, ignores everything else |
 | **Sync CF** | `people-sync` — HTTP trigger, entry point `sync`; POST with `Authorization: Bearer <people-sync-token>`; Cloud Scheduler `people-sync` at `0 4 * * *` America/New_York (before inbox's 5 AM sweep) — Google Contacts incremental sync (**adopts** an email-less contact with a usable phone number, `email IS NULL`; counts the rest `skipped`), then HubSpot reconcile |
 | **API** | `people-api` — Cloud Run FastAPI service (`api/`); auth is Cloud Run IAM — `roles/run.invoker` granted per caller in `terraform/api.tf`; callers send `gcloud auth print-identity-token`; image in Artifact Registry repo `people`, deployed by `.github/workflows/deploy-api.yml`; `https://people-api.drolet.cloud` (Cloud Run domain mapping in `terraform/api.tf`; the CNAME lives in `~/src/infra` `cloudflare/drolet-cloud.tf`); the raw run.app URL is `terraform output -raw people_api_url` |
-| **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people` (incl. editable-contact-field columns `phone_numbers`, `company`, `job_title`, `google_fields` — see the source-of-truth table below), `sync_state`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`, `imessage_handles`, `imessage_chats`, `imessage_messages`, `imessage_imports`, `whatsapp_handles`, `whatsapp_chats`, `whatsapp_chat_members`, `whatsapp_messages`, `whatsapp_imports`; schema in `repo/schema.sql` |
+| **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people` (incl. editable-contact-field columns `phone_numbers`, `company`, `job_title`, `google_fields` — see the source-of-truth table below), `sync_state`, `contact_groups`, `people_labels`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`, `imessage_handles`, `imessage_chats`, `imessage_messages`, `imessage_imports`, `whatsapp_handles`, `whatsapp_chats`, `whatsapp_chat_members`, `whatsapp_messages`, `whatsapp_imports`; schema in `repo/schema.sql` |
 | **Google Contacts** | People API v1 via `clients/google_contacts.py` — OAuth refresh-token creds, scope `https://www.googleapis.com/auth/contacts`; reuses schedule's OAuth client (`google-calendar-client-id`/`-secret`, data sources), a people-owned refresh token (`google-contacts-refresh-token`) |
 | **HubSpot** | `clients/hubspot.py` (ported from inbox) — contacts search/create/update/archive, email engagement create; bounded mirror, see §HubSpot below |
 | **Local Graph import** | `clients/graph_local.py` — device-code MSAL auth for `scripts/import_contacts.py` only; people's Cloud Functions never call Graph |
@@ -69,6 +69,7 @@ repo/
   schema.sql                people (incl. contact-field columns), sync_state tables
   people.py                 all reads/writes on people — takes an open connection
   sync_state.py             google_contacts sync token + status
+  labels.py                 contact_groups / people_labels
   linkedin.py               linkedin_* snapshot: replace_snapshot + API read queries
   imessage.py               imessage_* snapshot: upserts, stats recompute, API read queries
   whatsapp.py               whatsapp_* snapshot: upserts, stats recompute, audit and re-point,
@@ -87,6 +88,8 @@ services/
                              add-only rule, identifiers() for duplicate checking,
                              derive() of phone_numbers/company/job_title/google_fields
                              from a Google person payload
+  labels.py                 pure label rules: user groups, membership rns, name matching,
+                             reserved names
   sync_auth.py              bearer check for POST /sync
   linkedin_export.py        parse a LinkedIn data export (dir/zip) → snapshot; match_people
   imessage_export.py        pure chat.db logic: timestamps, attributedBody decode, handle
@@ -104,6 +107,7 @@ api/
     people.py                GET /people?recent=, POST /people (create), GET/PATCH/POST-sync
                               /people/{ident} ({ident}: email, E.164 phone, or numeric id —
                               services/identity.py; ambiguous phone → 409 with candidate ids)
+    labels.py                 GET /labels, GET /labels/{name}
     search.py                 POST /search
     linkedin.py              GET /linkedin/connections[/{slug}], GET /linkedin/imports/latest
     imessage.py              GET /imessage/handles[/{handle}], GET /imessage/imports/latest
@@ -158,7 +162,7 @@ exactly as tasks and schedule do.
 |---|---|---|
 | `display_name` | Google Contacts once linked; event data before that | Google → DB on link/sync. Event data never overwrites a Google-sourced name. |
 | `notes` | Google contact **biography** | Both ways — `PATCH /people/{ident}` writes Google first, then refreshes the DB row from it. The event path never writes notes. |
-| `relationship_label` | Google **contact group** membership | Google → DB — first non-system, non-`GOOGLE_CONTACT_GROUP` group, lowercased. `PATCH` writes by moving group membership (adds the target group, removes the prior one). |
+| labels (`contact_groups`, `people_labels`) | Google **contact groups** (user-defined; system groups and `GOOGLE_CONTACT_GROUP` excluded) | Google → DB — `contact_groups` replaced from `contactGroups.list` on every sync, so renames/deletes need no per-contact work; a person's memberships rewritten on every apply. `PATCH` adds/removes membership (`{"labels": {"add", "remove"}}`) without touching other labels. |
 | counters (`message_count`, `my_response_count`), timestamps, `eligible`, `automated` | DB | Written only by the event handlers and `scripts/import_contacts.py`. |
 | `google_deleted_at` | Google | Set by `people-sync` when a linked `resourceName` comes back deleted. Never recreated. |
 | `hubspot_contact_id` | DB (people manages) | Set on create/adopt, cleared on evict/heal. |
@@ -230,7 +234,7 @@ empty for a Google-only match, since there's no `people.id` to give) →
 `clients/google_contacts.py::create_person` → the same
 `google_contacts_sync.apply_person` the nightly sync uses to create the
 row, so a hand-created person is indistinguishable from an adopted one. If
-`notes`/`relationship_label` was given, `person_edit.update` applies it
+`notes`/`labels` was given, `person_edit.update` applies it
 after. `api/routers/people.py::create_person` maps `Invalid`→`400`,
 `Duplicate`→`409`, returns `201` with the same `PersonOut` shape `GET`
 returns.
@@ -259,7 +263,7 @@ more), validated against the allowlist in `services/contact_fields.py` and
 written to Google in one `updateContact` call, alongside `biographies` when
 `notes` was also given. `biographies` and `memberships` are rejected inside
 `contact` with a `400` — they're owned by the dedicated `notes` and
-`relationship_label` fields. Email addresses are add-only: a submission
+`labels` fields. Email addresses are add-only: a submission
 missing an existing or keyed address is a `409`. Reads are served from three
 typed columns (`phone_numbers`, `company`, `job_title`) plus `google_fields`
 (JSONB, the full allowlisted payload); the API's `PersonOut` carries all
@@ -275,6 +279,17 @@ incompatible with an existing sync token — so the first nightly
 of an incremental one. Expected and self-healing
 (`_is_expired_sync_token`); don't read a full-resync log line as a fault
 unless it recurs.
+
+### Labels (2026-10-02 design)
+
+A person carries any number of Google Contacts labels (user-defined contact
+groups), replacing the single `relationship_label`. `PATCH` takes
+`{"labels": {"add": [...], "remove": [...]}}`; `POST /people` takes
+`labels: [...]`, validated before the Google contact is created; `GET /labels`
+and `GET /labels/{name}` list labels and their members. `people.relationship_label`
+is unused and dropped in a follow-up. See
+`docs/superpowers/specs/2026-10-02-multiple-labels-design.md` and
+`.claude/skills/editing-person/SKILL.md`.
 
 ### Eligibility (spec §5)
 

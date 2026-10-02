@@ -1,10 +1,10 @@
 ---
 name: editing-person
 description: >
-  Use when the user wants to update a person's notes, relationship label, or
-  any other Google contact field — phone number, name, company/job title,
-  birthday, address — "add a note about X", "tag alice as a colleague", "set
-  the relationship label for that contact", "update alice's phone number",
+  Use when the user wants to update a person's notes, labels, or any other
+  Google contact field — phone number, name, company/job title, birthday,
+  address — "add a note about X", "tag alice as an investor", "add/remove a
+  label", "put bob on the climbing list", "update alice's phone number",
   "add a work address for bob". Does not create people — a person becomes a
   contact automatically by emailing or being emailed, or by hand via
   creating-person; use searching-people to check whether someone already
@@ -16,7 +16,7 @@ metadata:
 # Editing a Person
 
 `PATCH /people/{ident}` writes to Google Contacts **first** (it is the
-source of truth for `notes`/`relationship_label` and every other contact
+source of truth for `notes`/`labels` and every other contact
 field — spec §4.3, contact-field-edits design), then refreshes the `people`
 DB row from Google and returns it. It never creates a new person — see "No
 creation" below.
@@ -33,7 +33,7 @@ BASE=https://people-api.drolet.cloud
 TOKEN=$(gcloud auth print-identity-token)   # Cloud Run IAM; your gcloud login is the credential
 ```
 
-## Update notes and/or relationship label
+## Update notes and/or labels
 
 ```bash
 curl -s -X PATCH "$BASE/people/<ident>" \
@@ -42,7 +42,11 @@ curl -s -X PATCH "$BASE/people/<ident>" \
 
 curl -s -X PATCH "$BASE/people/<ident>" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"relationship_label": "colleague"}'
+  -d '{"labels": {"add": ["colleague"]}}'
+
+curl -s -X PATCH "$BASE/people/<ident>" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"labels": {"remove": ["prospect"]}}'
 ```
 
 Send only the field(s) you're changing — both are optional, independently
@@ -50,18 +54,21 @@ settable.
 
 - **`notes`** writes the Google contact's **biography** field, replacing it
   outright.
-- **`relationship_label`** writes by adding the contact to a Google contact
-  group named by the label (created if it doesn't exist) and removing it
-  from whichever other user-managed group currently reads as its label. It
-  becomes a **Google Contacts group**, visible and editable in the Google
-  Contacts UI too.
+- **`labels`** — `{"add": [...], "remove": [...]}`, either optional. Adds
+  create a label that doesn't exist yet; adding a label someone already has,
+  or removing one they don't, is a no-op. Matching ignores case. Other labels
+  are never touched. Labels are Google Contacts **contact groups**, visible
+  and editable in the Google Contacts UI too. `400` for a blank name, a name
+  in both lists, `Inbox`, or a Google built-in group name (`Starred`,
+  `My Contacts`) that no label of yours shares; `409` when a name matches
+  two labels that differ only in case — use the exact spelling.
 
 **Always show the returned row afterward** — the response is the refreshed
 person record (same shape as `fetching-person`), proof the write landed:
 
 ```
 **<display_name or email>** — updated
-relationship_label: <value>
+labels: <comma-separated, or "none">
 notes: <value>
 ```
 
@@ -71,7 +78,7 @@ Every other field on the Google contact — phone numbers, name, company/job
 title, birthday, addresses, and more — is edited through a `contact` map on
 the same PATCH body. Its keys are Google People API field names, each value
 a list of objects (a bare object is also accepted for a single-valued field
-like `birthdays`). **`notes` and `relationship_label` are not valid keys
+like `birthdays`). **`notes` and `labels` are not valid keys
 inside `contact`** — they keep their own top-level PATCH fields (above) and
 are rejected with a `400` if sent inside `contact`, since two writers for
 the same field is how they'd drift.
@@ -115,7 +122,7 @@ A few things worth knowing before sending one of these:
   `imClients`, `interests`, `locales`, `locations`, `miscKeywords`, `names`,
   `nicknames`, `occupations`, `organizations`, `phoneNumbers`, `relations`,
   `sipAddresses`, `urls`, `userDefined`. `biographies` and `memberships` are
-  deliberately excluded from this set — `notes` and `relationship_label`
+  deliberately excluded from this set — `notes` and `labels`
   already own them as dedicated PATCH fields, and having a second writer for
   the same field is how they'd drift. Anything else — including real Google
   person fields not in this set, like `ageRanges` or `skills` — is rejected
@@ -134,7 +141,7 @@ email:
 ```bash
 curl -s -X PATCH "$BASE/people/%2B15550100001" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"relationship_label": "colleague"}'
+  -d '{"labels": {"add": ["colleague"]}}'
 ```
 
 An email address can be **added** to one of these people the same way as

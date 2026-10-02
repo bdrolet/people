@@ -57,10 +57,10 @@ Google stays the source of truth. The DB only ever reflects what Google holds.
 | Unit | Layer | Responsibility |
 |---|---|---|
 | `repo/schema.sql` | repo | **New** tables `contact_groups`, `people_labels` (§4.1). Additive only; `people.relationship_label` is left in place, unused, and dropped in a follow-up (§8). |
-| `repo/labels.py` | repo | **New.** `replace_groups(conn, groups)` — make `contact_groups` exactly match Google's user-defined groups; `set_person_labels(conn, person_id, group_rns)` — replace one person's memberships; `list_with_counts(conn)`; `find_by_name(conn, name) -> list[dict]` (case-insensitive). |
+| `repo/labels.py` | repo | **New.** `replace_groups(conn, groups)` — make `contact_groups` exactly match Google's user-defined groups; `set_contact_labels(conn, resource_name, group_rns)` — replace one person's memberships, joining against `contact_groups`; `list_with_counts(conn)`; `find_by_name(conn, name) -> list[dict]` (case-insensitive). |
 | `repo/people.py` | repo | `_COLUMNS` gains a `labels` array (§6.1). `relationship_label` leaves `_COLUMNS` and every write signature. **New** `with_label(conn, group_rn) -> list[dict]`. |
 | `clients/google_contacts.py` | clients | **New** `list_groups_by_rn() -> dict[str, dict]` keyed by `resourceName`, each value `{name, formattedName, groupType}`, so a user group named "Family" can't collide with the built-in "Family" system group (`list_groups()`'s name-keyed dict lets one overwrite the other). Label code uses only the new function; `list_groups()`, `ensure_group` and `modify_group_members` are unchanged. |
-| `services/labels.py` | services | **New**, pure. `user_groups(groups_by_rn) -> dict[str, str]` (rn → name, system and `GOOGLE_CONTACT_GROUP` filtered out); `person_labels(person, user_groups) -> list[str]` (the contact's user-group rns); `validate_change(add, remove) -> tuple[list[str], list[str]]` (§5.2). |
+| `services/labels.py` | services | **New**, pure. `user_groups(groups_by_rn) -> dict[str, str]` (rn → name, system and `GOOGLE_CONTACT_GROUP` filtered out); `membership_rns(person) -> list[str]` (every group rn on the contact, unfiltered); `normalize_change(add, remove)` (§5.2); `match_name(candidates, name)` and `resolve` (case-insensitive name matching, exact case wins a tie, else ambiguous). |
 | `services/google_contacts_sync.py` | services | `relationship_label()` is deleted. `run_sync` and `sync_one` refresh `contact_groups` before applying persons (§4.2); `apply_person` writes `people_labels` for the row it touched (§4.3). |
 | `services/person_edit.py` | services | `relationship_label=` becomes `labels: dict | None` (`{"add": [...], "remove": [...]}`); `_set_label` becomes `_apply_labels` (§5.1). |
 | `services/person_create.py` | services | `relationship_label=` becomes `labels: list[str] | None`, applied after creation as `person_edit.update(..., labels={"add": labels})`. |
@@ -121,10 +121,11 @@ already happens.
 
 ### 4.3 Per-person memberships
 
-`apply_person` computes `labels.person_labels(person, user_groups)` — every
-membership whose `contactGroupResourceName` is a user group — and, once it
-knows the row's `id`, calls `labels_repo.set_person_labels(conn, id, rns)`,
-which deletes that person's rows and inserts the new set. This runs on every
+`apply_person` passes `labels.membership_rns(person)` — every group rn on the
+contact, unfiltered — to `repo/labels.py::set_contact_labels(conn,
+resource_name, rns)`, which replaces the person's rows by joining against
+`contact_groups`. The join is the filter: system groups, `Inbox`, and any group
+newer than the last refresh are dropped, never an FK error. This runs on every
 branch that writes a row: link, create/adopt, the already-linked update, and
 promotion.
 
@@ -176,11 +177,11 @@ write (notes, contact) happens first, then label changes, then the refresh.
 - a blank or whitespace-only name (names are stripped; surrounding whitespace
   is not significant);
 - the same name, case-insensitively, in both `add` and `remove`;
-- a **reserved** name: `GOOGLE_CONTACT_GROUP` (`Inbox`), or the name of any
-  system group (`myContacts`, `starred`, and Google's built-in
-  `friends`/`family`/`coworkers` by both `name` and `formattedName`). Reserved
-  names are checked in step 2, against the live group list, since the set of
-  system groups is Google's to define.
+- a **reserved** name: the reserved group (`GOOGLE_CONTACT_GROUP`), always; or
+  a name that matches no user label but does match a Google system group
+  (`name` or `formattedName`). A user label sharing a system group's name
+  ("Family") is an ordinary label. Reserved names are checked against the live
+  group list, since the set of system groups is Google's to define.
 
 Duplicates within one list are collapsed, not rejected.
 
@@ -205,7 +206,10 @@ in the Contacts UI.
 `PersonCreate.relationship_label` becomes `labels: list[str] | None`. After the
 contact and row are created, `person_create.create` calls
 `person_edit.update(conn, row["id"], notes=..., labels={"add": labels})` — the
-same post-create step `notes`/`relationship_label` use today.
+same post-create step `notes`/`relationship_label` use today. The labels are
+validated **before** the Google contact is created: a blank, reserved, or
+built-in name is a `400` and an ambiguous one a `409`, and nothing is written
+to Google or the DB.
 
 ### 5.5 `contact.memberships`
 

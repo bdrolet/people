@@ -4,7 +4,8 @@ description: >
   Use when searching for people — finding someone by name or email substring,
   or listing people by recent interaction. Use when asked to "find that
   person", "who have I talked to about X", "who have I emailed recently", or
-  "list people I've corresponded with". Searches the people-api index, not
+  "list people I've corresponded with", "who's tagged X", "list everyone on
+  my X list", "what labels do I have". Searches the people-api index, not
   live email.
 ---
 
@@ -132,6 +133,18 @@ curl -s "$BASE/people?recent=20&eligible_only=true" \
 §5: an automated sender, or someone Ben has only ever received `ignore`-filed
 mail from).
 
+## Listing by label
+
+```bash
+TOKEN=$(gcloud auth print-identity-token)
+curl -s -H "Authorization: Bearer $TOKEN" https://people-api.drolet.cloud/labels
+curl -s -H "Authorization: Bearer $TOKEN" "https://people-api.drolet.cloud/labels/$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))' "Book Club")"
+```
+
+`GET /labels` lists every label with its member count; `GET /labels/{name}`
+returns everyone with that label — all of them, most recent interaction
+first, regardless of eligibility. `404` unknown label, `409` ambiguous case.
+
 ## Result shape
 
 Both endpoints return `{"results": [...]}` of:
@@ -143,7 +156,7 @@ Both endpoints return `{"results": [...]}` of:
   "display_name": "Alice Example",
   "first_seen": "…", "last_seen": "…", "last_contacted": "…",
   "message_count": 12, "my_response_count": 4,
-  "relationship_label": "colleague", "notes": "…",
+  "labels": ["colleague"], "notes": "…",
   "eligible": true, "automated": false,
   "in_google_contacts": true, "in_hubspot": true,
   "phone_numbers": ["+15550100001"], "company": "Example Corp", "job_title": "Engineer",
@@ -171,7 +184,7 @@ person can act on directly):
 
 ```
 [<display_name or email>](mailto:<email>) · last interaction <last_interaction date> · msgs <message_count> / replies <my_response_count>
-      <relationship_label, if set> — <notes, truncated to one line, if set>
+      <labels, comma-separated, if any> — <notes, truncated to one line, if set>
 ```
 
 If `email` is null, drop the `mailto:` link and fall back to
