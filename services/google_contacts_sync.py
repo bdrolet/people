@@ -8,12 +8,11 @@ from typing import Any
 
 import clients.google_contacts as gc
 import clients.otel as otel
+from repo import labels as labels_repo
 from repo import people, sync_state
-from services import contact_fields
+from services import contact_fields, labels
 
 logger = logging.getLogger(__name__)
-
-SYSTEM_GROUP_TYPE = "SYSTEM_CONTACT_GROUP"
 
 
 def group_name() -> str:
@@ -42,22 +41,17 @@ def notes(person: dict) -> str | None:
     return None
 
 
-def relationship_label(person: dict, groups: dict[str, dict]) -> str | None:
-    """First user-defined group the contact belongs to, lowercased, skipping
-    system groups and people's own '<GOOGLE_CONTACT_GROUP>' group."""
-    by_rn = {g["resourceName"]: (name, g.get("groupType")) for name, g in groups.items()}
-    for m in person.get("memberships", []):
-        rn = (m.get("contactGroupMembership") or {}).get("contactGroupResourceName")
-        if not rn or rn not in by_rn:
-            continue
-        name, kind = by_rn[rn]
-        if kind == SYSTEM_GROUP_TYPE or name == group_name():
-            continue
-        return name.lower()
-    return None
+def refresh_groups(conn: Any) -> None:
+    """Make contact_groups match Google's labels (multiple-labels design §4.2).
+    Runs before apply_person, so a person's memberships can reference them."""
+    labels_repo.replace_groups(conn, labels.user_groups(gc.list_groups_by_rn(), group_name()))
 
 
-def _link(conn: Any, email: str, person: dict, groups: dict[str, dict]) -> None:
+def _write_labels(conn: Any, person: dict) -> None:
+    labels_repo.set_contact_labels(conn, person["resourceName"], labels.membership_rns(person))
+
+
+def _link(conn: Any, email: str, person: dict) -> None:
     people.set_google(
         conn,
         email,
@@ -65,9 +59,9 @@ def _link(conn: Any, email: str, person: dict, groups: dict[str, dict]) -> None:
         etag=person.get("etag"),
         display_name=display_name(person),
         notes=notes(person),
-        relationship_label=relationship_label(person, groups),
         **contact_fields.derive(person),
     )
+    _write_labels(conn, person)
 
 
 def ensure_contact(conn: Any, row: dict) -> dict:
@@ -86,19 +80,21 @@ def ensure_contact(conn: Any, row: dict) -> dict:
         otel.external_errors.add(1, {"system": "google"})
         logger.warning("Google ensure_contact failed for %s", row["email"], exc_info=True)
         return row
-    _link(conn, row["email"], person, groups)  # DB write — a failure here propagates
+    _link(conn, row["email"], person)  # DB write — a failure here propagates
     return people.get(conn, row["email"]) or row
 
 
-def apply_person(conn: Any, person: dict, groups: dict[str, dict]) -> str | None:
+def apply_person(conn: Any, person: dict) -> str | None:
     rn = person["resourceName"]
     linked = people.get_by_google_resource(conn, rn)
     if (person.get("metadata") or {}).get("deleted"):
         if linked:
+            # Clear first: set_contact_labels finds the row by
+            # google_resource_name, which mark_google_deleted NULLs.
+            labels_repo.set_contact_labels(conn, rn, [])
             people.mark_google_deleted(conn, rn)
             return "deleted"
         return None
-    label = relationship_label(person, groups)
     derived = contact_fields.derive(person)
     if linked:
         if linked.get("email") is None and not derived["phone_numbers"]:
@@ -122,10 +118,10 @@ def apply_person(conn: Any, person: dict, groups: dict[str, dict]) -> str | None
             etag=person.get("etag"),
             display_name=display_name(person),
             notes=notes(person),
-            relationship_label=label,
             email=promote,
             **derived,
         )
+        _write_labels(conn, person)
         return "promoted" if promote else "updated"
     email = primary_email(person)
     if not email:
@@ -141,13 +137,13 @@ def apply_person(conn: Any, person: dict, groups: dict[str, dict]) -> str | None
             resource_name=rn,
             etag=person.get("etag"),
             notes=notes(person),
-            relationship_label=label,
             **derived,
         )
+        _write_labels(conn, person)
         return "created"
     row = people.get(conn, email)
     if row and not row.get("google_resource_name") and not row.get("google_deleted_at"):
-        _link(conn, email, person, groups)
+        _link(conn, email, person)
         return "linked"
     if row is None:
         people.create_from_google(
@@ -157,9 +153,9 @@ def apply_person(conn: Any, person: dict, groups: dict[str, dict]) -> str | None
             resource_name=rn,
             etag=person.get("etag"),
             notes=notes(person),
-            relationship_label=label,
             **derived,
         )
+        _write_labels(conn, person)
         return "created"
     return None
 
@@ -173,9 +169,9 @@ def run_sync(conn: Any) -> dict[str, int]:
         except gc.SyncTokenExpired:
             logger.warning("Google sync token expired — full resync")
             persons, next_token = gc.list_connections(None)
-        groups = gc.list_groups()
+        refresh_groups(conn)
         for p in persons:
-            kind = apply_person(conn, p, groups)
+            kind = apply_person(conn, p)
             if kind:
                 counts[kind] += 1
                 otel.google_sync_changes.add(1, {"kind": kind})
@@ -200,5 +196,6 @@ def sync_one(conn: Any, row: dict) -> dict:
     rn = row.get("google_resource_name")
     if not rn:
         return row
-    apply_person(conn, gc.get_person(rn), gc.list_groups())
+    refresh_groups(conn)
+    apply_person(conn, gc.get_person(rn))
     return people.get_by_id(conn, row["id"]) or row

@@ -107,7 +107,6 @@ def test_update_from_google_persists_contact_fields():
         etag="e1",
         display_name="Alice",
         notes=None,
-        relationship_label=None,
         phone_numbers=["+15550100001"],
         company="Example Health",
         job_title="CTO",
@@ -169,7 +168,6 @@ def test_create_from_google_accepts_no_email():
         resource_name="people/c1",
         etag="e1",
         notes=None,
-        relationship_label=None,
         phone_numbers=["+15550100001"],
         company=None,
         job_title=None,
@@ -200,7 +198,6 @@ def test_update_from_google_omits_email_by_default():
         etag="e1",
         display_name="Alice",
         notes=None,
-        relationship_label=None,
         phone_numbers=["+15550100001"],
         company=None,
         job_title=None,
@@ -218,7 +215,6 @@ def test_update_from_google_writes_email_when_passed():
         etag="e1",
         display_name="Alice",
         notes=None,
-        relationship_label=None,
         phone_numbers=["+15550100001"],
         company=None,
         job_title=None,
@@ -236,3 +232,16 @@ def test_rows_for_whatsapp_matching_selects_phones_and_names():
     sql, _ = conn.calls[0]
     assert sql == "SELECT id, display_name, phone_numbers FROM people"
     assert rows[0]["phone_numbers"] == ["+15550100001"]
+
+
+def test_columns_include_labels_not_relationship_label():
+    assert "AS labels" in people._COLUMNS
+    assert "relationship_label" not in people._COLUMNS
+
+
+def test_with_label_filters_by_group_and_orders_by_interaction():
+    conn = FakeConn(results=[[{"id": 1}]])
+    assert people.with_label(conn, "contactGroups/a") == [{"id": 1}]
+    sql, params = conn.calls[0]
+    assert "people_labels" in sql and "ORDER BY GREATEST" in sql
+    assert params == ("contactGroups/a",)

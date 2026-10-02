@@ -1,6 +1,7 @@
 import pytest
 
 from services import person_create
+from services import person_edit as person_edit_real
 
 
 @pytest.fixture
@@ -13,6 +14,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(person_create.gc, "search_by_email", lambda email: None)
     monkeypatch.setattr(person_create.gc, "list_phone_index", lambda: {})
     monkeypatch.setattr(person_create.gc, "list_groups", lambda: {})
+    monkeypatch.setattr(person_create.gc, "list_groups_by_rn", lambda: {})
     monkeypatch.setattr(person_create.gc, "ensure_group", lambda name: "contactGroups/abc")
 
     def fake_create_person(body, group):
@@ -23,7 +25,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(
         person_create.gsync,
         "apply_person",
-        lambda conn, person, groups: state.__setitem__("applied", person) or "created",
+        lambda conn, person: state.__setitem__("applied", person) or "created",
     )
     monkeypatch.setattr(
         person_create.people,
@@ -49,9 +51,19 @@ def test_creates_a_phone_only_person(wired):
     assert wired["edits"] == []  # no notes or label given
 
 
-def test_applies_notes_and_label_when_given(wired):
-    person_create.create(None, contact=PHONE_ONLY, notes="hi", relationship_label="colleague")
-    assert wired["edits"] == [(7, {"notes": "hi", "relationship_label": "colleague"})]
+def test_applies_notes_and_labels_when_given(wired):
+    person_create.create(None, contact=PHONE_ONLY, notes="hi", labels=["colleague", "Climbing"])
+    assert wired["edits"] == [(7, {"notes": "hi", "labels": {"add": ["colleague", "Climbing"]}})]
+
+
+def test_labels_alone_trigger_the_edit(wired):
+    person_create.create(None, contact=PHONE_ONLY, labels=["colleague"])
+    assert wired["edits"] == [(7, {"notes": None, "labels": {"add": ["colleague"]}})]
+
+
+def test_empty_labels_do_not_trigger_an_edit(wired):
+    person_create.create(None, contact=PHONE_ONLY, labels=[])
+    assert wired["edits"] == []
 
 
 def test_rejects_a_contact_with_no_usable_identifier(wired):
@@ -113,3 +125,38 @@ def test_raises_invalid_when_no_row_appears(wired, monkeypatch):
     monkeypatch.setattr(person_create.people, "get_by_google_resource", lambda conn, rn: None)
     with pytest.raises(person_create.Invalid):
         person_create.create(None, contact=PHONE_ONLY)
+
+
+USER = "USER_CONTACT_GROUP"
+
+
+def _groups(monkeypatch, extra=None):
+    by_rn = {"contactGroups/inbox1": {"name": "Inbox", "formattedName": "Inbox", "groupType": USER}}
+    by_rn.update(extra or {})
+    monkeypatch.setattr(person_create.gc, "list_groups_by_rn", lambda: by_rn)
+
+
+def test_invalid_label_rejects_before_google_create(wired, monkeypatch):
+    _groups(monkeypatch)
+    with pytest.raises(person_edit_real.Invalid):
+        person_create.create(None, contact=PHONE_ONLY, labels=["Inbox"])
+    assert wired["created_body"] is None
+
+
+def test_ambiguous_label_rejects_before_google_create(wired, monkeypatch):
+    _groups(
+        monkeypatch,
+        {
+            "contactGroups/v1": {"name": "VIP", "formattedName": "VIP", "groupType": USER},
+            "contactGroups/v2": {"name": "vip", "formattedName": "vip", "groupType": USER},
+        },
+    )
+    with pytest.raises(person_edit_real.Conflict):
+        person_create.create(None, contact=PHONE_ONLY, labels=["Vip"])
+    assert wired["created_body"] is None
+
+
+def test_valid_label_still_creates(wired, monkeypatch):
+    _groups(monkeypatch)
+    person_create.create(None, contact=PHONE_ONLY, labels=["Climbing"])
+    assert wired["created_body"] is not None

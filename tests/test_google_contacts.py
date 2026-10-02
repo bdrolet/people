@@ -250,3 +250,56 @@ def test_create_person_without_a_group_sends_no_membership(monkeypatch):
     monkeypatch.setattr(gc, "_svc", lambda: FakeService())
     gc.create_person({"names": [{"givenName": "Alice"}]}, None)
     assert "memberships" not in calls[0]["body"]
+
+
+def test_list_groups_by_rn_pages_and_keeps_colliding_names(monkeypatch):
+    pages = [
+        {
+            "contactGroups": [
+                {
+                    "resourceName": "contactGroups/family",
+                    "name": "family",
+                    "formattedName": "Family",
+                    "groupType": "SYSTEM_CONTACT_GROUP",
+                },
+            ],
+            "nextPageToken": "p2",
+        },
+        {
+            "contactGroups": [
+                {
+                    "resourceName": "contactGroups/fam1",
+                    "name": "Family",
+                    "formattedName": "Family",
+                    "groupType": "USER_CONTACT_GROUP",
+                },
+            ]
+        },
+    ]
+    tokens = []
+
+    class Req:
+        def __init__(self, page):
+            self.page = page
+
+        def execute(self):
+            return self.page
+
+    class Groups:
+        def list(self, pageSize, pageToken):
+            tokens.append(pageToken)
+            return Req(pages[len(tokens) - 1])
+
+    class Svc:
+        def contactGroups(self):
+            return Groups()
+
+    monkeypatch.setattr(gc, "_svc", lambda: Svc())
+    got = gc.list_groups_by_rn()
+    assert tokens == [None, "p2"]
+    assert set(got) == {"contactGroups/family", "contactGroups/fam1"}
+    assert got["contactGroups/fam1"] == {
+        "name": "Family",
+        "formattedName": "Family",
+        "groupType": "USER_CONTACT_GROUP",
+    }

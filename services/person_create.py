@@ -32,7 +32,7 @@ def create(
     *,
     contact: dict,
     notes: str | None = None,
-    relationship_label: str | None = None,
+    labels: list[str] | None = None,
 ) -> dict:
     """Spec §5. Validate, refuse duplicates, create in Google, then let
     apply_person create the row. Returns the row."""
@@ -68,21 +68,24 @@ def create(
     if google_only:
         raise Duplicate("person exists", candidates=[])
 
+    if labels:
+        person_edit.validate_labels({"add": labels})
+
     groups = gc.list_groups()
     target = (groups.get(gsync.group_name()) or {}).get("resourceName") or gc.ensure_group(
         gsync.group_name()
     )
 
     created = gc.create_person(fields, target)
-    gsync.apply_person(conn, created, groups)
+    gsync.apply_person(conn, created)
     row = people.get_by_google_resource(conn, created["resourceName"])
     if row is None:
         raise Invalid(
             "the contact was created in Google but no row was made; the next sync will pick it up"
         )
 
-    if notes is not None or relationship_label is not None:
+    if notes is not None or labels:
         return person_edit.update(
-            conn, row["id"], notes=notes, relationship_label=relationship_label
+            conn, row["id"], notes=notes, labels={"add": labels} if labels else None
         )
     return row

@@ -7,6 +7,7 @@ from googleapiclient.errors import HttpError
 
 import clients.db as db
 import repo.imessage as imessage_repo
+import repo.labels as labels_repo
 import repo.linkedin as linkedin_repo
 import repo.people as people_repo
 import repo.whatsapp as whatsapp_repo
@@ -28,7 +29,7 @@ def row(email="alice@x.com", **kw):
         "last_contacted": None,
         "message_count": 3,
         "my_response_count": 1,
-        "relationship_label": "family",
+        "labels": ["family"],
         "notes": None,
         "eligible": True,
         "automated": False,
@@ -395,13 +396,76 @@ def test_patch_write_through(monkeypatch):
     )
     r = client.patch("/people/alice@x.com", json={"notes": "hi"})
     assert r.status_code == 200
-    assert seen == {"notes": "hi", "relationship_label": None, "contact": None}
+    assert seen == {"notes": "hi", "labels": None, "contact": None}
     assert r.json()["notes"] == "hi"
 
 
-def test_patch_blank_label_is_422():
-    r = client.patch("/people/alice@x.com", json={"relationship_label": "   "})
+def test_patch_passes_label_change_through(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(person_edit, "update", lambda conn, pid, **kw: (seen.update(kw), row())[1])
+    r = client.patch(
+        "/people/alice@x.com", json={"labels": {"add": ["Climbing"], "remove": ["family"]}}
+    )
+    assert r.status_code == 200
+    assert seen["labels"] == {"add": ["Climbing"], "remove": ["family"]}
+
+
+def test_patch_label_change_defaults_missing_lists(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(person_edit, "update", lambda conn, pid, **kw: (seen.update(kw), row())[1])
+    client.patch("/people/alice@x.com", json={"labels": {"add": ["Climbing"]}})
+    assert seen["labels"] == {"add": ["Climbing"], "remove": []}
+
+
+def test_patch_invalid_label_is_400(monkeypatch):
+    def boom(conn, pid, **kw):
+        raise person_edit.Invalid("label names must not be blank")
+
+    monkeypatch.setattr(person_edit, "update", boom)
+    r = client.patch("/people/alice@x.com", json={"labels": {"add": [" "]}})
+    assert r.status_code == 400 and "blank" in r.text
+
+
+def test_person_out_carries_labels():
+    r = client.get("/people/alice@x.com")
+    assert r.json()["labels"] == ["family"]
+    # transitional read-only field for inbox: first label, lowercased
+    assert r.json()["relationship_label"] == "family"
+
+
+def test_person_out_relationship_label_null_without_labels():
+    from api.routers.people import to_out
+
+    assert to_out(row(labels=[])).relationship_label is None
+    assert to_out(row(labels=["VIP", "Zed"])).relationship_label == "vip"
+
+
+def test_patch_rejects_relationship_label_with_422():
+    r = client.patch("/people/alice@x.com", json={"relationship_label": "x"})
     assert r.status_code == 422
+
+
+def test_create_rejects_unknown_field_with_422():
+    r = client.post("/people", json={"contact": {}, "relationship_label": "x"})
+    assert r.status_code == 422
+
+
+def test_label_change_rejects_unknown_field_with_422():
+    r = client.patch("/people/alice@x.com", json={"labels": {"add": ["a"], "bogus": 1}})
+    assert r.status_code == 422
+
+
+def test_people_with_label_name_containing_slash(monkeypatch):
+    seen = {}
+
+    def find(conn, name):
+        seen["name"] = name
+        return [{"resource_name": "contactGroups/s", "name": name}]
+
+    monkeypatch.setattr(labels_repo, "find_by_name", find)
+    monkeypatch.setattr(people_repo, "with_label", lambda conn, rn: [])
+    r = client.get("/labels/a%2Fb")
+    assert r.status_code == 200 and seen["name"] == "a/b"
 
 
 def test_patch_not_linked_is_409(monkeypatch):
@@ -783,7 +847,7 @@ def test_post_creates_a_person(monkeypatch):
     assert r.json()["id"] == 7
 
 
-def test_post_passes_notes_and_label_through(monkeypatch):
+def test_post_passes_notes_and_labels_through(monkeypatch):
     seen = {}
     monkeypatch.setattr(
         "api.routers.people.person_create.create",
@@ -794,10 +858,10 @@ def test_post_passes_notes_and_label_through(monkeypatch):
         json={
             "contact": {"emailAddresses": [{"value": "a@example.com"}]},
             "notes": "hi",
-            "relationship_label": "colleague",
+            "labels": ["colleague"],
         },
     )
-    assert seen["notes"] == "hi" and seen["relationship_label"] == "colleague"
+    assert seen["notes"] == "hi" and seen["labels"] == ["colleague"]
 
 
 def test_post_invalid_is_400_with_the_message(monkeypatch):
@@ -813,7 +877,7 @@ def test_post_invalid_is_400_with_the_message(monkeypatch):
 
 def test_post_person_edit_invalid_is_400_with_the_message(monkeypatch):
     # Fix 1: person_create.create's final step (person_edit.update, applying
-    # notes/relationship_label) can raise person_edit.Invalid, a different
+    # notes/labels) can raise person_edit.Invalid, a different
     # class from person_create.Invalid — must still map to 400, not 500.
     def boom(conn, **kw):
         raise person_edit.Invalid("bad biography")
@@ -998,3 +1062,64 @@ def test_no_whatsapp_response_model_exposes_message_text():
         obj = getattr(mod, name)
         if isinstance(obj, type) and issubclass(obj, BaseModel):
             assert not (set(obj.model_fields) & banned), f"{name} exposes message content"
+
+
+def test_list_labels(monkeypatch):
+    monkeypatch.setattr(
+        labels_repo,
+        "list_with_counts",
+        lambda conn: [{"name": "Climbing", "count": 2}, {"name": "investor", "count": 0}],
+    )
+    r = client.get("/labels")
+    assert r.status_code == 200
+    assert r.json() == {
+        "results": [{"name": "Climbing", "count": 2}, {"name": "investor", "count": 0}]
+    }
+
+
+def test_people_with_label(monkeypatch):
+    monkeypatch.setattr(
+        labels_repo,
+        "find_by_name",
+        lambda conn, name: [{"resource_name": "contactGroups/a", "name": "Climbing"}],
+    )
+    seen = {}
+
+    def with_label(conn, rn):
+        seen["rn"] = rn
+        return [row()]
+
+    monkeypatch.setattr(people_repo, "with_label", with_label)
+    r = client.get("/labels/climbing")
+    assert r.status_code == 200
+    assert seen["rn"] == "contactGroups/a"
+    assert [p["email"] for p in r.json()["results"]] == ["alice@x.com"]
+
+
+def test_people_with_label_handles_spaces(monkeypatch):
+    monkeypatch.setattr(
+        labels_repo,
+        "find_by_name",
+        lambda conn, name: [{"resource_name": "contactGroups/b", "name": name}],
+    )
+    monkeypatch.setattr(people_repo, "with_label", lambda conn, rn: [])
+    r = client.get("/labels/Book%20Club")
+    assert r.status_code == 200 and r.json() == {"results": []}
+
+
+def test_people_with_unknown_label_is_404(monkeypatch):
+    monkeypatch.setattr(labels_repo, "find_by_name", lambda conn, name: [])
+    assert client.get("/labels/nope").status_code == 404
+
+
+def test_people_with_ambiguous_label_is_409(monkeypatch):
+    monkeypatch.setattr(
+        labels_repo,
+        "find_by_name",
+        lambda conn, name: [
+            {"resource_name": "contactGroups/1", "name": "VIP"},
+            {"resource_name": "contactGroups/2", "name": "vip"},
+        ],
+    )
+    r = client.get("/labels/Vip")
+    assert r.status_code == 409 and "exact spelling" in r.text

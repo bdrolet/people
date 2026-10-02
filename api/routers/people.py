@@ -3,7 +3,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from googleapiclient.errors import HttpError
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict
 
 from api.routers.imessage import IMessageSummary
 from api.routers.linkedin import LinkedInSummary
@@ -27,7 +27,11 @@ class PersonOut(BaseModel):
     last_contacted: datetime | None
     message_count: int
     my_response_count: int
-    relationship_label: str | None
+    labels: list[str] = []
+    # Deprecated, transitional, read-only: first label lowercased. Kept only
+    # because inbox's classifier still reads it; removed with the column-drop
+    # follow-up once inbox reads `labels`. Not accepted on PATCH/POST.
+    relationship_label: str | None = None
     notes: str | None
     eligible: bool
     automated: bool
@@ -47,25 +51,26 @@ class PersonList(BaseModel):
 
 
 class PersonCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     contact: dict
     notes: str | None = None
-    relationship_label: str | None = None
+    labels: list[str] | None = None
+
+
+class LabelChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    add: list[str] = []
+    remove: list[str] = []
 
 
 class PersonPatch(BaseModel):
-    notes: str | None = None
-    relationship_label: str | None = None
-    contact: dict | None = None
+    model_config = ConfigDict(extra="forbid")
 
-    @field_validator("relationship_label")
-    @classmethod
-    def _relationship_label_not_blank(cls, v: str | None) -> str | None:
-        if v is None:
-            return v
-        v = v.strip()
-        if not v:
-            raise ValueError("relationship_label must not be blank")
-        return v
+    notes: str | None = None
+    labels: LabelChange | None = None
+    contact: dict | None = None
 
 
 def to_out(
@@ -75,6 +80,7 @@ def to_out(
     whatsapp_row: dict | None = None,
     include_contact: bool = False,
 ) -> PersonOut:
+    labels = row.get("labels") or []
     return PersonOut(
         id=row["id"],
         email=row["email"],
@@ -84,7 +90,8 @@ def to_out(
         last_contacted=row.get("last_contacted"),
         message_count=row.get("message_count") or 0,
         my_response_count=row.get("my_response_count") or 0,
-        relationship_label=row.get("relationship_label"),
+        labels=labels,
+        relationship_label=labels[0].lower() if labels else None,
         notes=row.get("notes"),
         eligible=bool(row.get("eligible")),
         automated=bool(row.get("automated")),
@@ -116,7 +123,7 @@ def create_person(body: PersonCreate) -> PersonOut:
                 conn,
                 contact=body.contact,
                 notes=body.notes,
-                relationship_label=body.relationship_label,
+                labels=body.labels,
             )
             conn.commit()
     except person_create.Invalid as e:
@@ -184,7 +191,7 @@ def patch_person(ident: str, body: PersonPatch) -> PersonOut:
                 conn,
                 target["id"],
                 notes=body.notes,
-                relationship_label=body.relationship_label,
+                labels=body.labels.model_dump() if body.labels is not None else None,
                 contact=body.contact,
             )
             conn.commit()

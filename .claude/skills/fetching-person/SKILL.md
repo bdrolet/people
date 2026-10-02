@@ -2,7 +2,7 @@
 name: fetching-person
 description: >
   Use when the user wants the full record for a specific person by email
-  address, phone number, or person id — relationship label, notes, message
+  address, phone number, or person id — labels, notes, message
   counts, Google Contacts/HubSpot linkage. Use for "what do we know about X",
   "show me that contact", "pull up alice@example.com". Use after
   searching-people to open a selected result, or directly when you already
@@ -57,7 +57,7 @@ the user means.
 **Response fields:** `id`, `email` (nullable — null for a phone-only
 person), `display_name`, `first_seen`, `last_seen`, `last_contacted`,
 `message_count` (inbound), `my_response_count` (Ben's replies),
-`relationship_label`, `notes`, `eligible`, `automated`, `in_google_contacts`,
+`labels` (a list), `notes`, `eligible`, `automated`, `in_google_contacts`,
 `in_hubspot`, `linkedin` (null, or the linked LinkedIn connection's
 `profile_url`, `company`, `position`, `connected_on`, `message_count`,
 `my_message_count`, `last_message_at`, `last_my_message_at`, `snapshot_at`),
@@ -99,7 +99,7 @@ to Google — this one already carries `phone_numbers` and `contact` data.
 
 ```
 **<display_name or email or "person <id>">** <mailto:<email>, if set>
-<relationship_label, if set> · first seen <first_seen> · last interaction <max(last_seen, last_contacted)>
+<labels, comma-separated, if any> · first seen <first_seen> · last interaction <max(last_seen, last_contacted)>
 <job_title, if set> at <company, if set>   ← only if either is set
 phone: <phone_numbers, comma-joined, if any>
 messages: <message_count> received / <my_response_count> replied
@@ -113,10 +113,12 @@ WhatsApp: <message_count> msgs / <my_message_count> from Ben · last <last_messa
 `email` may be null (a phone-only person) — fall back to `display_name`,
 then a phone number, then `person <id>`, and drop the `mailto:` link.
 
-`notes` is the Google contact's **biography** field — `relationship_label`
-comes from the Google contact's group membership (excluding system groups
-and the internal "Inbox" group people uses to mark contacts it created). Both
+`notes` is the Google contact's **biography** field — `labels` are the
+Google contact's labels (contact groups), excluding system groups and the
+internal "Inbox" group people uses to mark contacts it created. Both
 are edited with **editing-person**, which writes through to Google first.
+The response also carries a deprecated read-only `relationship_label` (first
+label, lowercased) kept for inbox; use `labels`.
 
 ## LinkedIn detail
 
