@@ -32,7 +32,7 @@ def create(
     *,
     contact: dict,
     notes: str | None = None,
-    relationship_label: str | None = None,
+    labels: list[str] | None = None,
 ) -> dict:
     """Spec §5. Validate, refuse duplicates, create in Google, then let
     apply_person create the row. Returns the row."""
@@ -81,8 +81,8 @@ def create(
             "the contact was created in Google but no row was made; the next sync will pick it up"
         )
 
-    if notes is not None or relationship_label is not None:
+    if notes is not None or labels:
         return person_edit.update(
-            conn, row["id"], notes=notes, relationship_label=relationship_label
+            conn, row["id"], notes=notes, labels={"add": labels} if labels else None
         )
     return row

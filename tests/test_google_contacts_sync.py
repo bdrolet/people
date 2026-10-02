@@ -399,7 +399,6 @@ def test_sync_one_refetches_by_id(monkeypatch):
     # A phone-only person has row["email"] is None, so the old
     # people.get(conn, row["email"]) silently returned the stale pre-edit row.
     monkeypatch.setattr(sync.gc, "get_person", lambda rn: person(phones=["+15550100001"]))
-    monkeypatch.setattr(sync.gc, "list_groups", lambda: GROUPS)
     monkeypatch.setattr(sync, "apply_person", lambda conn, p: "updated")
     monkeypatch.setattr(sync.people, "get_by_id", lambda conn, pid: {"id": pid, "fresh": True})
     out = sync.sync_one(None, {"id": 7, "email": None, "google_resource_name": "people/c1"})
@@ -570,7 +569,6 @@ def test_run_sync_counts_promoted(monkeypatch):
             "tok",
         ),
     )
-    monkeypatch.setattr(sync.gc, "list_groups", lambda: {})
     monkeypatch.setattr(sync.sync_state, "get_token", lambda conn: None)
     monkeypatch.setattr(sync.sync_state, "set_token", lambda conn, t, s: None)
     monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: linked_row())

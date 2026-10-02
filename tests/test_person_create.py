@@ -49,9 +49,19 @@ def test_creates_a_phone_only_person(wired):
     assert wired["edits"] == []  # no notes or label given
 
 
-def test_applies_notes_and_label_when_given(wired):
-    person_create.create(None, contact=PHONE_ONLY, notes="hi", relationship_label="colleague")
-    assert wired["edits"] == [(7, {"notes": "hi", "relationship_label": "colleague"})]
+def test_applies_notes_and_labels_when_given(wired):
+    person_create.create(None, contact=PHONE_ONLY, notes="hi", labels=["colleague", "Climbing"])
+    assert wired["edits"] == [(7, {"notes": "hi", "labels": {"add": ["colleague", "Climbing"]}})]
+
+
+def test_labels_alone_trigger_the_edit(wired):
+    person_create.create(None, contact=PHONE_ONLY, labels=["colleague"])
+    assert wired["edits"] == [(7, {"notes": None, "labels": {"add": ["colleague"]}})]
+
+
+def test_empty_labels_do_not_trigger_an_edit(wired):
+    person_create.create(None, contact=PHONE_ONLY, labels=[])
+    assert wired["edits"] == []
 
 
 def test_rejects_a_contact_with_no_usable_identifier(wired):

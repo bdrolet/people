@@ -11,13 +11,14 @@ from fastapi import FastAPI, Request
 
 import clients.otel as otel
 from api import caller
-from api.routers import imessage, linkedin, people, search, whatsapp
+from api.routers import imessage, labels, linkedin, people, search, whatsapp
 
 otel.setup_telemetry(os.environ.get("K_SERVICE", "people-api-local"))
 
 app = FastAPI(title="people-api")
 caller.install(app)
 app.include_router(people.router)
+app.include_router(labels.router)
 app.include_router(search.router)
 app.include_router(linkedin.router)
 app.include_router(imessage.router)
