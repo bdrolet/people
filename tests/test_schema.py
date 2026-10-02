@@ -9,6 +9,7 @@ from pathlib import Path
 import psycopg
 import pytest
 
+from repo import labels as labels_repo
 from repo import people as people_repo
 
 URL = os.environ.get("TEST_DATABASE_URL")
@@ -471,3 +472,97 @@ def test_rematch_stored_handles_relinks_nulls_ambiguity_and_spares_lid(conn):
     assert rows[stale] == (correct_id, "phone")
     assert rows[ambiguous] == (None, None)
     assert rows[lid] == (lid_person_id, "name")
+
+
+def _linked(conn, rn, email):
+    return people_repo.create_from_google(
+        conn,
+        email,
+        display_name=None,
+        resource_name=rn,
+        etag=None,
+        notes=None,
+        relationship_label=None,
+        phone_numbers=[],
+        company=None,
+        job_title=None,
+        google_fields=json.dumps({}),
+    )
+
+
+def test_returning_columns_includes_labels(conn):
+    # Review Focus 3: correlated subquery inside INSERT ... ON CONFLICT ... RETURNING
+    # must be valid SQL on both write paths that use RETURNING {_COLUMNS}.
+    _linked(conn, "people/c1", "a@example.com")  # create_from_google: raises if invalid
+    people_repo.upsert_inbound(conn, "b@example.com", None, datetime.now(UTC))  # upsert path
+    got = conn.execute(
+        "SELECT labels FROM (SELECT " + people_repo._COLUMNS + " FROM people) s"
+    ).fetchall()
+    assert [r[0] for r in got] == [[], []]
+
+
+def test_labels_join_reflects_a_rename(conn):
+    _linked(conn, "people/c1", "a@example.com")
+    labels_repo.replace_groups(conn, {"contactGroups/a": "Climbing"})
+    labels_repo.set_contact_labels(conn, "people/c1", ["contactGroups/a"])
+    labels_repo.replace_groups(conn, {"contactGroups/a": "Bouldering"})
+    got = conn.execute(
+        "SELECT labels FROM (SELECT " + people_repo._COLUMNS + " FROM people) s"
+    ).fetchone()
+    assert got[0] == ["Bouldering"]
+
+
+def test_set_contact_labels_skips_unknown_groups(conn):
+    # Review Focus 2: a group newer than the last refresh must not FK-fail.
+    _linked(conn, "people/c1", "a@example.com")
+    labels_repo.replace_groups(conn, {"contactGroups/a": "Climbing"})
+    labels_repo.set_contact_labels(
+        conn, "people/c1", ["contactGroups/a", "contactGroups/unknown", "contactGroups/myContacts"]
+    )
+    assert conn.execute("SELECT count(*) FROM people_labels").fetchone()[0] == 1
+
+
+def test_set_contact_labels_replaces_rather_than_appends(conn):
+    _linked(conn, "people/c1", "a@example.com")
+    labels_repo.replace_groups(conn, {"contactGroups/a": "A", "contactGroups/b": "B"})
+    labels_repo.set_contact_labels(conn, "people/c1", ["contactGroups/a"])
+    labels_repo.set_contact_labels(conn, "people/c1", ["contactGroups/b"])
+    rows = conn.execute("SELECT group_resource_name FROM people_labels").fetchall()
+    assert [r[0] for r in rows] == ["contactGroups/b"]
+
+
+def test_deleting_a_group_cascades_memberships(conn):
+    _linked(conn, "people/c1", "a@example.com")
+    labels_repo.replace_groups(conn, {"contactGroups/a": "A", "contactGroups/b": "B"})
+    labels_repo.set_contact_labels(conn, "people/c1", ["contactGroups/a", "contactGroups/b"])
+    labels_repo.replace_groups(conn, {"contactGroups/b": "B"})
+    rows = conn.execute("SELECT group_resource_name FROM people_labels").fetchall()
+    assert [r[0] for r in rows] == ["contactGroups/b"]
+
+
+def test_replace_groups_with_nothing_clears_everything(conn):
+    # Review Focus 5.
+    _linked(conn, "people/c1", "a@example.com")
+    labels_repo.replace_groups(conn, {"contactGroups/a": "A"})
+    labels_repo.set_contact_labels(conn, "people/c1", ["contactGroups/a"])
+    labels_repo.replace_groups(conn, {})
+    assert conn.execute("SELECT count(*) FROM contact_groups").fetchone()[0] == 0
+    assert conn.execute("SELECT count(*) FROM people_labels").fetchone()[0] == 0
+
+
+def test_deleting_a_person_cascades_memberships(conn):
+    _linked(conn, "people/c1", "a@example.com")
+    labels_repo.replace_groups(conn, {"contactGroups/a": "A"})
+    labels_repo.set_contact_labels(conn, "people/c1", ["contactGroups/a"])
+    conn.execute("DELETE FROM people")
+    assert conn.execute("SELECT count(*) FROM people_labels").fetchone()[0] == 0
+
+
+def test_list_with_counts_includes_empty_labels(conn):
+    _linked(conn, "people/c1", "a@example.com")
+    labels_repo.replace_groups(
+        conn, {"contactGroups/a": "climbing", "contactGroups/b": "Book Club"}
+    )
+    labels_repo.set_contact_labels(conn, "people/c1", ["contactGroups/a"])
+    got = [tuple(r) for r in labels_repo.list_with_counts(conn)]
+    assert got == [("Book Club", 0), ("climbing", 1)]

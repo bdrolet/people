@@ -377,3 +377,23 @@ CREATE TABLE IF NOT EXISTS whatsapp_imports (
     matched_by_phone       INT NOT NULL DEFAULT 0,
     matched_by_name        INT NOT NULL DEFAULT 0
 );
+
+-- Labels: Google contact groups, user-defined only — system groups and
+-- GOOGLE_CONTACT_GROUP are never stored (docs/superpowers/specs/2026-10-02-multiple-labels-design.md §4).
+-- contact_groups is replaced wholesale from contactGroups.list on every sync,
+-- so a rename or delete in the Contacts UI lands without revisiting any
+-- contact. Names live only here and are joined at read time.
+CREATE TABLE IF NOT EXISTS contact_groups (
+    resource_name TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- Not unique: Google allows names differing only in case (services/labels.py::match_name).
+CREATE INDEX IF NOT EXISTS contact_groups_lower_name_idx ON contact_groups (lower(name));
+
+CREATE TABLE IF NOT EXISTS people_labels (
+    person_id           BIGINT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+    group_resource_name TEXT   NOT NULL REFERENCES contact_groups(resource_name) ON DELETE CASCADE,
+    PRIMARY KEY (person_id, group_resource_name)
+);
+CREATE INDEX IF NOT EXISTS people_labels_group_idx ON people_labels (group_resource_name);

@@ -236,3 +236,16 @@ def test_rows_for_whatsapp_matching_selects_phones_and_names():
     sql, _ = conn.calls[0]
     assert sql == "SELECT id, display_name, phone_numbers FROM people"
     assert rows[0]["phone_numbers"] == ["+15550100001"]
+
+
+def test_columns_include_labels_not_relationship_label():
+    assert "AS labels" in people._COLUMNS
+    assert "relationship_label" not in people._COLUMNS
+
+
+def test_with_label_filters_by_group_and_orders_by_interaction():
+    conn = FakeConn(results=[[{"id": 1}]])
+    assert people.with_label(conn, "contactGroups/a") == [{"id": 1}]
+    sql, params = conn.calls[0]
+    assert "people_labels" in sql and "ORDER BY GREATEST" in sql
+    assert params == ("contactGroups/a",)
