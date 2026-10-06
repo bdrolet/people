@@ -8,11 +8,18 @@ import repo.people as people_repo
 import services.google_contacts_sync as gsync
 from services import person_edit
 
-GROUPS = {
-    "myContacts": {"resourceName": "contactGroups/myContacts", "groupType": "SYSTEM_CONTACT_GROUP"},
-    "Inbox": {"resourceName": "contactGroups/inbox1", "groupType": "USER_CONTACT_GROUP"},
-    "Family": {"resourceName": "contactGroups/fam1", "groupType": "USER_CONTACT_GROUP"},
-    "Colleague": {"resourceName": "contactGroups/col1", "groupType": "USER_CONTACT_GROUP"},
+USER = "USER_CONTACT_GROUP"
+SYSTEM = "SYSTEM_CONTACT_GROUP"
+GROUPS_BY_RN = {
+    "contactGroups/myContacts": {
+        "name": "myContacts",
+        "formattedName": "My Contacts",
+        "groupType": SYSTEM,
+    },
+    "contactGroups/starred": {"name": "starred", "formattedName": "Starred", "groupType": SYSTEM},
+    "contactGroups/inbox1": {"name": "Inbox", "formattedName": "Inbox", "groupType": USER},
+    "contactGroups/fam1": {"name": "Family", "formattedName": "Family", "groupType": USER},
+    "contactGroups/col1": {"name": "Colleague", "formattedName": "Colleague", "groupType": USER},
 }
 
 
@@ -27,13 +34,11 @@ def wire(monkeypatch):
         "google_etag": "e1",
     }
     monkeypatch.setattr(people_repo, "get_by_id", lambda conn, pid: row if pid == 1 else None)
-    monkeypatch.setattr(gc, "list_groups", lambda: GROUPS)
+    monkeypatch.setattr(gc, "list_groups_by_rn", lambda: GROUPS_BY_RN)
     monkeypatch.setattr(
         gc,
         "ensure_group",
-        lambda name: GROUPS.get(name, {"resourceName": f"contactGroups/new-{name}"})[
-            "resourceName"
-        ],
+        lambda name: (log.append(("create", name)), f"contactGroups/new-{name}")[1],
     )
     monkeypatch.setattr(
         gc,
@@ -69,14 +74,6 @@ def test_notes_write_through_then_sync(wire):
     assert wire[-1] == ("sync", "a@x.com") and out["synced"] is True
 
 
-def test_label_moves_between_user_groups_but_keeps_inbox(wire):
-    person_edit.update(None, 1, relationship_label="colleague")
-    group_calls = [c for c in wire if c[0] == "group"]
-    assert ("group", "contactGroups/col1", ["people/c1"], []) in group_calls
-    assert ("group", "contactGroups/fam1", [], ["people/c1"]) in group_calls
-    assert not any(c[1] == "contactGroups/inbox1" for c in group_calls)
-
-
 def test_unknown_id_raises(wire):
     with pytest.raises(person_edit.NotFound):
         person_edit.update(None, 999, notes="x")
@@ -97,40 +94,102 @@ def test_unlinked_raises(monkeypatch, wire):
         person_edit.update(None, 1, notes="x")
 
 
-def test_label_leaves_unrelated_groups_alone(wire, monkeypatch):
+def group_calls(log):
+    return [c for c in log if c[0] == "group"]
+
+
+def test_add_puts_the_person_in_an_existing_group(wire):
+    person_edit.update(None, 1, labels={"add": ["colleague"]})
+    assert group_calls(wire) == [("group", "contactGroups/col1", ["people/c1"], [])]
+    assert wire[-1] == ("sync", "a@x.com")
+
+
+def test_add_never_removes_other_labels(wire):
+    person_edit.update(None, 1, labels={"add": ["colleague"]})
+    assert not any(c[3] for c in group_calls(wire))
+
+
+def test_add_creates_a_missing_group(wire):
+    person_edit.update(None, 1, labels={"add": ["Climbing"]})
+    assert ("create", "Climbing") in wire
+    assert group_calls(wire) == [("group", "contactGroups/new-Climbing", ["people/c1"], [])]
+
+
+def test_add_of_a_held_label_is_skipped(wire):
+    person_edit.update(None, 1, labels={"add": ["FAMILY"]})
+    assert group_calls(wire) == []
+
+
+def test_remove_takes_the_person_out(wire):
+    person_edit.update(None, 1, labels={"remove": ["family"]})
+    assert group_calls(wire) == [("group", "contactGroups/fam1", [], ["people/c1"])]
+
+
+def test_remove_unheld_or_unknown_label_is_a_noop(wire):
+    # Review Focus 4.
+    person_edit.update(None, 1, labels={"remove": ["colleague", "Never Existed"]})
+    assert group_calls(wire) == []
+    assert not any(c[0] == "create" for c in wire)
+
+
+def test_add_and_remove_together(wire):
+    person_edit.update(None, 1, labels={"add": ["colleague"], "remove": ["family"]})
+    assert group_calls(wire) == [
+        ("group", "contactGroups/col1", ["people/c1"], []),
+        ("group", "contactGroups/fam1", [], ["people/c1"]),
+    ]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"add": ["  "]},
+        {"add": ["x"], "remove": ["X"]},
+        {"add": ["Inbox"]},
+        {"remove": ["inbox"]},
+        {"add": ["starred"]},
+    ],
+)
+def test_invalid_label_change_rejects_before_any_write(wire, change):
+    with pytest.raises(person_edit.Invalid):
+        person_edit.update(None, 1, notes="n", labels=change)
+    assert wire == []  # no bio write, no group write, no create, no resync
+
+
+def test_ambiguous_label_is_a_conflict(wire, monkeypatch):
     monkeypatch.setattr(
         gc,
-        "get_person",
-        lambda rn: {
-            "resourceName": rn,
-            "etag": "e1",
-            "memberships": [
-                {"contactGroupMembership": {"contactGroupResourceName": "contactGroups/fam1"}},
-                {"contactGroupMembership": {"contactGroupResourceName": "contactGroups/inbox1"}},
-                {"contactGroupMembership": {"contactGroupResourceName": "contactGroups/bc1"}},
-            ],
+        "list_groups_by_rn",
+        lambda: {
+            **GROUPS_BY_RN,
+            "contactGroups/v1": {"name": "VIP", "formattedName": "VIP", "groupType": USER},
+            "contactGroups/v2": {"name": "vip", "formattedName": "vip", "groupType": USER},
         },
     )
-    groups = {
-        **GROUPS,
-        "Book Club": {"resourceName": "contactGroups/bc1", "groupType": "USER_CONTACT_GROUP"},
-    }
-    monkeypatch.setattr(gc, "list_groups", lambda: groups)
-    person_edit.update(None, 1, relationship_label="colleague")
-    group_calls = [c for c in wire if c[0] == "group"]
-    assert not any("contactGroups/bc1" in c[3] for c in group_calls)
-    assert ("group", "contactGroups/fam1", [], ["people/c1"]) in group_calls
+    with pytest.raises(person_edit.Conflict):
+        person_edit.update(None, 1, labels={"add": ["Vip"]})
+    assert group_calls(wire) == []
 
 
-def test_label_matches_existing_group_case_insensitively(wire, monkeypatch):
-    def must_not_be_called(name):
-        raise AssertionError("must not be called")
+def test_label_google_4xx_is_invalid_and_still_resyncs(wire, monkeypatch):
+    def boom(g, add, remove):
+        raise http_error(400, "Group is read-only")
 
-    monkeypatch.setattr(gc, "ensure_group", must_not_be_called)
-    person_edit.update(None, 1, relationship_label="FAMILY")
-    group_calls = [c for c in wire if c[0] == "group"]
-    assert ("group", "contactGroups/fam1", ["people/c1"], []) in group_calls
-    assert not any(c[3] for c in group_calls)
+    monkeypatch.setattr(gc, "modify_group_members", boom)
+    with pytest.raises(person_edit.Invalid):
+        person_edit.update(None, 1, labels={"add": ["colleague"]})
+    assert ("sync", "a@x.com") in wire
+
+
+def test_validate_labels_does_no_google_writes(wire):
+    person_edit.validate_labels({"add": ["Climbing", "colleague"], "remove": ["family"]})
+    assert wire == []
+
+
+def test_validate_labels_rejects_blank_name(wire):
+    with pytest.raises(person_edit.Invalid):
+        person_edit.validate_labels({"add": [" "]})
+    assert wire == []
 
 
 def test_notes_uses_live_etag(wire, monkeypatch):
@@ -149,7 +208,7 @@ def test_partial_failure_still_resyncs_and_reraises(wire, monkeypatch):
 
     monkeypatch.setattr(gc, "modify_group_members", boom)
     with pytest.raises(RuntimeError):
-        person_edit.update(None, 1, notes="n", relationship_label="colleague")
+        person_edit.update(None, 1, notes="n", labels={"add": ["colleague"]})
     assert ("sync", "a@x.com") in wire
     assert any(c[0] == "bio" for c in wire)
 

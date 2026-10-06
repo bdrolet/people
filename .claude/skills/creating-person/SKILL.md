@@ -36,7 +36,7 @@ POST $BASE/people
 {
   "contact": {<Google People API field names>},
   "notes": "...",
-  "relationship_label": "..."
+  "labels": ["..."]
 }
 → 201, a PersonOut body (the same shape GET/PATCH return, including `id`)
 ```
@@ -44,11 +44,17 @@ POST $BASE/people
 `contact` uses the same Google field names and the same allowlist as
 **editing-person**'s `contact` map (`services/contact_fields.py::WRITABLE_FIELDS`
 — `addresses`, `birthdays`, `emailAddresses`, `names`, `organizations`,
-`phoneNumbers`, `urls`, and more). `notes` and `relationship_label` are
+`phoneNumbers`, `urls`, and more). `notes` and `labels` are
 separate top-level fields, exactly like `PATCH` — **not** keys inside
 `contact`. Sending `biographies` or `memberships` inside `contact` is
-rejected with a `400` naming the field, since `notes`/`relationship_label`
+rejected with a `400` naming the field, since `notes`/`labels`
 already own them; this is the mistake most likely to trip up a first call.
+
+`labels` is a list of label names; ones that don't exist yet are created.
+They are validated **before** anything is written to Google: a blank,
+reserved (`Inbox`), or Google built-in name is a `400`, and a name matching
+two labels that differ only in case is a `409` — either way no contact is
+created.
 
 ## An identifier is required
 
@@ -72,7 +78,7 @@ curl -s -X POST "$BASE/people" \
                    "phoneNumbers": [{"value": "+15550100001", "type": "mobile"}]}}'
 ```
 
-Email plus phone, with notes and a relationship label:
+Email plus phone, with notes and a label:
 
 ```bash
 curl -s -X POST "$BASE/people" \
@@ -81,7 +87,7 @@ curl -s -X POST "$BASE/people" \
                    "emailAddresses": [{"value": "alice@example.com"}],
                    "phoneNumbers": [{"value": "+15550100001", "type": "mobile"}]},
        "notes": "met at the conference",
-       "relationship_label": "colleague"}'
+       "labels": ["colleague"]}'
 ```
 
 **Always show the returned row afterward** — same presentation as

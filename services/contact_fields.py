@@ -46,7 +46,7 @@ WRITABLE_FIELDS: frozenset[str] = frozenset(
 # already owned by a dedicated PATCH field, which is named in the rejection.
 OWNED_ELSEWHERE: dict[str, str] = {
     "biographies": "notes",
-    "memberships": "relationship_label",
+    "memberships": "labels",
 }
 
 

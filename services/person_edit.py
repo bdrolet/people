@@ -4,6 +4,7 @@ adopt-emailless-contacts design §5.3 (keyed by person_id, not email)."""
 
 import json
 import logging
+from dataclasses import dataclass, field
 from typing import Any
 
 from googleapiclient.errors import HttpError
@@ -12,6 +13,7 @@ import clients.google_contacts as gc
 from repo import people
 from services import contact_fields
 from services import google_contacts_sync as gsync
+from services import labels as label_rules
 
 logger = logging.getLogger(__name__)
 
@@ -54,28 +56,54 @@ def _is_stale_etag(e: HttpError) -> bool:
     return "etag" in (e.reason or "").lower()
 
 
-def _set_label(person_rn: str, live: dict, label: str) -> None:
-    """Replace the person's relationship label: leave every unrelated group alone,
-    remove only the group currently read as the label, add the target."""
-    groups = gc.list_groups()
-    wanted = label.strip()
-    target = next(
-        (
-            g["resourceName"]
-            for n, g in groups.items()
-            if g.get("groupType") != gsync.SYSTEM_GROUP_TYPE and n.lower() == wanted.lower()
-        ),
-        None,
-    ) or gc.ensure_group(wanted)
-    current = gsync.relationship_label(live, groups)
-    if current is not None and current != wanted.lower():
-        old_rn = next(
-            g["resourceName"]
-            for n, g in groups.items()
-            if g.get("groupType") != gsync.SYSTEM_GROUP_TYPE and n.lower() == current
+@dataclass
+class _LabelPlan:
+    add: list[str] = field(default_factory=list)  # group rns to add the person to
+    create: list[str] = field(default_factory=list)  # names with no group yet
+    remove: list[str] = field(default_factory=list)  # group rns to remove the person from
+
+
+def _plan_labels(live: dict, change: dict) -> _LabelPlan:
+    """Resolve a labels change against Google's live groups before any write
+    (multiple-labels design §5.1), so a rejected request changes nothing.
+    Adding a held label and removing an unheld one are both no-ops."""
+    try:
+        add, remove = label_rules.normalize_change(
+            change.get("add") or [], change.get("remove") or []
         )
-        gc.modify_group_members(old_rn, [], [person_rn])
-    gc.modify_group_members(target, [person_rn], [])
+        by_rn = gc.list_groups_by_rn()
+        held = set(label_rules.membership_rns(live))
+        plan = _LabelPlan()
+        for name in add:
+            rn = label_rules.resolve(by_rn, name, gsync.group_name())
+            if rn is None:
+                plan.create.append(name)
+            elif rn not in held:
+                plan.add.append(rn)
+        for name in remove:
+            rn = label_rules.resolve(by_rn, name, gsync.group_name())
+            if rn is not None and rn in held:
+                plan.remove.append(rn)
+    except label_rules.AmbiguousLabel as e:
+        raise Conflict(str(e)) from e
+    except label_rules.LabelError as e:
+        raise Invalid(str(e)) from e
+    return plan
+
+
+def validate_labels(change: dict) -> None:
+    """Run the labels planning against an empty person, discarding the plan, so
+    a caller can reject a bad change before any Google write (design §5.1).
+    Raises Invalid / Conflict exactly as update() does."""
+    _plan_labels({}, change)
+
+
+def _apply_labels(person_rn: str, plan: _LabelPlan) -> None:
+    adds = plan.add + [gc.ensure_group(n) for n in plan.create]
+    for g in adds:
+        gc.modify_group_members(g, [person_rn], [])
+    for g in plan.remove:
+        gc.modify_group_members(g, [], [person_rn])
 
 
 def update(
@@ -83,7 +111,7 @@ def update(
     person_id: int,
     *,
     notes: str | None = None,
-    relationship_label: str | None = None,
+    labels: dict | None = None,
     contact: dict | None = None,
 ) -> dict:
     row = people.get_by_id(conn, person_id)
@@ -114,11 +142,14 @@ def update(
                 raise Conflict(str(e)) from e
     if notes is not None:
         fields["biographies"] = [{"value": notes, "contentType": "TEXT_PLAIN"}]
+    label_plan = _plan_labels(live, labels) if labels is not None else None
 
     try:
         try:
             if fields:
                 gc.update_fields(rn, live.get("etag") or "", fields)
+            if label_plan is not None:
+                _apply_labels(rn, label_plan)
         except HttpError as e:
             if _is_stale_etag(e):
                 raise Conflict(e.reason or "") from e
@@ -126,8 +157,6 @@ def update(
             if 400 <= status < 500:
                 raise Invalid(e.reason or "") from e
             raise
-        if relationship_label is not None:
-            _set_label(rn, live, relationship_label)
     finally:
         # Google may now hold a partial result; refresh the DB from it either way.
         try:

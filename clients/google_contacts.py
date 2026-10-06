@@ -143,6 +143,25 @@ def list_groups() -> dict[str, dict]:
             return out
 
 
+def list_groups_by_rn() -> dict[str, dict]:
+    """Every contact group keyed by resourceName. list_groups() keys by name,
+    where a user "Family" label and the built-in "Family" group collide; resource
+    names never do (multiple-labels design §3)."""
+    out: dict[str, dict] = {}
+    token = None
+    while True:
+        resp = _svc().contactGroups().list(pageSize=200, pageToken=token).execute()
+        for g in resp.get("contactGroups", []):
+            out[g["resourceName"]] = {
+                "name": g.get("name"),
+                "formattedName": g.get("formattedName"),
+                "groupType": g.get("groupType"),
+            }
+        token = resp.get("nextPageToken")
+        if not token:
+            return out
+
+
 def ensure_group(name: str) -> str:
     groups = list_groups()
     if name in groups:

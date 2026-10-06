@@ -1,9 +1,52 @@
 import pytest
 
 import clients.google_contacts as gc
+import repo.labels as labels_repo
 import repo.people as people_repo
 import repo.sync_state as sync_state
 from services import google_contacts_sync as sync
+from services import labels
+
+GROUPS_BY_RN = {
+    "contactGroups/myContacts": {
+        "name": "myContacts",
+        "formattedName": "My Contacts",
+        "groupType": labels.SYSTEM_GROUP_TYPE,
+    },
+    "contactGroups/inbox1": {
+        "name": "Inbox",
+        "formattedName": "Inbox",
+        "groupType": "USER_CONTACT_GROUP",
+    },
+    "contactGroups/fam1": {
+        "name": "Family",
+        "formattedName": "Family",
+        "groupType": "USER_CONTACT_GROUP",
+    },
+    "contactGroups/climb": {
+        "name": "Climbing",
+        "formattedName": "Climbing",
+        "groupType": "USER_CONTACT_GROUP",
+    },
+}
+
+
+@pytest.fixture(autouse=True)
+def label_io(monkeypatch):
+    """Every test: no real Google group listing, and label writes recorded."""
+    log = {"replaced": [], "set": []}
+    monkeypatch.setattr(gc, "list_groups_by_rn", lambda: GROUPS_BY_RN)
+    monkeypatch.setattr(
+        labels_repo, "replace_groups", lambda conn, groups: log["replaced"].append(dict(groups))
+    )
+    monkeypatch.setattr(
+        labels_repo,
+        "set_contact_labels",
+        lambda conn, rn, rns: log["set"].append((rn, list(rns))),
+    )
+    monkeypatch.delenv("GOOGLE_CONTACT_GROUP", raising=False)
+    return log
+
 
 GROUPS = {
     "myContacts": {"resourceName": "contactGroups/myContacts", "groupType": "SYSTEM_CONTACT_GROUP"},
@@ -55,16 +98,14 @@ class FakeRepo:
 
     def set_google(self, conn, email, **kw):
         self.rows[email].update(google_resource_name=kw["resource_name"], google_etag=kw["etag"])
-        for k in ("display_name", "notes", "relationship_label"):
+        for k in ("display_name", "notes"):
             if kw.get(k) is not None:
                 self.rows[email][k] = kw[k]
         self.log.append(("set_google", email))
 
     def update_from_google(self, conn, rn, **kw):
         r = self._by_rn(rn)
-        r.update(
-            google_etag=kw["etag"], notes=kw["notes"], relationship_label=kw["relationship_label"]
-        )
+        r.update(google_etag=kw["etag"], notes=kw["notes"])
         if kw["display_name"]:
             r["display_name"] = kw["display_name"]
         self.log.append(("update", rn))
@@ -162,27 +203,15 @@ def row(email, **kw):
     return base
 
 
-def test_relationship_label_ignores_system_and_inbox_groups():
-    p = person(groups=["contactGroups/myContacts", "contactGroups/inbox1", "contactGroups/fam1"])
-    assert sync.relationship_label(p, GROUPS) == "family"
-
-
-def test_relationship_label_none_when_only_system():
-    assert sync.relationship_label(person(groups=["contactGroups/myContacts"]), GROUPS) is None
-
-
-def test_ensure_contact_links_existing(wire):
+def test_ensure_contact_links_existing(wire, label_io):
     fr = FakeRepo([row("alice@example.com")])
     fg = FakeGC(found=person(groups=["contactGroups/fam1"], bio="old friend"))
     wire(fg, fr)
     sync.ensure_contact(None, fr.rows["alice@example.com"])
     r = fr.rows["alice@example.com"]
     assert r["google_resource_name"] == "people/c1" and fg.created == []
-    assert (
-        r["display_name"] == "Alice Example"
-        and r["notes"] == "old friend"
-        and r["relationship_label"] == "family"
-    )
+    assert r["display_name"] == "Alice Example" and r["notes"] == "old friend"
+    assert label_io["set"] == [("people/c1", ["contactGroups/fam1"])]
 
 
 def test_ensure_contact_creates_in_inbox_group(wire):
@@ -247,7 +276,7 @@ def test_ensure_contact_reuses_listed_group(wire, monkeypatch):
     assert fg.created == [(None, "a@x.com", "contactGroups/inbox1")]
 
 
-def test_run_sync_updates_links_creates_deletes(wire):
+def test_run_sync_updates_links_creates_deletes(wire, label_io):
     fr = FakeRepo(
         [
             row("linked@x.com", google_resource_name="people/l1"),
@@ -279,7 +308,11 @@ def test_run_sync_updates_links_creates_deletes(wire):
         "skipped": 0,
         "promoted": 0,
     }
-    assert fr.rows["linked@x.com"]["relationship_label"] == "family"
+    assert ("people/l1", ["contactGroups/fam1"]) in label_io["set"]
+    assert ("people/g1", []) in label_io["set"]  # deleted contact's labels cleared
+    assert label_io["replaced"] == [
+        {"contactGroups/fam1": "Family", "contactGroups/climb": "Climbing"}
+    ]
     assert fr.rows["hand@x.com"]["google_resource_name"] == "people/h1"
     assert fr.rows["unknown@x.com"]["eligible"] is True
     assert fr.rows["gone@x.com"]["google_deleted_at"] == "now"
@@ -344,7 +377,6 @@ def test_sync_one_derives_contact_fields(monkeypatch):
     }
     captured = {}
     monkeypatch.setattr(sync.gc, "get_person", lambda rn: p)
-    monkeypatch.setattr(sync.gc, "list_groups", lambda: GROUPS)
     monkeypatch.setattr(
         sync.people, "get_by_google_resource", lambda conn, rn: {"email": "alice@example.com"}
     )
@@ -366,8 +398,7 @@ def test_sync_one_refetches_by_id(monkeypatch):
     # A phone-only person has row["email"] is None, so the old
     # people.get(conn, row["email"]) silently returned the stale pre-edit row.
     monkeypatch.setattr(sync.gc, "get_person", lambda rn: person(phones=["+15550100001"]))
-    monkeypatch.setattr(sync.gc, "list_groups", lambda: GROUPS)
-    monkeypatch.setattr(sync, "apply_person", lambda conn, p, g: "updated")
+    monkeypatch.setattr(sync, "apply_person", lambda conn, p: "updated")
     monkeypatch.setattr(sync.people, "get_by_id", lambda conn, pid: {"id": pid, "fresh": True})
     out = sync.sync_one(None, {"id": 7, "email": None, "google_resource_name": "people/c1"})
     assert out["fresh"] is True
@@ -381,7 +412,7 @@ def test_emailless_contact_with_a_phone_is_adopted(monkeypatch):
         "create_from_google",
         lambda conn, email, **kw: created.update({"email": email, **kw}),
     )
-    kind = sync.apply_person(None, person(email=None, phones=["(555) 010-0001"]), {})
+    kind = sync.apply_person(None, person(email=None, phones=["(555) 010-0001"]))
     assert kind == "created"
     assert created["email"] is None
     assert created["phone_numbers"] == ["+15550100001"]
@@ -393,8 +424,8 @@ def test_emailless_contact_without_a_usable_phone_is_skipped(monkeypatch):
     calls = []
     monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
     monkeypatch.setattr(sync.people, "create_from_google", lambda *a, **k: calls.append(1))
-    assert sync.apply_person(None, person(email=None, phones=["262966"]), {}) == "skipped"
-    assert sync.apply_person(None, person(email=None, phones=[]), {}) == "skipped"
+    assert sync.apply_person(None, person(email=None, phones=["262966"])) == "skipped"
+    assert sync.apply_person(None, person(email=None, phones=[])) == "skipped"
     assert calls == []
 
 
@@ -409,7 +440,7 @@ def test_adopted_contact_updates_on_the_next_run(monkeypatch):
     monkeypatch.setattr(
         sync.people, "update_from_google", lambda conn, rn, **kw: updated.update({"rn": rn, **kw})
     )
-    assert sync.apply_person(None, person(email=None, phones=["+15550100001"]), {}) == "updated"
+    assert sync.apply_person(None, person(email=None, phones=["+15550100001"])) == "updated"
     assert updated["rn"] == "people/c1"
 
 
@@ -428,8 +459,8 @@ def test_adopted_contact_losing_its_only_phone_is_skipped_not_updated(monkeypatc
     )
     monkeypatch.setattr(sync.people, "update_from_google", lambda conn, rn, **kw: calls.append(kw))
 
-    assert sync.apply_person(None, person(email=None, phones=[]), {}) == "skipped"
-    assert sync.apply_person(None, person(email=None, phones=["611"]), {}) == "skipped"
+    assert sync.apply_person(None, person(email=None, phones=[])) == "skipped"
+    assert sync.apply_person(None, person(email=None, phones=["611"])) == "skipped"
     assert calls == []
 
 
@@ -444,7 +475,7 @@ def test_adopted_contact_keeping_a_phone_still_updates(monkeypatch):
     )
     monkeypatch.setattr(sync.people, "update_from_google", lambda conn, rn, **kw: calls.append(kw))
 
-    kind = sync.apply_person(None, person(email=None, phones=["+15550100003"]), {})
+    kind = sync.apply_person(None, person(email=None, phones=["+15550100003"]))
     assert kind == "updated"
     assert calls and calls[0]["phone_numbers"] == ["+15550100003"]
 
@@ -458,7 +489,7 @@ def test_contact_with_an_email_behaves_exactly_as_before(monkeypatch):
         "create_from_google",
         lambda conn, email, **kw: created.update({"email": email, **kw}),
     )
-    assert sync.apply_person(None, person(email="alice@example.com"), {}) == "created"
+    assert sync.apply_person(None, person(email="alice@example.com")) == "created"
     assert created["email"] == "alice@example.com"
 
 
@@ -474,7 +505,6 @@ def test_run_sync_counts_skipped(monkeypatch):
             "tok",
         ),
     )
-    monkeypatch.setattr(sync.gc, "list_groups", lambda: {})
     monkeypatch.setattr(sync.sync_state, "get_token", lambda conn: None)
     monkeypatch.setattr(sync.sync_state, "set_token", lambda conn, t, s: None)
     monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
@@ -494,7 +524,7 @@ def test_promotes_an_unclaimed_address(monkeypatch):
     monkeypatch.setattr(
         sync.people, "update_from_google", lambda conn, rn, **kw: captured.update(kw)
     )
-    kind = sync.apply_person(None, person(email="alice@example.com", phones=["+15550100001"]), {})
+    kind = sync.apply_person(None, person(email="alice@example.com", phones=["+15550100001"]))
     assert kind == "promoted"
     assert captured["email"] == "alice@example.com"
 
@@ -507,7 +537,7 @@ def test_does_not_promote_a_claimed_address(monkeypatch):
     monkeypatch.setattr(
         sync.people, "update_from_google", lambda conn, rn, **kw: captured.update(kw)
     )
-    kind = sync.apply_person(None, person(email="taken@example.com", phones=["+15550100001"]), {})
+    kind = sync.apply_person(None, person(email="taken@example.com", phones=["+15550100001"]))
     assert kind == "updated"
     assert captured["email"] is None
 
@@ -524,7 +554,7 @@ def test_never_rewrites_an_existing_email(monkeypatch):
     monkeypatch.setattr(
         sync.people, "update_from_google", lambda conn, rn, **kw: captured.update(kw)
     )
-    assert sync.apply_person(None, person(email="new@example.com", phones=[]), {}) == "updated"
+    assert sync.apply_person(None, person(email="new@example.com", phones=[])) == "updated"
     assert captured["email"] is None
 
 
@@ -537,10 +567,89 @@ def test_run_sync_counts_promoted(monkeypatch):
             "tok",
         ),
     )
-    monkeypatch.setattr(sync.gc, "list_groups", lambda: {})
     monkeypatch.setattr(sync.sync_state, "get_token", lambda conn: None)
     monkeypatch.setattr(sync.sync_state, "set_token", lambda conn, t, s: None)
     monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: linked_row())
     monkeypatch.setattr(sync.people, "email_owner", lambda conn, email: None)
     monkeypatch.setattr(sync.people, "update_from_google", lambda conn, rn, **kw: None)
     assert sync.run_sync(None)["promoted"] == 1
+
+
+def test_apply_person_writes_every_group_not_just_the_first(label_io, monkeypatch):
+    monkeypatch.setattr(
+        sync.people, "get_by_google_resource", lambda conn, rn: linked_row("a@x.com")
+    )
+    monkeypatch.setattr(sync.people, "update_from_google", lambda conn, rn, **kw: None)
+    p = person(
+        email="a@x.com",
+        groups=[
+            "contactGroups/myContacts",
+            "contactGroups/inbox1",
+            "contactGroups/fam1",
+            "contactGroups/climb",
+        ],
+    )
+    assert sync.apply_person(None, p) == "updated"
+    # Unfiltered here; the DB join drops myContacts and inbox1 (repo/labels.py).
+    assert label_io["set"] == [
+        (
+            "people/c1",
+            [
+                "contactGroups/myContacts",
+                "contactGroups/inbox1",
+                "contactGroups/fam1",
+                "contactGroups/climb",
+            ],
+        )
+    ]
+
+
+def test_apply_person_writes_labels_on_adoption(label_io, monkeypatch):
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
+    monkeypatch.setattr(sync.people, "create_from_google", lambda conn, email, **kw: {"id": 1})
+    p = person(email=None, phones=["+15550100001"], groups=["contactGroups/climb"])
+    assert sync.apply_person(None, p) == "created"
+    assert label_io["set"] == [("people/c1", ["contactGroups/climb"])]
+
+
+def test_apply_person_skipped_writes_no_labels(label_io, monkeypatch):
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
+    p = person(email=None, phones=[], groups=["contactGroups/climb"])
+    assert sync.apply_person(None, p) == "skipped"
+    assert label_io["set"] == []
+
+
+def test_deleted_contact_clears_labels_before_unlinking(label_io, monkeypatch):
+    order = []
+    monkeypatch.setattr(
+        sync.people, "get_by_google_resource", lambda conn, rn: linked_row("a@x.com")
+    )
+    monkeypatch.setattr(
+        labels_repo, "set_contact_labels", lambda conn, rn, rns: order.append(("labels", rn, rns))
+    )
+    monkeypatch.setattr(
+        sync.people, "mark_google_deleted", lambda conn, rn: order.append(("deleted", rn))
+    )
+    assert sync.apply_person(None, person(deleted=True)) == "deleted"
+    # set_contact_labels finds the row by google_resource_name, which
+    # mark_google_deleted NULLs — so clearing must come first.
+    assert order == [("labels", "people/c1", []), ("deleted", "people/c1")]
+
+
+def test_run_sync_refreshes_groups_before_applying(label_io, monkeypatch):
+    order = []
+    monkeypatch.setattr(labels_repo, "replace_groups", lambda conn, groups: order.append("refresh"))
+    monkeypatch.setattr(sync, "apply_person", lambda conn, p: order.append("apply") or "updated")
+    monkeypatch.setattr(sync.gc, "list_connections", lambda token: ([person()], "tok"))
+    monkeypatch.setattr(sync.sync_state, "get_token", lambda conn: None)
+    monkeypatch.setattr(sync.sync_state, "set_token", lambda conn, t, s: None)
+    sync.run_sync(None)
+    assert order == ["refresh", "apply"]
+
+
+def test_sync_one_refreshes_groups(label_io, monkeypatch):
+    monkeypatch.setattr(sync.gc, "get_person", lambda rn: person())
+    monkeypatch.setattr(sync, "apply_person", lambda conn, p: "updated")
+    monkeypatch.setattr(sync.people, "get_by_id", lambda conn, pid: {"id": pid})
+    sync.sync_one(None, {"id": 7, "email": "a@x.com", "google_resource_name": "people/c1"})
+    assert len(label_io["replaced"]) == 1

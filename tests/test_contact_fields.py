@@ -26,7 +26,7 @@ def test_validate_allows_empty_list_to_clear_a_field():
 def test_validate_rejects_fields_owned_elsewhere():
     with pytest.raises(cf.ValidationError, match="notes"):
         cf.validate({"biographies": [{"value": "hi"}]})
-    with pytest.raises(cf.ValidationError, match="relationship_label"):
+    with pytest.raises(cf.ValidationError, match="labels"):
         cf.validate({"memberships": []})
 
 
@@ -157,7 +157,7 @@ def test_derive_keeps_only_allowlisted_keys_in_google_fields():
     assert "names" in got["google_fields"]
     assert "metadata" not in got["google_fields"]
     assert "biographies" not in got["google_fields"]  # owned by notes
-    assert "memberships" not in got["google_fields"]  # owned by relationship_label
+    assert "memberships" not in got["google_fields"]  # owned by labels
 
 
 # --- identifiers ------------------------------------------------------------

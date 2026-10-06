@@ -53,6 +53,7 @@ scripts/import_whatsapp.py (local, manual, no Full Disk Access needed) ──Cha
 
 inbox-process, Claude Code skills ──Google ID token (Cloud Run IAM)──▶ people-api (Cloud Run)
                                                         GET/PATCH /people/{ident}, POST /people, POST /people/{ident}/sync, POST /search, GET /people,
+                                                        GET /labels, GET /labels/{name},
                                                         GET /linkedin/connections[/{slug}], GET /linkedin/imports/latest,
                                                         GET /imessage/handles[/{handle}], GET /imessage/imports/latest,
                                                         GET /whatsapp/handles[/{handle}], GET /whatsapp/chats, GET /whatsapp/imports/latest
@@ -88,12 +89,16 @@ No custom domain is mapped for `people-api` yet — call it via
 `people` DB on `bens-project-462804:us-central1:inbox` (Postgres 16 +
 pg_trgm). Tables: `people` (`id` BIGSERIAL **PK**, `email` nullable
 **unique** — no longer the PK, display_name, first_seen, last_seen,
-last_contacted, message_count, my_response_count, relationship_label, notes,
+last_contacted, message_count, my_response_count, notes,
 eligible, automated, google_resource_name, google_etag, google_deleted_at,
 hubspot_contact_id, hubspot_synced_at, phone_numbers, company, job_title,
 google_fields, updated_at; `CHECK` constraint `people_has_an_identifier`:
 `email IS NOT NULL OR cardinality(phone_numbers) > 0`) and `sync_state`
-(key/sync_token/last_run_at/last_status — one row, `key='google_contacts'`).
+(key/sync_token/last_run_at/last_status — one row, `key='google_contacts'`),
+plus `contact_groups` (user-defined labels, replaced every sync) and
+`people_labels` (person ↔ label membership). `people.relationship_label` is
+unused, pending removal; `PersonOut.relationship_label` is a transitional
+read-only copy (first label, lowercased) kept for inbox until it reads `labels`.
 
 `phone_numbers` (text[], E.164), `company`, and `job_title` are a derived
 index over `google_fields` (JSONB, the full allowlisted Google contact
@@ -240,8 +245,9 @@ incremental one.
 
 `POST /people` (`services/person_create.py`) creates a Google Contact and
 its `people` row together, from a `contact` map of Google People API field
-names plus the same top-level `notes`/`relationship_label` fields `PATCH`
-uses. It reuses the sync's own row-creation path (`apply_person`), so a
+names plus the same top-level `notes`/`labels` fields `PATCH`
+uses (`labels` is a list of names, validated before the Google contact is
+created — a bad one is a `400`/`409` and creates nothing). It reuses the sync's own row-creation path (`apply_person`), so a
 hand-created person is indistinguishable from one the sync adopted —
 including derived `phone_numbers`/`company`/`job_title`/`google_fields`.
 Validation runs before any write: the `contact_fields` allowlist, then at
@@ -281,7 +287,7 @@ contacts adopted separately before this endpoint existed.
 |---|---|---|
 | `display_name` | Google Contacts once linked; event data before that | Google → DB on sync/link. Event data never overwrites a Google-sourced name. |
 | `notes` | Google contact **biography** | Both ways: `PATCH /people/{ident}` writes Google first, then refreshes the DB row from it. The event path never writes notes. |
-| `relationship_label` | Google **contact group** membership | Google → DB — the first non-system, non-`GOOGLE_CONTACT_GROUP` group, lowercased. `PATCH` writes by moving group membership. |
+| `labels` (`contact_groups`, `people_labels`) | Google **contact groups** (user-defined; system groups and `GOOGLE_CONTACT_GROUP` excluded) | Google → DB — `contact_groups` replaced from `contactGroups.list` on every sync; a person's memberships rewritten on every apply. `PATCH` adds/removes membership (`{"labels": {"add", "remove"}}`) without touching other labels. |
 | counters, timestamps, `eligible`, `automated` | DB | Written only by the event handlers and `scripts/import_contacts.py`. |
 | `google_deleted_at` | Google | Set by sync when a linked `resourceName` comes back deleted. Never recreated. |
 | `hubspot_contact_id` | DB (people manages) | Set on create/adopt, cleared on evict/heal. |
@@ -291,12 +297,12 @@ contacts adopted separately before this endpoint existed.
 If the DB is lost, everything except the counters rebuilds from Google
 Contacts plus a full sync; counters rebuild via `scripts/import_contacts.py`.
 
-**Editing beyond `notes`/`relationship_label`:** `PATCH /people/{ident}`
+**Editing beyond `notes`/`labels`:** `PATCH /people/{ident}`
 also takes a `contact` map — arbitrary Google People API fields (phone
 numbers, name, organization, birthday, addresses, ...), validated against an
 allowlist in `services/contact_fields.py` and written to Google in one
 `updateContact` call. `biographies` and `memberships` are rejected inside
-`contact` since `notes`/`relationship_label` already own them. Email
+`contact` since `notes`/`labels` already own them. Email
 addresses are add-only — a submission that would drop an existing or keyed
 address gets a `409`. See **editing-person** for the caller-facing detail.
 
