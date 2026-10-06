@@ -14,7 +14,8 @@ def replace_groups(conn: Any, groups: dict[str, str]) -> None:
     for rn, name in groups.items():
         if rn not in existing:
             conn.execute(
-                "INSERT INTO contact_groups (resource_name, name) VALUES (%s, %s)",
+                "INSERT INTO contact_groups (resource_name, name) VALUES (%s, %s)"
+                " ON CONFLICT (resource_name) DO NOTHING",
                 (rn, name),
             )
         elif existing[rn] != name:

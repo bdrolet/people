@@ -18,6 +18,9 @@ def test_replace_groups_inserts_only_new():
     labels.replace_groups(conn, {"contactGroups/a": "Climbing", "contactGroups/b": "investor"})
     [(sql, params)] = _writes(conn)
     assert "INSERT INTO contact_groups" in sql
+    # A concurrent refresh (a PATCH's sync_one during the nightly run) may
+    # insert the same new group first; that must not abort either transaction.
+    assert "ON CONFLICT (resource_name) DO NOTHING" in sql
     assert params == ("contactGroups/b", "investor")
 
 
