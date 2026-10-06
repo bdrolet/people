@@ -96,9 +96,7 @@ google_fields, updated_at; `CHECK` constraint `people_has_an_identifier`:
 `email IS NOT NULL OR cardinality(phone_numbers) > 0`) and `sync_state`
 (key/sync_token/last_run_at/last_status — one row, `key='google_contacts'`),
 plus `contact_groups` (user-defined labels, replaced every sync) and
-`people_labels` (person ↔ label membership). `people.relationship_label` is
-unused, pending removal; `PersonOut.relationship_label` is a transitional
-read-only copy (first label, lowercased) kept for inbox until it reads `labels`.
+`people_labels` (person ↔ label membership).
 
 `phone_numbers` (text[], E.164), `company`, and `job_title` are a derived
 index over `google_fields` (JSONB, the full allowlisted Google contact

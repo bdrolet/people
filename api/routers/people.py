@@ -28,10 +28,6 @@ class PersonOut(BaseModel):
     message_count: int
     my_response_count: int
     labels: list[str] = []
-    # Deprecated, transitional, read-only: first label lowercased. Kept only
-    # because inbox's classifier still reads it; removed with the column-drop
-    # follow-up once inbox reads `labels`. Not accepted on PATCH/POST.
-    relationship_label: str | None = None
     notes: str | None
     eligible: bool
     automated: bool
@@ -91,7 +87,6 @@ def to_out(
         message_count=row.get("message_count") or 0,
         my_response_count=row.get("my_response_count") or 0,
         labels=labels,
-        relationship_label=labels[0].lower() if labels else None,
         notes=row.get("notes"),
         eligible=bool(row.get("eligible")),
         automated=bool(row.get("automated")),

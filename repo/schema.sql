@@ -8,7 +8,6 @@ CREATE TABLE IF NOT EXISTS people (
     last_contacted        TIMESTAMPTZ,
     message_count         INT  NOT NULL DEFAULT 0,
     my_response_count     INT  NOT NULL DEFAULT 0,
-    relationship_label    TEXT,
     notes                 TEXT,
     eligible              BOOLEAN NOT NULL DEFAULT FALSE,
     automated             BOOLEAN NOT NULL DEFAULT FALSE,
@@ -397,3 +396,7 @@ CREATE TABLE IF NOT EXISTS people_labels (
     PRIMARY KEY (person_id, group_resource_name)
 );
 CREATE INDEX IF NOT EXISTS people_labels_group_idx ON people_labels (group_resource_name);
+
+-- relationship_label was replaced by contact_groups/people_labels
+-- (multiple-labels design §8 step 6); nothing has written it since #21.
+ALTER TABLE people DROP COLUMN IF EXISTS relationship_label;

@@ -429,15 +429,8 @@ def test_patch_invalid_label_is_400(monkeypatch):
 def test_person_out_carries_labels():
     r = client.get("/people/alice@x.com")
     assert r.json()["labels"] == ["family"]
-    # transitional read-only field for inbox: first label, lowercased
-    assert r.json()["relationship_label"] == "family"
-
-
-def test_person_out_relationship_label_null_without_labels():
-    from api.routers.people import to_out
-
-    assert to_out(row(labels=[])).relationship_label is None
-    assert to_out(row(labels=["VIP", "Zed"])).relationship_label == "vip"
+    # the transitional relationship_label is gone now that inbox reads labels
+    assert "relationship_label" not in r.json()
 
 
 def test_patch_rejects_relationship_label_with_422():
