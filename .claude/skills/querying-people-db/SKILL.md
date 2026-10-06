@@ -53,7 +53,7 @@ connection paths (Cloud SQL connector and local direct psycopg3).
 | Table | Contents |
 |---|---|
 | `people` | `id` (BIGSERIAL **PK**), `email` (nullable, **unique** — no longer the PK), `display_name`, `first_seen`, `last_seen`, `last_contacted`, `message_count`, `my_response_count`, `notes`, `eligible`, `automated`, `google_resource_name`, `google_etag`, `google_deleted_at`, `hubspot_contact_id`, `hubspot_synced_at`, `phone_numbers` (text[], E.164, GIN), `company`, `job_title` (both from the primary/first `organizations` entry), `google_fields` (JSONB, the full allowlisted Google contact payload, GIN), `updated_at`. `CHECK` constraint `people_has_an_identifier`: `email IS NOT NULL OR cardinality(phone_numbers) > 0` — every row has an email or a phone, never neither. |
-| `contact_groups` | user-defined labels only: `resource_name` (PK), `name`, `updated_at` — replaced every sync. `people.relationship_label` is unused and pending removal. |
+| `contact_groups` | user-defined labels only: `resource_name` (PK), `name`, `updated_at` — replaced every sync. |
 | `people_labels` | `person_id` (FK → `people.id`), `group_resource_name` (FK → `contact_groups.resource_name`), both `ON DELETE CASCADE` |
 | `sync_state` | one row, `key='google_contacts'`: `sync_token`, `last_run_at`, `last_status` |
 | `linkedin_connections` | LinkedIn snapshot, PK `profile_url` (`linkedin.com/in/<slug>`): `full_name`, `email`, `company`, `position`, `connected_on`, `person_id` (FK → `people.id`, `ON DELETE SET NULL` — replaced `person_email`; there is no `person_email` column anymore), `match_method`, `message_count`, `my_message_count`, `last_message_at`, `last_my_message_at`, `snapshot_at` |
