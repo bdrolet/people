@@ -1,7 +1,7 @@
 # Multiple Labels per Person — Design
 
 **Date:** 2026-10-02
-**Status:** Draft, awaiting review
+**Status:** Shipped 2026-10-06 — people #21 (labels) and #22 (`relationship_label` dropped), inbox #64 (classifier reads `labels`). See §10.
 **Repo:** `bdrolet/people`
 
 ## 1. Summary
@@ -232,7 +232,8 @@ Still rejected inside the `contact` map with a `400`; the message now names
 `[]` when none. A deprecated, **transitional** read-only `relationship_label`
 (`labels[0].lower()`, or `null`) stays on `PersonOut` only because inbox's
 classifier still reads it (§9); it is never accepted on `PATCH`/`POST`, and goes
-away with the column-drop follow-up (§8). It's present on every response that carries a person: single
+away with the column-drop follow-up (§8). *Removed in #22 once inbox #64 read
+`labels`; `PersonOut` now carries `labels` only.* It's present on every response that carries a person: single
 fetch, `GET /people?recent=`, `POST /search`, `PATCH`, `POST /people`.
 
 `repo/people.py::_COLUMNS` gains:
@@ -336,7 +337,7 @@ replacing every `relationship_label` example), `creating-person`,
 
 | Decision | Choice | Why |
 |---|---|---|
-| Fate of `relationship_label` | Replaced by `labels`; a read-only `relationship_label` (first label, lowercased) stays on `PersonOut` transitionally | Inbox's classifier reads it (fail-open: it would silently lose the context), so it is kept until inbox reads `labels`, then removed with the column drop. Two *writable* overlapping concepts would need a rule for which group is "primary"; the shim is derived, never written. |
+| Fate of `relationship_label` | Replaced by `labels`; a read-only `relationship_label` (first label, lowercased) stays on `PersonOut` transitionally | Inbox's classifier reads it (fail-open: it would silently lose the context), so it is kept until inbox reads `labels`, then removed with the column drop (done: #22). Two *writable* overlapping concepts would need a rule for which group is "primary"; the shim is derived, never written. |
 | Storage | `contact_groups` + `people_labels`, joined at read | A rename changes no contact etag, so a per-person name array would go stale; the group list is already fetched every sync. |
 | Storage, rejected: `labels TEXT[]` on `people` | — | Simplest, but stale on rename (above). |
 | Storage, rejected: read live from Google | — | One API call per lookup; "list everyone tagged X" would hit rate limits, and every other read is served from the index. |
@@ -346,3 +347,28 @@ replacing every `relationship_label` example), `creating-person`,
 | Name matching | Case-insensitive, display case preserved | Matches today's lowercased-compare behaviour without throwing away how Ben spelled the label. |
 | `GET /labels/{name}` limits | None; no eligibility filter | A label is a deliberate list; partial results would be wrong. |
 | Column drop | Follow-up PR | `migrate_db.py` runs the whole schema file; an in-PR drop breaks the old code before the new code deploys. |
+
+## 10. Outcome (2026-10-06)
+
+Every §8 step ran, in order:
+
+| Step | Result |
+|---|---|
+| 1. Additive migration before merge | Applied; `to_regclass` confirmed `contact_groups` and `people_labels` before #21 merged. |
+| 2. Merge #21 | Squash-merged; Functions and API deploys succeeded. |
+| 3. Full sync | `clear_sync_token.py`, then one `people-sync`: 852 updated, 104 skipped (contacts with neither an email nor a usable phone — the known set). |
+| 4. Backfill check | 0 of 724 non-null `relationship_label` rows missing from `people_labels`; 19 people now carry more than one label, which the old field could not express. |
+| 5. UI propagation | A label added directly in Google (outside people-api) on a throwaway contact was **not** returned by an incremental sync run immediately after, but was ~2 minutes later. Google's sync feed lags membership changes briefly; the nightly sync is unaffected, but a manual sync right after a Contacts-UI edit can miss it. |
+| 6. Inbox PR | inbox #64 merged and deployed: the classifier prompt carries `Labels: a, b`. No warnings in `inbox-process` logs after the deploy. |
+| 7. Drop PR | #22 merged and deployed, then `migrate_db.py` dropped `people.relationship_label`; `PersonOut` no longer carries it. |
+
+Fixed during review rather than deferred: labels on `POST /people` are
+validated before the Google contact is created (§5.4); `replace_groups` writes
+only new, renamed, or removed groups and tolerates a concurrent insert of the
+same new group (`ON CONFLICT DO NOTHING`); request bodies reject unknown fields
+(`extra="forbid"`).
+
+Known gap, unchanged from before this design: if the post-create step of
+`POST /people` (labels or notes) hits a Google error after the contact is
+created, the Google contact remains and a retry is refused as a duplicate.
+
