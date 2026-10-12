@@ -306,6 +306,16 @@ skill sends it, inbox publishes `email_sent`, and §6.2 advances the stage.
 No Graph code is added to people, which keeps the repo's rule that only local
 import scripts touch Graph.
 
+`outreach draft <person>` creates the draft itself and always passes
+`from: {address: <consulting address>, shared: false}`, so the sending
+identity is never a judgment call at send time. The consulting address is an
+alias on the primary mailbox (no shared mailbox is configured), which is why
+the sent note lands in the primary Sent Items and inbox's existing
+subscription publishes it with `from` set. A brief sent by hand from the
+wrong identity is not counted: the contact stays at `to_contact` and shows
+up in `outreach queue` as unsent, which is the signal to resend or to mark
+it with `--channel email --from <address>` if it was deliberate.
+
 For texts and LinkedIn, Ben sends by hand and runs
 `outreach mark <person> briefed --channel imessage`.
 
@@ -315,6 +325,7 @@ For texts and LinkedIn, Ben sends by hand and runs
 |---|---|
 | `outreach queue [--stage S] [--limit N]` | §7.2 |
 | `outreach decide <person> [--skip]` | `candidate → to_contact`, or `skipped` |
+| `outreach draft <person> [--subject S]` | creates an empty-bodied inbox-api draft to the person from the consulting alias; Ben writes the body in Outlook |
 | `outreach mark <person> briefed\|replied\|declined [--channel C] [--at T]` | manual advance |
 | `outreach lead <person> "<name, company>"` | sets `has_lead`; does not create an opportunity |
 | `outreach intro <referrer> "<buyer name, company>" [--buyer <person>] [--at T]` | opens an opportunity, referrer → `introduced` |
@@ -356,10 +367,19 @@ outage never loses a count.
 after commit, like the HubSpot mirror. From the CLI it runs inline. It is
 never on the durable path.
 
-**IAM.** `people-process` and `people-sync` service accounts need
-`roles/run.invoker` on `tasks-api`; that grant lives in the tasks repo's
-`terraform/api.tf` next to the existing invoker members. Ben's user already
-has it for the CLI.
+**Timing matters.** The strategy layer counts by the task's `completed_at`,
+which is when Asana saw the completion, not the stage event's `at`. A sync
+that lags a week moves the count into the wrong week and can fire or miss a
+tripwire. So the sync runs in the handler and the CLI immediately, the
+nightly retry is a backstop, and `outreach sync-asana` prints how many events
+were synced late and by how much.
+
+**IAM.** The `people-process-cf` and `people-sync-cf` service accounts need
+`roles/run.invoker` on `tasks-api`. Today `terraform/api.tf` in the tasks
+repo grants invokers only to users (`api_invoker_users`) and the deployer; a
+new `api_invoker_service_accounts` list variable with the same `for_each`
+shape carries the two people accounts. Ben's user already has it for the
+CLI. See §12.1.
 
 **Tags.** `outreach`, `conversation`, `proposal`, `signed-client` exist in
 the strategy today; `intro` is new and is created on first use through
@@ -482,8 +502,22 @@ network.
 
 ## 12. Operations
 
+### 12.1 Changes in other repos
+
+Everything that counts lives in people, but four other places need a small
+change or none, checked against their code on 2026-10-12.
+
+| Repo | Change | Why |
+|---|---|---|
+| **tasks** | `terraform`: `api_invoker_service_accounts` variable and `google_cloud_run_v2_service_iam_member` for the two people function accounts. No application change. | Tag names are resolved and created on first use (`services/tags.py`), a completed task's goal is read from its `serves:` tag when it has no score row (`services/goal_state.py`), and `completed_at` is indexed on `PATCH`. The strategy layer counts §8's tasks with no code change. |
+| **inbox** | No application change. Update the `sending-inbox-email` skill's identity table and the `email-builder` agent brief so consulting correspondence is sent from the consulting alias. | The Sent Items subscription already publishes `email_sent` with `from` for mail sent from an alias on the primary mailbox. The identity rule is policy, and the tool enforces it on its own drafts (§7.3). |
+| **context** | Already open: PR #4 sizes the referral test at 150 and ties the tripwires to the floors. The `intro` lead and tripwire in that PR assume §8 ships before the first cohort is briefed. | The tags §8 writes are the ones the strategy counts. |
+| **consulting** | Done: `docs/client_funnel.md` and `docs/client_funnel_floors.toml`. The report's `--floors` path points there. | Floors stay out of the public repo. |
+| **~/.claude/skills** | Phase 2: a `working-outreach-queue` skill linked from this repo's `.claude/skills` via `scripts/link-skills.sh`, and a pointer from `adding-referral-contact` to the new pipeline. | The skills are how Ben works the queue from a Claude session. |
+
 - **Env.** `OUTREACH_FROM_ADDRESSES` (comma-separated; which sending
-  identities count as a brief), `TASKS_API_URL`. Both via Secret Manager and
+  identities count as a brief; `outreach draft` sends from the first),
+  `TASKS_API_URL`, `INBOX_API_URL`. Both via Secret Manager and
   terraform like the existing secrets; the `adding-people-secret` skill is the
   path.
 - **Migration.** `scripts/migrate_db.py` applies the new tables; it is
