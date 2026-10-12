@@ -9,7 +9,14 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 import clients.otel as otel
-from models.outreach import BUYER_STAGES, LOST_REASONS, REFERRER_STAGES, Advance
+from models.outreach import (
+    BUYER_STAGES,
+    LOST_REASONS,
+    REFERRER_STAGES,
+    Advance,
+    CohortCounts,
+    FunnelCounts,
+)
 from repo import outreach as outreach_repo
 
 TZ = ZoneInfo("America/New_York")
@@ -392,3 +399,29 @@ def record_population(conn: Any, *, today: date) -> None:
         for r in outreach_repo.population(conn)
     ]
     otel.set_outreach_population(rows, outreach_repo.follow_ups_due_count(conn, today))
+
+
+def counts(
+    conn: Any, *, today: date, since: date | None = None, until: date | None = None
+) -> FunnelCounts:
+    """Spec §9's numbers, per cohort week, all derived from the DB (never from counters)."""
+    by_week: dict[date | None, CohortCounts] = {}
+
+    def cohort(week: date | None) -> CohortCounts:
+        return by_week.setdefault(week, CohortCounts(cohort_week=week))
+
+    for r in outreach_repo.referrer_cohort_counts(conn, since=since, until=until):
+        c = cohort(r["cohort_week"])
+        c.briefed, c.replied = int(r["briefed"]), int(r["replied"])
+    for r in outreach_repo.buyer_cohort_counts(conn, since=since, until=until):
+        c = cohort(r["cohort_week"])
+        c.intro, c.conversation = int(r["intro"]), int(r["conversation"])
+        c.proposal, c.signed = int(r["proposal"]), int(r["signed"])
+    cohorts = sorted(
+        by_week.values(), key=lambda c: (c.cohort_week is None, c.cohort_week or date.min)
+    )
+    lost = {
+        r["lost_reason"]: int(r["n"])
+        for r in outreach_repo.lost_reasons(conn, since=since, until=until)
+    }
+    return FunnelCounts(cohorts, lost, outreach_repo.follow_ups_due_count(conn, today))

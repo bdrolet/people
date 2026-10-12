@@ -224,3 +224,75 @@ def test_follow_ups_and_shared_briefs(conn):
     assert outreach_repo.shared_briefs(conn) == [{"graph_message_id": "g-shared", "n": 2}]
     pop = {(r["pipeline"], r["stage"]): r["n"] for r in outreach_repo.population(conn)}
     assert pop == {("referrer", "briefed"): 2}
+
+
+def _brief(conn, pid, week, *, replied=False):
+    outreach_repo.insert_contact_if_missing(conn, pid)
+    outreach_repo.update_contact(
+        conn, pid, {"stage": "replied" if replied else "briefed", "cohort_week": week}
+    )
+    outreach_repo.insert_event(
+        conn,
+        pipeline="referrer",
+        person_id=pid,
+        stage="briefed",
+        at=TS,
+        source="cli",
+        channel="email",
+    )
+    if replied:
+        outreach_repo.insert_event(
+            conn,
+            pipeline="referrer",
+            person_id=pid,
+            stage="replied",
+            at=TS,
+            source="cli",
+            channel="email",
+        )
+
+
+def _opp(conn, referrer, stages, lost_reason=None):
+    opp = outreach_repo.insert_opportunity(
+        conn, referrer_id=referrer, buyer_id=None, buyer_label="B", at=TS
+    )
+    for stage in ["intro", *stages]:
+        outreach_repo.insert_event(
+            conn, pipeline="buyer", opportunity_id=opp["id"], stage=stage, at=TS, source="cli"
+        )
+    final = stages[-1] if stages else "intro"
+    changes = {"stage": final} | (
+        {"lost_reason": lost_reason, "lost_at": TS} if final == "lost" else {}
+    )
+    if final != "intro":
+        outreach_repo.update_opportunity(conn, opp["id"], changes)
+
+
+def test_cohort_counts_derive_from_the_event_log(conn):
+    w1, w2 = datetime(2026, 10, 12).date(), datetime(2026, 10, 19).date()
+    a, b, c = (
+        _person(conn),
+        _person(conn, email="b@example.com"),
+        _person(conn, email="c@example.com"),
+    )
+    _brief(conn, a, w1, replied=True)
+    _brief(conn, b, w1)
+    _brief(conn, c, w2)
+    _opp(conn, a, ["conversation"])
+    _opp(conn, a, ["lost"], lost_reason="timing")
+    ref = {
+        r["cohort_week"]: (r["briefed"], r["replied"])
+        for r in outreach_repo.referrer_cohort_counts(conn, since=None, until=None)
+    }
+    assert ref == {w1: (2, 1), w2: (1, 0)}
+    buyer = outreach_repo.buyer_cohort_counts(conn, since=None, until=None)
+    assert [(r["cohort_week"], r["intro"], r["conversation"], r["proposal"]) for r in buyer] == [
+        (w1, 2, 1, 0)
+    ]
+    assert outreach_repo.lost_reasons(conn, since=None, until=None) == [
+        {"lost_reason": "timing", "n": 1}
+    ]
+    assert [
+        r["cohort_week"] for r in outreach_repo.referrer_cohort_counts(conn, since=w2, until=None)
+    ] == [w2]
+    assert outreach_repo.buyer_cohort_counts(conn, since=w2, until=None) == []

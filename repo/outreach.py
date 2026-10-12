@@ -311,3 +311,69 @@ def population(conn: Any) -> list[dict]:
         GROUP BY o.stage, c.cohort_week
         """
     ).fetchall()
+
+
+# A cohort filter both bounds may leave open: NULL means "no bound". Each bound is passed
+# twice because pg8000 takes positional parameters only.
+_COHORT_FILTER = """
+    (%s::date IS NULL OR c.cohort_week >= %s::date)
+    AND (%s::date IS NULL OR c.cohort_week <= %s::date)
+"""
+
+
+def referrer_cohort_counts(conn: Any, *, since: date | None, until: date | None) -> list[dict]:
+    """Briefed and replied people per cohort week. cohort_week is set in the same
+    transaction as a contact's first `briefed` event, so it marks the briefed set;
+    replied comes from the event log, so a later decline does not erase a reply."""
+    return conn.execute(
+        f"""
+        SELECT c.cohort_week,
+               COUNT(*) AS briefed,
+               COUNT(*) FILTER (WHERE EXISTS (
+                   SELECT 1 FROM outreach_events e
+                   WHERE e.pipeline = 'referrer' AND e.person_id = c.person_id
+                     AND e.stage = 'replied')) AS replied
+        FROM outreach_contacts c
+        WHERE c.cohort_week IS NOT NULL AND {_COHORT_FILTER}
+        GROUP BY c.cohort_week
+        ORDER BY c.cohort_week
+        """,
+        (since, since, until, until),
+    ).fetchall()
+
+
+def buyer_cohort_counts(conn: Any, *, since: date | None, until: date | None) -> list[dict]:
+    """Opportunities per referrer cohort that ever reached each buyer stage."""
+
+    def reached(stage: str) -> str:
+        return (
+            "COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM outreach_events e "
+            f"WHERE e.opportunity_id = o.id AND e.stage = '{stage}')) AS {stage}"
+        )
+
+    return conn.execute(
+        f"""
+        SELECT c.cohort_week, COUNT(*) AS intro,
+               {reached("conversation")}, {reached("proposal")}, {reached("signed")}
+        FROM outreach_opportunities o
+        LEFT JOIN outreach_contacts c ON c.person_id = o.referrer_id
+        WHERE {_COHORT_FILTER}
+        GROUP BY c.cohort_week
+        ORDER BY c.cohort_week NULLS LAST
+        """,
+        (since, since, until, until),
+    ).fetchall()
+
+
+def lost_reasons(conn: Any, *, since: date | None, until: date | None) -> list[dict]:
+    return conn.execute(
+        f"""
+        SELECT o.lost_reason, COUNT(*) AS n
+        FROM outreach_opportunities o
+        LEFT JOIN outreach_contacts c ON c.person_id = o.referrer_id
+        WHERE o.stage = 'lost' AND {_COHORT_FILTER}
+        GROUP BY o.lost_reason
+        ORDER BY o.lost_reason
+        """,
+        (since, since, until, until),
+    ).fetchall()

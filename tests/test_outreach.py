@@ -507,3 +507,32 @@ def test_record_population_labels_cohorts_by_iso_week(monkeypatch):
         ],
         "due": 2,
     }
+
+
+def test_counts_merges_referrer_and_buyer_rows_by_cohort(monkeypatch):
+    w1, w2 = date(2026, 10, 12), date(2026, 10, 19)
+    monkeypatch.setattr(
+        svc.outreach_repo,
+        "referrer_cohort_counts",
+        lambda c, since, until: [
+            {"cohort_week": w2, "briefed": 1, "replied": 0},
+            {"cohort_week": w1, "briefed": 2, "replied": 1},
+        ],
+    )
+    monkeypatch.setattr(
+        svc.outreach_repo,
+        "buyer_cohort_counts",
+        lambda c, since, until: [
+            {"cohort_week": w1, "intro": 2, "conversation": 1, "proposal": 0, "signed": 0}
+        ],
+    )
+    monkeypatch.setattr(
+        svc.outreach_repo,
+        "lost_reasons",
+        lambda c, since, until: [{"lost_reason": "timing", "n": 1}],
+    )
+    monkeypatch.setattr(svc.outreach_repo, "follow_ups_due_count", lambda c, today: 4)
+    out = svc.counts(None, today=date(2026, 10, 21))
+    assert [c.cohort_week for c in out.cohorts] == [w1, w2]
+    assert (out.cohorts[0].briefed, out.cohorts[0].replied, out.cohorts[0].intro) == (2, 1, 2)
+    assert out.lost_reasons == {"timing": 1} and out.follow_ups_due == 4
