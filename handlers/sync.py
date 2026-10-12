@@ -1,9 +1,11 @@
-"""Nightly: Google Contacts incremental sync, then HubSpot reconcile."""
+"""Nightly: Google Contacts incremental sync, HubSpot reconcile, then the outreach
+Asana backstop (outreach spec §8): every countable stage event still missing its
+completed task is retried."""
 
 import logging
 
 from clients import db
-from services import google_contacts_sync, hubspot_mirror
+from services import google_contacts_sync, hubspot_mirror, outreach_sync
 
 logger = logging.getLogger(__name__)
 
@@ -14,5 +16,6 @@ def run() -> dict:
         conn.commit()
         hubspot = hubspot_mirror.reconcile(conn)
         conn.commit()
-    logger.info("sync complete google=%s hubspot=%s", google, hubspot)
-    return {"google": google, "hubspot": hubspot}
+        asana = outreach_sync.sync_pending(conn).as_dict()  # commits its own progress
+    logger.info("sync complete google=%s hubspot=%s asana=%s", google, hubspot, asana)
+    return {"google": google, "hubspot": hubspot, "asana": asana}

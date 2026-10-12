@@ -417,3 +417,13 @@ def test_merge_moves_opportunities_on_both_sides(repo):
 
 def test_merge_with_no_pipeline_rows_is_a_noop(repo):
     assert svc.merge_person(None, 2, 1) == 0
+
+
+def test_outreach_sender_is_case_and_space_insensitive(monkeypatch):
+    monkeypatch.setenv("OUTREACH_FROM_ADDRESSES", " Ben@Consulting.Example.com , other@example.com")
+    assert svc.is_outreach_sender("ben@consulting.example.com ")
+    assert svc.is_outreach_sender("BEN@consulting.example.com")
+    assert not svc.is_outreach_sender("alias@consulting.example.com")
+    assert not svc.is_outreach_sender("")
+    monkeypatch.delenv("OUTREACH_FROM_ADDRESSES")
+    assert not svc.is_outreach_sender("ben@consulting.example.com")
