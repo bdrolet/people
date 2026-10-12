@@ -528,9 +528,45 @@ change or none, checked against their code on 2026-10-12.
   additive and idempotent like the rest of `schema.sql`.
 - **Rebuild runbook.** Before any `DELETE FROM people`, export the three
   `outreach_*` tables; they cascade.
-- **Metrics.** `otel` counters: `outreach_advances` by stage and source,
-  `outreach_asana_sync` by outcome, `outreach_hubspot_sync` by outcome. Same
-  Grafana as the rest of the service.
+- **Metrics.** See §12.2.
+### 12.2 Telemetry
+
+The service already exports OpenTelemetry metrics to Grafana Cloud through
+`clients/otel.py`, and the original tool sketch named Grafana as the
+reporting surface. The pipeline emits enough to chart the funnel and the
+work behind it there, with these instruments added in the same style as
+`people.events_received`:
+
+| Instrument | Kind | Attributes | Emitted when |
+|---|---|---|---|
+| `outreach.stage_events` | counter | `pipeline`, `stage`, `channel`, `source` | every appended event (§4.3); this is the activity feed |
+| `outreach.stage_population` | observable gauge | `pipeline`, `stage` | rows per stage, read from the DB on each `people-sync` run and on every `outreach` CLI invocation, so the funnel shape is a gauge, not a sum of counters |
+| `outreach.follow_ups_due` | observable gauge | | rows with `follow_up_on <= today` |
+| `outreach.lost` | counter | `lost_reason` | buyer `lost` |
+| `outreach.sync` | counter | `target` (`asana`, `hubspot`), `outcome` (`ok`, `retry`, `failed`), `late` (bucketed: `0d`, `1d`, `2-7d`, `8d+`) | each sync attempt; `late` is `now - event.at` |
+| `outreach.enrichment` | counter | `provider`, `outcome` | phase 3 lookups, so the PDL free quota is visible |
+| `outreach.report_runs` | counter | `verdict_below` (count of stages below floor) | each `outreach report` run; the only place a floor verdict reaches Grafana, as a count, never a rate |
+
+Rules:
+
+- **Names and addresses never become attributes.** Attribute values are
+  drawn from the closed enums above. Cardinality stays in the tens.
+- **Grafana is the trend view, the DB report is the truth.** Counters count
+  at emit time, so a late sync lands in the wrong day on a chart; the report
+  (§9) computes cohorts from `outreach_events.at`. Dashboards show activity
+  and shape; decisions at the read dates use the report.
+- **Cohort week is an attribute only on the gauge**, where cardinality is one
+  value per week of the test (`cohort_week` as `YYYY-Www`). That is what makes
+  a per-cohort funnel panel possible without a per-person series.
+- The CLI calls `otel.setup_telemetry("people-outreach-local")` and `flush()`
+  on exit, the same as the import scripts, so local actions reach the same
+  dashboards as the functions.
+
+One Grafana dashboard, "Consulting funnel", built by hand from these: stage
+population by week, stage events per week by channel, follow-ups due, lost
+reasons, sync lateness. Dashboards are not in this repo today and this does
+not change that.
+
 - **Privacy.** The repo is public. No names, addresses, message text, floors
   or actuals are committed. Fixtures use the existing synthetic people. The
   floors file lives in the consulting repo. Task names in Asana carry
