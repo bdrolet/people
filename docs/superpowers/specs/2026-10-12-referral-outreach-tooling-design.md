@@ -1,9 +1,9 @@
 # Referral Outreach Tooling — Design
 
 **Date:** 2026-10-12
-**Status:** Draft, awaiting review
-**Repo:** `bdrolet/people`
-**Reads with:** the consulting repo's `docs/client_funnel.md` (private; the floors, read points and checkpoints) and `docs/referral_outreach_tool.md` (the original tool sketch this design supersedes).
+**Status:** Reviewed 2026-10-12. Next step: an implementation plan for phase 1 (§13), written with the `superpowers:writing-plans` skill in a fresh session; the plan lives beside this file under `docs/superpowers/plans/`.
+**Repo:** `bdrolet/people`, branch `referral-outreach-spec`
+**Reads with:** the consulting repo's `docs/client_funnel.md` (private; the floors, read points and checkpoints) and `docs/client_funnel_floors.toml` (what `outreach report --floors` reads), and `docs/referral_outreach_tool.md` there (the original tool sketch this design supersedes). The strategy block the counts feed is the context repo's `strategy.md`, consulting goal; PR #4 there carries the tags and tripwires this design assumes.
 
 ## 1. Summary
 
@@ -95,8 +95,8 @@ candidate → to_contact → briefed → replied → introduced
 
 | Stage | Meaning | Set by |
 |---|---|---|
-| `candidate` | Proposed by the seed script (§5) from the warm-pool bars; not yet Ben's decision | `outreach seed` |
-| `to_contact` | Ben has decided to brief this person | CLI, or HubSpot view |
+| `candidate` | Proposed by the seed script (§7.1) from the warm-pool bars; not yet Ben's decision | `outreach seed` |
+| `to_contact` | Ben has decided to brief this person | CLI (`outreach decide`); phase 2 adds a HubSpot pull (§10) |
 | `briefed` | A note with the one-line offer and the one-name ask has been sent | `email_sent` event (§6.2), or CLI for other channels |
 | `replied` | They answered in any channel. A name mentioned without an introduction keeps them here. | `email_classified` event (§6.3), or CLI |
 | `introduced` | At least one introduction with the buyer on the thread has been made. Creates an opportunity (§4.2). | CLI (`outreach intro`) |
@@ -133,9 +133,26 @@ the source (`event`, `cli`, `hubspot`, `seed`), and later the Asana task gid the
 event produced. Counts, cohorts and the report all derive from this log, so
 a correction is a new event, not an edit.
 
-Transitions are monotonic within a pipeline: a request to set a stage the row
-has already passed is a no-op that returns the current row, which is what
-makes the event handlers (§6) safe to replay.
+Allowed transitions. Anything not listed is rejected by the CLI with the
+current stage, and silently ignored by the event handlers.
+
+| Pipeline | From | To |
+|---|---|---|
+| referrer | `candidate` | `to_contact`, `skipped` |
+| referrer | `to_contact` | `briefed`, `skipped` |
+| referrer | `briefed` | `replied`, `declined` |
+| referrer | `replied` | `introduced`, `declined` |
+| referrer | `introduced` | none (further intros add opportunities; the stage stays) |
+| buyer | `intro` | `conversation`, `lost` |
+| buyer | `conversation` | `proposal`, `lost` |
+| buyer | `proposal` | `signed`, `lost` |
+| buyer | `signed`, `lost` | none |
+
+Forward transitions are monotonic: a request to set a stage the row has
+already reached or passed is a no-op that returns the current row, which is
+what makes the event handlers (§6) safe to replay. `declined` and `skipped`
+are terminal but reversible by hand (`outreach mark <person> to_contact
+--force`), which appends a `cli` event like any other.
 
 ## 5. Schema
 
@@ -228,13 +245,16 @@ Owns the stage machine. Public functions, each taking an open connection:
 
 ### 6.2 `email_sent` proves *briefed*
 
-In `handlers/email_sent.py`, for each recipient whose row is at
-`to_contact`: `advance(..., "briefed", at=sent_at, channel="email", source="event",
-graph_message_id=event["graph_message_id"])`.
+In `handlers/email_sent.py`, for each **To** recipient (not Cc) whose row is
+at `to_contact`: `advance(..., "briefed", at=sent_at, channel="email",
+source="event", graph_message_id=event["graph_message_id"])`.
 
-Guard: only when the sending identity is Ben's consulting address
-(`OUTREACH_FROM_ADDRESSES`, a new env var, so the public repo holds no
-address). A note sent from another identity does not count as a brief.
+Guard: only when `event["from"]` (lower-cased by inbox) is in
+`OUTREACH_FROM_ADDRESSES`, a new env var, so the public repo holds no
+address. A note sent from another identity does not count as a brief. A
+brief with several To recipients advances each of them; that is a group
+note, not a brief, so the CLI warns when the queue shows two contacts
+briefed by the same `graph_message_id`.
 
 A contact at `candidate` is not advanced. Deciding to brief someone is Ben's
 act (`to_contact`); the email is the proof it happened.
@@ -272,7 +292,9 @@ Flags: `--window-days` (default 730), `--min-messages` (default 10),
 `consulting-outreach` through the existing label path (`PATCH /people`), so
 the cohort is visible as a list on the phone, where most texts will be sent.
 The label marks membership only; the stage is never a label, because it
-would churn on every advance and Google is not the record (§3). Candidates from LinkedIn or a phone-only handle with no `people`
+would churn on every advance and Google is not the record (§3).
+
+Candidates from LinkedIn or a phone-only handle with no `people`
 row are listed but not inserted; creating the person is the existing
 `creating-person` path. Idempotent: an existing pipeline row is never
 downgraded to `candidate`.
@@ -329,7 +351,7 @@ For texts and LinkedIn, Ben sends by hand and runs
 | `outreach queue [--stage S] [--limit N]` | §7.2 |
 | `outreach decide <person> [--skip]` | `candidate → to_contact`, or `skipped` |
 | `outreach draft <person> [--subject S]` | creates an empty-bodied inbox-api draft to the person from the primary address; Ben writes the body in Outlook |
-| `outreach mark <person> briefed\|replied\|declined [--channel C] [--at T]` | manual advance |
+| `outreach mark <person> briefed\|replied\|declined\|to_contact [--channel C] [--at T] [--from ADDR] [--force]` | manual advance; `--from` records the identity on a hand-sent email brief; `--force` reopens `declined`/`skipped` |
 | `outreach lead <person> "<name, company>"` | sets `has_lead`; does not create an opportunity |
 | `outreach intro <referrer> "<buyer name, company>" [--buyer <person>] [--at T]` | opens an opportunity, referrer → `introduced` |
 | `outreach conversation\|proposal\|signed <opportunity-id> [--at T]` | buyer advance |
@@ -359,7 +381,9 @@ counted by the report, not by the strategy layer.
 
 **Mechanism.** `clients/tasks_api.py`, modelled on tasks' `clients/inbox_api.py`:
 `POST /tasks` with `name`, `tags`, `context` (a one-line pointer: the stage,
-the date, the channel), then `PATCH /tasks/{gid}` with `completed: true`.
+the date, the channel), no `project` (tasks-api's default project), no
+`priority`, `assignee` omitted; then `PATCH /tasks/{gid}` with
+`completed: true`. Two calls because `POST /tasks` has no `completed` field.
 Auth is an identity token for the tasks-api audience via the same
 `gcp_auth.id_token_for` pattern. The gid is written to
 `outreach_events.asana_task_gid`; rows with a null gid are retried by
@@ -481,10 +505,14 @@ keeps one writer per transition.
 
 Follows the existing layout under `tests/`.
 
-- `test_outreach.py`: the stage machine. Monotonic advances, replay safety,
-  cohort week assignment, `follow_up_on` set and cleared, opportunity open
-  and advance, lost reasons, `counts()` against fixture events including
-  cohort lag.
+- `test_outreach.py`: the stage machine. The transition table in §4.3,
+  replay safety, `--force` reopen, cohort week assignment, `follow_up_on`
+  set and cleared, opportunity open and advance, lost reasons, `queue()`
+  ordering and the `channels` block, `counts()` against fixture events
+  including cohort lag.
+- `test_outreach_seed.py`: each warm-pool bar against fixtures across the
+  four sources, the no-`people`-row listing, and idempotence (an existing
+  row is never downgraded).
 - `test_handlers.py` additions: `email_sent` from a consulting address
   advances `to_contact → briefed` and nothing else; from another identity it
   does not; `email_classified` from a `briefed` contact advances to `replied`,
@@ -507,7 +535,7 @@ network.
 
 ### 12.1 Changes in other repos
 
-Everything that counts lives in people, but four other places need a small
+Everything that counts lives in people. Five other places need a small
 change or none, checked against their code on 2026-10-12.
 
 | Repo | Change | Why |
@@ -520,14 +548,20 @@ change or none, checked against their code on 2026-10-12.
 
 - **Env.** `OUTREACH_FROM_ADDRESSES` (comma-separated; which sending
   identities count as a brief; the primary address alone today),
-  `TASKS_API_URL`, `INBOX_API_URL`. Both via Secret Manager and
-  terraform like the existing secrets; the `adding-people-secret` skill is the
-  path.
+  `TASKS_API_URL`, `INBOX_API_URL`. Set on `people-process` and
+  `people-sync` through terraform variables in the uncommitted `tfvars`,
+  the way `HUBSPOT_OWNER_ID` is, and in the local `.env` for the CLI. None
+  is a secret, but the address list must not be committed.
 - **Migration.** `scripts/migrate_db.py` applies the new tables; it is
   additive and idempotent like the rest of `schema.sql`.
 - **Rebuild runbook.** Before any `DELETE FROM people`, export the three
   `outreach_*` tables; they cascade.
 - **Metrics.** See §12.2.
+- **Privacy.** The repo is public. No names, addresses, message text, floors
+  or actuals are committed. Fixtures use the existing synthetic people. The
+  floors file lives in the consulting repo. Task names in Asana carry
+  contact names, which is fine: Asana is private.
+
 ### 12.2 Telemetry
 
 The service already exports OpenTelemetry metrics to Grafana Cloud through
@@ -565,11 +599,6 @@ One Grafana dashboard, "Consulting funnel", built by hand from these: stage
 population by week, stage events per week by channel, follow-ups due, lost
 reasons, sync lateness. Dashboards are not in this repo today and this does
 not change that.
-
-- **Privacy.** The repo is public. No names, addresses, message text, floors
-  or actuals are committed. Fixtures use the existing synthetic people. The
-  floors file lives in the consulting repo. Task names in Asana carry
-  contact names, which is fine: Asana is private.
 
 ## 13. Phases
 
