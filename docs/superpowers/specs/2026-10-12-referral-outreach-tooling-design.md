@@ -268,7 +268,11 @@ inserts them at `candidate`:
 - iMessage and WhatsApp: 1:1 thread, Ben replied, at least N messages, last message in the window.
 
 Flags: `--window-days` (default 730), `--min-messages` (default 10),
-`--dry-run`. Candidates from LinkedIn or a phone-only handle with no `people`
+`--dry-run`. `outreach decide` also adds the Google Contacts label
+`consulting-outreach` through the existing label path (`PATCH /people`), so
+the cohort is visible as a list on the phone, where most texts will be sent.
+The label marks membership only; the stage is never a label, because it
+would churn on every advance and Google is not the record (§3). Candidates from LinkedIn or a phone-only handle with no `people`
 row are listed but not inserted; creating the person is the existing
 `creating-person` path. Idempotent: an existing pipeline row is never
 downgraded to `candidate`.
@@ -545,7 +549,11 @@ the start.
 **Phase 2, the working surfaces.** HubSpot mirror (property, deals,
 follow-up tasks), `GET /outreach/queue` and `GET /outreach/report` on
 people-api, and a `working-outreach-queue` skill. Snapshot-import stage
-advances for iMessage, WhatsApp and LinkedIn.
+advances for iMessage, WhatsApp and LinkedIn. Calendar matching: a past
+event whose attendees include an opportunity's buyer, or whose title starts
+with `Intro call:`, is proposed as a `conversation` advance by
+`outreach followups`; Ben confirms. Calendar events are never tagged for
+counting, since the strategy layer counts only tasks.
 
 **Phase 3, enrichment.** People Data Labs on `decide` (100 free lookups a
 month covers the test), Apify on demand before writing. Both already
