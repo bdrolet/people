@@ -353,6 +353,27 @@ mail are counted; Bcc is excluded (`services/ingest.py::record_outbound`).
   gone), enforce (evict down to cap), fill (create up to cap from the most
   recently interacted-with eligible people not yet mirrored).
 
+## Referral outreach
+
+Three tables, `outreach_contacts` (referrer pipeline row per person),
+`outreach_opportunities` (buyer pipeline) and `outreach_events` (append-only
+stage log), all keyed to `people.id` and CASCADE-deleted with the person.
+
+- **Single writer.** `services/outreach.py` is the only code that writes stage
+  data (`transition` / `advance` / `advance_from_event`). The CLI rejects a
+  disallowed move; the handlers swallow it. Redelivered Pub/Sub events append
+  nothing.
+- **Evidence.** `email_sent` from an `OUTREACH_FROM_ADDRESSES` address advances
+  To recipients to *briefed*; `email_classified` advances the sender to
+  *replied*. Everything else (decide, intro, conversation, lost) is the CLI.
+- **Durable first, then Asana.** The stage change is committed before any
+  tasks-api call; each countable event then gets one completed Asana task
+  (`services/outreach_sync.py`). A failed side effect never loses a count.
+- **Nightly backstop.** `people-sync` retries events still missing their task
+  gid or completion, and records the population gauges.
+- **Not rebuildable.** Nothing derives these tables; export them
+  (`pg_dump --data-only -t 'outreach_*'`) before any `DELETE FROM people`.
+
 ## Layer rules
 
 `clients/` I/O only (Google Contacts, HubSpot, Cloud SQL, OTel, local Graph

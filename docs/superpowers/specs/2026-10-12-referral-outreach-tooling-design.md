@@ -1,7 +1,7 @@
 # Referral Outreach Tooling — Design
 
 **Date:** 2026-10-12
-**Status:** Reviewed 2026-10-12. Next step: an implementation plan for phase 1 (§13), written with the `superpowers:writing-plans` skill in a fresh session; the plan lives beside this file under `docs/superpowers/plans/`.
+**Status:** Reviewed 2026-10-12. Phase 1 implemented on branch `referral-outreach-phase1` (plan: `docs/superpowers/plans/2026-10-12-referral-outreach-phase1.md`).
 **Repo:** `bdrolet/people`, branch `referral-outreach-spec`
 **Reads with:** the consulting repo's `docs/client_funnel.md` (private; the floors, read points and checkpoints) and `docs/client_funnel_floors.toml` (what `outreach report --floors` reads), and `docs/referral_outreach_tool.md` there (the original tool sketch this design supersedes). The strategy block the counts feed is the context repo's `strategy.md`, consulting goal; PR #4 there carries the tags and tripwires this design assumes.
 
