@@ -9,6 +9,8 @@ import psycopg
 import pytest
 from psycopg.rows import dict_row
 
+from repo import outreach as outreach_repo
+
 URL = os.environ.get("TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not URL, reason="TEST_DATABASE_URL not set")
 
@@ -99,3 +101,26 @@ def test_lost_needs_a_reason_and_only_lost_has_one(conn):
             "VALUES (%s, 'B', 'intro', %s, 'price')",
             (pid, TS),
         )
+
+
+def test_repo_round_trip(conn):
+    pid = _person(conn)
+    assert outreach_repo.insert_contact_if_missing(conn, pid)["stage"] == "candidate"
+    assert outreach_repo.insert_contact_if_missing(conn, pid) is None
+    row = outreach_repo.update_contact(conn, pid, {"stage": "to_contact"})
+    assert (
+        row["stage"] == "to_contact"
+        and outreach_repo.lock_contact(conn, pid)["stage"] == "to_contact"
+    )
+    opp = outreach_repo.insert_opportunity(
+        conn, referrer_id=pid, buyer_id=None, buyer_label="B, Co", at=TS
+    )
+    assert opp["stage"] == "intro" and opp["intro_at"] == TS
+    eid = outreach_repo.insert_event(
+        conn, pipeline="buyer", opportunity_id=opp["id"], stage="intro", at=TS, source="cli"
+    )
+    assert isinstance(eid, int)
+    lost = outreach_repo.update_opportunity(
+        conn, opp["id"], {"stage": "lost", "lost_reason": "price", "lost_at": TS}
+    )
+    assert lost["lost_reason"] == "price"

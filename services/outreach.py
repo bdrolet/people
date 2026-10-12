@@ -5,10 +5,12 @@ caller, so the event handlers keep it inside their durable transaction (spec §6
 
 import os
 from datetime import date, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from models.outreach import BUYER_STAGES, REFERRER_STAGES
+import clients.otel as otel
+from models.outreach import BUYER_STAGES, LOST_REASONS, REFERRER_STAGES, Advance
+from repo import outreach as outreach_repo
 
 TZ = ZoneInfo("America/New_York")
 FOLLOW_UP_DAYS = 7
@@ -130,3 +132,176 @@ def is_outreach_sender(address: str) -> bool:
         if a.strip()
     }
     return (address or "").strip().lower() in wanted
+
+
+def _count_event(pipeline: str, stage: str, channel: str | None, source: str) -> None:
+    otel.outreach_stage_events.add(
+        1, {"pipeline": pipeline, "stage": stage, "channel": channel or "none", "source": source}
+    )
+
+
+def get_contact(conn: Any, person_id: int) -> dict | None:
+    return outreach_repo.get_contact(conn, person_id)
+
+
+def ensure_contact(conn: Any, person_id: int, *, at: datetime, source: str) -> int | None:
+    """Put a person in the pipeline at `candidate` (the seed, or `decide` for someone the
+    seed never proposed). Returns the candidate event's id, or None if they were already in."""
+    if outreach_repo.insert_contact_if_missing(conn, person_id) is None:
+        return None
+    _count_event("referrer", "candidate", None, source)
+    return outreach_repo.insert_event(
+        conn, pipeline="referrer", person_id=person_id, stage="candidate", at=at, source=source
+    )
+
+
+def advance(
+    conn: Any,
+    person_id: int,
+    stage: str,
+    *,
+    at: datetime,
+    source: str,
+    channel: str | None = None,
+    graph_message_id: str | None = None,
+    from_address: str | None = None,
+    force: bool = False,
+) -> Advance | None:
+    """Move a referrer to `stage` (spec §6.1). None when the person has no pipeline row;
+    a no-op Advance when they are already at or past it; InvalidTransition otherwise."""
+    row = outreach_repo.lock_contact(conn, person_id)
+    if row is None:
+        return None
+    kind = transition("referrer", row["stage"], stage, force=force)
+    if kind == "invalid":
+        raise InvalidTransition("referrer", row["stage"], stage)
+    if kind == "noop":
+        return Advance(row=row, changed=False, event_id=None)
+
+    changes: dict[str, Any] = {"stage": stage}
+    if stage == "briefed":
+        changes["follow_up_on"] = follow_up_date(at)
+        if row["briefed_at"] is None:
+            changes.update(briefed_at=at, cohort_week=cohort_week(at), channel=channel)
+    else:
+        changes["follow_up_on"] = None
+    if stage == "replied" and row["replied_at"] is None:
+        changes["replied_at"] = at
+
+    updated = outreach_repo.update_contact(conn, person_id, changes)
+    event_id = outreach_repo.insert_event(
+        conn,
+        pipeline="referrer",
+        person_id=person_id,
+        stage=stage,
+        at=at,
+        channel=channel,
+        source=source,
+        graph_message_id=graph_message_id,
+        from_address=from_address,
+    )
+    _count_event("referrer", stage, channel, source)
+    return Advance(row=updated, changed=True, event_id=event_id)
+
+
+def advance_from_event(
+    conn: Any, person_id: int, stage: str, *, at: datetime, graph_message_id: str | None
+) -> int | None:
+    """The event handlers' entry (spec §6.2, §6.3): a move outside the table and a person
+    with no pipeline row are both ignored silently. Returns the new event's id, if any."""
+    try:
+        res = advance(
+            conn,
+            person_id,
+            stage,
+            at=at,
+            channel="email",
+            source="event",
+            graph_message_id=graph_message_id,
+        )
+    except InvalidTransition:
+        return None
+    return res.event_id if res else None
+
+
+def open_opportunity(
+    conn: Any,
+    referrer_id: int,
+    buyer_label: str,
+    *,
+    at: datetime,
+    buyer_id: int | None = None,
+    channel: str | None = None,
+    source: str = "cli",
+) -> Advance:
+    """An introduction with the buyer on the thread (spec §4.2). The referrer moves to
+    `introduced`; from `briefed`, the implied `replied` is appended first. Advance.row is
+    the new opportunity and Advance.event_id its `intro` event."""
+    label = (buyer_label or "").strip()
+    if not label:
+        raise ValueError('a buyer label ("Name, Company") is required')
+    contact = outreach_repo.lock_contact(conn, referrer_id)
+    if contact is None:
+        raise NotInPipeline(str(referrer_id))
+    if contact["stage"] == "briefed":
+        advance(conn, referrer_id, "replied", at=at, channel=channel, source=source)
+    advance(conn, referrer_id, "introduced", at=at, channel=channel, source=source)
+    opp = outreach_repo.insert_opportunity(
+        conn, referrer_id=referrer_id, buyer_id=buyer_id, buyer_label=label, at=at
+    )
+    event_id = outreach_repo.insert_event(
+        conn,
+        pipeline="buyer",
+        opportunity_id=opp["id"],
+        stage="intro",
+        at=at,
+        channel=channel,
+        source=source,
+    )
+    _count_event("buyer", "intro", channel, source)
+    return Advance(row=opp, changed=True, event_id=event_id)
+
+
+def advance_opportunity(
+    conn: Any,
+    opportunity_id: int,
+    stage: str,
+    *,
+    at: datetime,
+    lost_reason: str | None = None,
+    source: str = "cli",
+) -> Advance:
+    if stage == "lost":
+        if lost_reason not in LOST_REASONS:
+            raise ValueError(f"lost needs a reason, one of: {', '.join(LOST_REASONS)}")
+    elif lost_reason is not None:
+        raise ValueError("a lost reason applies only to the lost stage")
+    opp = outreach_repo.lock_opportunity(conn, opportunity_id)
+    if opp is None:
+        raise OpportunityNotFound(str(opportunity_id))
+    kind = transition("buyer", opp["stage"], stage)
+    if kind == "invalid":
+        raise InvalidTransition("buyer", opp["stage"], stage)
+    if kind == "noop":
+        return Advance(row=opp, changed=False, event_id=None)
+    changes: dict[str, Any] = {"stage": stage, f"{stage}_at": at}
+    if stage == "lost":
+        changes["lost_reason"] = lost_reason
+    updated = outreach_repo.update_opportunity(conn, opportunity_id, changes)
+    event_id = outreach_repo.insert_event(
+        conn, pipeline="buyer", opportunity_id=opportunity_id, stage=stage, at=at, source=source
+    )
+    _count_event("buyer", stage, None, source)
+    if stage == "lost":
+        otel.outreach_lost.add(1, {"lost_reason": str(lost_reason)})
+    return Advance(row=updated, changed=True, event_id=event_id)
+
+
+def set_lead(conn: Any, person_id: int, lead: str, *, today: date) -> dict:
+    """A name Ben must chase (spec §4.2): a flag and a note, never an opportunity."""
+    row = outreach_repo.lock_contact(conn, person_id)
+    if row is None:
+        raise NotInPipeline(str(person_id))
+    line = f"{today.isoformat()} lead: {lead.strip()}"
+    notes = f"{row['notes']}\n{line}" if row.get("notes") else line
+    return outreach_repo.update_contact(conn, person_id, {"has_lead": True, "notes": notes})

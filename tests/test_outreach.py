@@ -2,6 +2,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 
+from models.outreach import Advance
 from services import outreach as svc
 
 
@@ -106,3 +107,257 @@ def test_invalid_transition_message_names_the_current_stage_and_the_reopen_hint(
     e = svc.InvalidTransition("referrer", "declined", "briefed")
     assert "declined" in str(e) and "--force" in str(e)
     assert "--force" not in str(svc.InvalidTransition("referrer", "to_contact", "replied"))
+
+
+TS = datetime(2026, 10, 13, 15, 0, tzinfo=UTC)
+
+
+class FakeRepo:
+    """In-memory stand-in for repo/outreach.py: same function names and shapes."""
+
+    def __init__(self):
+        self.contacts: dict[int, dict] = {}
+        self.opps: dict[int, dict] = {}
+        self.events: list[dict] = []
+
+    def insert_contact_if_missing(self, conn, person_id):
+        if person_id in self.contacts:
+            return None
+        self.contacts[person_id] = {
+            "person_id": person_id,
+            "stage": "candidate",
+            "cohort_week": None,
+            "briefed_at": None,
+            "replied_at": None,
+            "channel": None,
+            "has_lead": False,
+            "follow_up_on": None,
+            "notes": None,
+        }
+        return dict(self.contacts[person_id])
+
+    def get_contact(self, conn, person_id):
+        row = self.contacts.get(person_id)
+        return dict(row) if row else None
+
+    lock_contact = get_contact
+
+    def update_contact(self, conn, person_id, changes):
+        self.contacts[person_id].update(changes)
+        return dict(self.contacts[person_id])
+
+    def insert_opportunity(self, conn, *, referrer_id, buyer_id, buyer_label, at):
+        oid = len(self.opps) + 1
+        self.opps[oid] = {
+            "id": oid,
+            "referrer_id": referrer_id,
+            "buyer_id": buyer_id,
+            "buyer_label": buyer_label,
+            "stage": "intro",
+            "lost_reason": None,
+            "intro_at": at,
+            "conversation_at": None,
+            "proposal_at": None,
+            "signed_at": None,
+            "lost_at": None,
+        }
+        return dict(self.opps[oid])
+
+    def lock_opportunity(self, conn, opportunity_id):
+        row = self.opps.get(opportunity_id)
+        return dict(row) if row else None
+
+    def update_opportunity(self, conn, opportunity_id, changes):
+        self.opps[opportunity_id].update(changes)
+        return dict(self.opps[opportunity_id])
+
+    def insert_event(self, conn, **kw):
+        self.events.append(kw)
+        return len(self.events)
+
+
+class Recorder:
+    def __init__(self):
+        self.calls = []
+
+    def add(self, n, attrs=None):
+        self.calls.append((n, attrs))
+
+
+@pytest.fixture
+def repo(monkeypatch):
+    fake = FakeRepo()
+    monkeypatch.setattr(svc, "outreach_repo", fake)
+    for name in ("outreach_stage_events", "outreach_lost"):
+        monkeypatch.setattr(svc.otel, name, Recorder())
+    return fake
+
+
+def _at(repo, person_id, stage):
+    repo.insert_contact_if_missing(None, person_id)
+    repo.contacts[person_id]["stage"] = stage
+
+
+def test_advance_without_a_pipeline_row_returns_none(repo):
+    assert svc.advance(None, 1, "briefed", at=TS, source="event", channel="email") is None
+    assert repo.events == []
+
+
+def test_briefed_sets_cohort_first_brief_and_follow_up(repo):
+    _at(repo, 1, "to_contact")
+    res = svc.advance(
+        None, 1, "briefed", at=TS, source="event", channel="email", graph_message_id="g1"
+    )
+    assert isinstance(res, Advance) and res.changed and res.event_id == 1
+    row = repo.contacts[1]
+    assert row["stage"] == "briefed"
+    assert row["cohort_week"] == date(2026, 10, 12)
+    assert row["briefed_at"] == TS and row["channel"] == "email"
+    assert row["follow_up_on"] == date(2026, 10, 20)
+    assert repo.events[0] == {
+        "pipeline": "referrer",
+        "person_id": 1,
+        "stage": "briefed",
+        "at": TS,
+        "channel": "email",
+        "source": "event",
+        "graph_message_id": "g1",
+        "from_address": None,
+    }
+    assert svc.otel.outreach_stage_events.calls == [
+        (1, {"pipeline": "referrer", "stage": "briefed", "channel": "email", "source": "event"})
+    ]
+
+
+def test_advance_twice_appends_one_event(repo):
+    _at(repo, 1, "to_contact")
+    svc.advance(None, 1, "briefed", at=TS, source="event", channel="email")
+    again = svc.advance(None, 1, "briefed", at=TS, source="event", channel="email")
+    assert again is not None and not again.changed and again.event_id is None
+    assert len(repo.events) == 1
+
+
+def test_replied_clears_follow_up_and_records_first_reply(repo):
+    _at(repo, 1, "to_contact")
+    svc.advance(None, 1, "briefed", at=TS, source="event", channel="email")
+    svc.advance(None, 1, "replied", at=TS, source="event", channel="email")
+    assert repo.contacts[1]["follow_up_on"] is None
+    assert repo.contacts[1]["replied_at"] == TS
+
+
+def test_a_rebrief_after_reopen_keeps_the_first_cohort(repo):
+    _at(repo, 1, "to_contact")
+    svc.advance(None, 1, "briefed", at=TS, source="cli", channel="imessage")
+    svc.advance(None, 1, "declined", at=TS, source="cli")
+    later = datetime(2026, 11, 2, 15, 0, tzinfo=UTC)
+    svc.advance(None, 1, "to_contact", at=later, source="cli", force=True)
+    svc.advance(None, 1, "briefed", at=later, source="cli", channel="email")
+    row = repo.contacts[1]
+    assert row["cohort_week"] == date(2026, 10, 12) and row["channel"] == "imessage"
+    assert row["follow_up_on"] == date(2026, 11, 9)
+
+
+def test_invalid_move_raises_and_writes_nothing(repo):
+    _at(repo, 1, "candidate")
+    with pytest.raises(svc.InvalidTransition):
+        svc.advance(None, 1, "briefed", at=TS, source="cli", channel="email")
+    assert repo.events == [] and repo.contacts[1]["stage"] == "candidate"
+
+
+@pytest.mark.parametrize("stage", ["candidate", "to_contact", "declined", "skipped"])
+def test_advance_from_event_ignores_disallowed_moves(repo, stage):
+    _at(repo, 1, stage)
+    assert svc.advance_from_event(None, 1, "replied", at=TS, graph_message_id="m") is None
+    assert repo.events == []
+
+
+def test_advance_from_event_returns_the_event_id(repo):
+    _at(repo, 1, "briefed")
+    assert svc.advance_from_event(None, 1, "replied", at=TS, graph_message_id="m") == 1
+    assert repo.events[0]["source"] == "event" and repo.events[0]["channel"] == "email"
+
+
+def test_ensure_contact_inserts_once_with_a_candidate_event(repo):
+    assert svc.ensure_contact(None, 5, at=TS, source="seed") == 1
+    assert svc.ensure_contact(None, 5, at=TS, source="seed") is None
+    assert [e["stage"] for e in repo.events] == ["candidate"]
+
+
+def test_open_opportunity_from_replied(repo):
+    _at(repo, 1, "replied")
+    res = svc.open_opportunity(None, 1, "  Buyer Example, Co  ", at=TS, buyer_id=9)
+    assert res.row["buyer_label"] == "Buyer Example, Co" and res.row["buyer_id"] == 9
+    assert repo.contacts[1]["stage"] == "introduced"
+    assert [(e["pipeline"], e["stage"]) for e in repo.events] == [
+        ("referrer", "introduced"),
+        ("buyer", "intro"),
+    ]
+    assert res.event_id == 2
+
+
+def test_open_opportunity_from_briefed_records_the_implied_reply(repo):
+    _at(repo, 1, "briefed")
+    svc.open_opportunity(None, 1, "Buyer, Co", at=TS)
+    assert [e["stage"] for e in repo.events] == ["replied", "introduced", "intro"]
+
+
+def test_a_second_intro_adds_an_opportunity_and_keeps_the_stage(repo):
+    _at(repo, 1, "introduced")
+    svc.open_opportunity(None, 1, "Second, Co", at=TS)
+    assert len(repo.opps) == 1 and [e["stage"] for e in repo.events] == ["intro"]
+
+
+@pytest.mark.parametrize("stage", ["candidate", "to_contact", "declined", "skipped"])
+def test_open_opportunity_rejects_a_referrer_who_has_not_replied(repo, stage):
+    _at(repo, 1, stage)
+    with pytest.raises(svc.InvalidTransition):
+        svc.open_opportunity(None, 1, "Buyer, Co", at=TS)
+    assert repo.opps == {}
+
+
+def test_open_opportunity_needs_a_pipeline_row_and_a_label(repo):
+    with pytest.raises(svc.NotInPipeline):
+        svc.open_opportunity(None, 1, "Buyer, Co", at=TS)
+    _at(repo, 1, "replied")
+    with pytest.raises(ValueError):
+        svc.open_opportunity(None, 1, "   ", at=TS)
+
+
+def test_advance_opportunity_sets_the_stage_timestamp(repo):
+    _at(repo, 1, "replied")
+    opp = svc.open_opportunity(None, 1, "Buyer, Co", at=TS).row
+    res = svc.advance_opportunity(None, opp["id"], "conversation", at=TS)
+    assert res.changed and res.row["conversation_at"] == TS
+    assert (
+        repo.events[-1]["opportunity_id"] == opp["id"] and repo.events[-1].get("person_id") is None
+    )
+
+
+def test_lost_needs_a_known_reason_and_is_counted(repo):
+    _at(repo, 1, "replied")
+    oid = svc.open_opportunity(None, 1, "Buyer, Co", at=TS).row["id"]
+    with pytest.raises(ValueError):
+        svc.advance_opportunity(None, oid, "lost", at=TS)
+    with pytest.raises(ValueError):
+        svc.advance_opportunity(None, oid, "lost", at=TS, lost_reason="vibes")
+    with pytest.raises(ValueError):
+        svc.advance_opportunity(None, oid, "conversation", at=TS, lost_reason="price")
+    res = svc.advance_opportunity(None, oid, "lost", at=TS, lost_reason="timing")
+    assert res.row["lost_reason"] == "timing" and res.row["lost_at"] == TS
+    assert svc.otel.outreach_lost.calls == [(1, {"lost_reason": "timing"})]
+
+
+def test_advance_opportunity_unknown_id(repo):
+    with pytest.raises(svc.OpportunityNotFound):
+        svc.advance_opportunity(None, 99, "conversation", at=TS)
+
+
+def test_set_lead_appends_to_notes(repo):
+    _at(repo, 1, "replied")
+    svc.set_lead(None, 1, "Pat Example, Co", today=date(2026, 10, 14))
+    svc.set_lead(None, 1, "Sam Example, Co", today=date(2026, 10, 15))
+    row = repo.contacts[1]
+    assert row["has_lead"] is True
+    assert row["notes"] == "2026-10-14 lead: Pat Example, Co\n2026-10-15 lead: Sam Example, Co"
+    with pytest.raises(svc.NotInPipeline):
+        svc.set_lead(None, 2, "x", today=date(2026, 10, 14))
