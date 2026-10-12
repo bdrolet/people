@@ -400,3 +400,75 @@ CREATE INDEX IF NOT EXISTS people_labels_group_idx ON people_labels (group_resou
 -- relationship_label was replaced by contact_groups/people_labels
 -- (multiple-labels design §8 step 6); nothing has written it since #21.
 ALTER TABLE people DROP COLUMN IF EXISTS relationship_label;
+
+-- Referral outreach pipeline (docs/superpowers/specs/2026-10-12-referral-outreach-tooling-design.md §5).
+-- Appended last: every table references people(id), which only becomes a primary key in
+-- the person-identity migration above. Pipeline rows CASCADE with their person, so:
+-- export outreach_* before any DELETE FROM people (rebuild runbook, CLAUDE.md), and
+-- scripts/merge_duplicate_contacts.py re-points them before it deletes a loser row.
+-- services/outreach.py is the only writer of stage data; outreach_events is append-only
+-- and every count in `outreach report` derives from it.
+
+CREATE TABLE IF NOT EXISTS outreach_contacts (
+    person_id          BIGINT PRIMARY KEY REFERENCES people(id) ON DELETE CASCADE,
+    stage              TEXT NOT NULL CHECK (stage IN
+                         ('candidate','to_contact','briefed','replied','introduced','declined','skipped')),
+    cohort_week        DATE,                -- Monday (America/New_York) of the first brief
+    briefed_at         TIMESTAMPTZ,         -- first brief
+    replied_at         TIMESTAMPTZ,         -- first reply
+    channel            TEXT CHECK (channel IN ('email','imessage','whatsapp','linkedin','call','in_person')),
+    has_lead           BOOLEAN NOT NULL DEFAULT FALSE,
+    follow_up_on       DATE,                -- set only while stage = 'briefed'
+    notes              TEXT,
+    hubspot_synced_at  TIMESTAMPTZ,         -- phase 2
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS outreach_contacts_stage_idx ON outreach_contacts (stage, follow_up_on);
+
+CREATE TABLE IF NOT EXISTS outreach_opportunities (
+    id               BIGSERIAL PRIMARY KEY,
+    referrer_id      BIGINT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+    buyer_id         BIGINT REFERENCES people(id) ON DELETE SET NULL,
+    buyer_label      TEXT NOT NULL,
+    stage            TEXT NOT NULL CHECK (stage IN ('intro','conversation','proposal','signed','lost')),
+    lost_reason      TEXT CHECK (lost_reason IN
+                       ('no_budget','no_fit','price','scope','timing','no_response','other')),
+    intro_at         TIMESTAMPTZ NOT NULL,
+    conversation_at  TIMESTAMPTZ,
+    proposal_at      TIMESTAMPTZ,
+    signed_at        TIMESTAMPTZ,
+    lost_at          TIMESTAMPTZ,
+    hubspot_deal_id  TEXT UNIQUE,           -- phase 2
+    notes            TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK ((stage = 'lost') = (lost_reason IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS outreach_opportunities_referrer_idx ON outreach_opportunities (referrer_id);
+CREATE INDEX IF NOT EXISTS outreach_opportunities_buyer_idx ON outreach_opportunities (buyer_id);
+
+CREATE TABLE IF NOT EXISTS outreach_events (
+    id                  BIGSERIAL PRIMARY KEY,
+    pipeline            TEXT NOT NULL CHECK (pipeline IN ('referrer','buyer')),
+    person_id           BIGINT REFERENCES people(id) ON DELETE CASCADE,
+    opportunity_id      BIGINT REFERENCES outreach_opportunities(id) ON DELETE CASCADE,
+    stage               TEXT NOT NULL CHECK (stage IN
+                          ('candidate','to_contact','briefed','replied','introduced','declined','skipped',
+                           'intro','conversation','proposal','signed','lost')),
+    at                  TIMESTAMPTZ NOT NULL,
+    channel             TEXT CHECK (channel IN ('email','imessage','whatsapp','linkedin','call','in_person')),
+    source              TEXT NOT NULL CHECK (source IN ('event','cli','hubspot','seed')),
+    graph_message_id    TEXT,               -- the email that proved it, when source = 'event'
+    from_address        TEXT,               -- `outreach mark --from`: a hand-sent email brief's identity
+    asana_task_gid      TEXT,               -- set once the strategy task exists (§8)
+    asana_completed_at  TIMESTAMPTZ,        -- set once that task is marked complete
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK ((pipeline = 'referrer') = (person_id IS NOT NULL)),
+    CHECK ((pipeline = 'buyer') = (opportunity_id IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS outreach_events_stage_at_idx ON outreach_events (pipeline, stage, at);
+CREATE INDEX IF NOT EXISTS outreach_events_person_idx ON outreach_events (person_id);
+CREATE INDEX IF NOT EXISTS outreach_events_opportunity_idx ON outreach_events (opportunity_id);
+CREATE INDEX IF NOT EXISTS outreach_events_unsynced_idx ON outreach_events (id)
+    WHERE asana_task_gid IS NULL OR asana_completed_at IS NULL;
