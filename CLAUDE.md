@@ -35,11 +35,12 @@ This overrides the default "commit or push only when asked" behavior for code ch
 | **Events CF** | `people-process` — Pub/Sub trigger on the inbox-owned `email-events` topic (data source), entry point `process` in `main.py`; handles `email_classified` and `email_sent`, ignores everything else |
 | **Sync CF** | `people-sync` — HTTP trigger, entry point `sync`; POST with `Authorization: Bearer <people-sync-token>`; Cloud Scheduler `people-sync` at `0 4 * * *` America/New_York (before inbox's 5 AM sweep) — Google Contacts incremental sync (**adopts** an email-less contact with a usable phone number, `email IS NULL`; counts the rest `skipped`), then HubSpot reconcile |
 | **API** | `people-api` — Cloud Run FastAPI service (`api/`); auth is Cloud Run IAM — `roles/run.invoker` granted per caller in `terraform/api.tf`; callers send `gcloud auth print-identity-token`; image in Artifact Registry repo `people`, deployed by `.github/workflows/deploy-api.yml`; `https://people-api.drolet.cloud` (Cloud Run domain mapping in `terraform/api.tf`; the CNAME lives in `~/src/infra` `cloudflare/drolet-cloud.tf`); the raw run.app URL is `terraform output -raw people_api_url` |
-| **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people` (incl. editable-contact-field columns `phone_numbers`, `company`, `job_title`, `google_fields` — see the source-of-truth table below), `sync_state`, `contact_groups`, `people_labels`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`, `imessage_handles`, `imessage_chats`, `imessage_messages`, `imessage_imports`, `whatsapp_handles`, `whatsapp_chats`, `whatsapp_chat_members`, `whatsapp_messages`, `whatsapp_imports`; schema in `repo/schema.sql` |
+| **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people` (incl. editable-contact-field columns `phone_numbers`, `company`, `job_title`, `google_fields` — see the source-of-truth table below), `sync_state`, `contact_groups`, `people_labels`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`, `imessage_handles`, `imessage_chats`, `imessage_messages`, `imessage_imports`, `whatsapp_handles`, `whatsapp_chats`, `whatsapp_chat_members`, `whatsapp_messages`, `whatsapp_imports`, `outreach_contacts`, `outreach_opportunities`, `outreach_events`; schema in `repo/schema.sql` |
 | **Google Contacts** | People API v1 via `clients/google_contacts.py` — OAuth refresh-token creds, scope `https://www.googleapis.com/auth/contacts`; reuses schedule's OAuth client (`google-calendar-client-id`/`-secret`, data sources), a people-owned refresh token (`google-contacts-refresh-token`) |
 | **HubSpot** | `clients/hubspot.py` (ported from inbox) — contacts search/create/update/archive, email engagement create; bounded mirror, see §HubSpot below |
 | **Local Graph import** | `clients/graph_local.py` — device-code MSAL auth for `scripts/import_contacts.py` only; people's Cloud Functions never call Graph |
-| **Observability** | OTel → Grafana Cloud OTLP; metrics prefixed `people_` |
+| **Referral outreach** | `services/outreach.py` stage machine over `outreach_*`; `email_sent` from `OUTREACH_FROM_ADDRESSES` proves *briefed*, `email_classified` proves *replied*; one completed Asana task per countable stage event via `clients/tasks_api.py` (Cloud Run IAM, `TASKS_API_URL`); CLI `scripts/outreach.py`, seed `scripts/outreach_seed.py` |
+| **Observability** | OTel → Grafana Cloud OTLP; metrics prefixed `people_` (outreach instruments are `people.outreach_*`) |
 | **Infra** | `terraform/` — GCS backend `bens-project-462804-tf-state`, state prefix `people` |
 
 Repo is **public**. Nothing personal is committed: the HubSpot owner id, the
@@ -56,6 +57,7 @@ models/
   linkedin.py               LinkedInConnection/Message/Recommendation/Snapshot dataclasses
   imessage.py               IMessageHandle/Chat/Message/Batch dataclasses
   whatsapp.py               WhatsAppHandle/Chat/ChatMember/Message/Batch dataclasses
+  outreach.py               stage/channel/source/lost-reason tuples, Advance, CohortCounts, FunnelCounts
   types.py                  IngestResult dataclass
 clients/
   db.py                     Cloud SQL connector (pg8000) / local psycopg3
@@ -64,6 +66,10 @@ clients/
   graph_local.py            device-code MSAL for scripts/import_contacts.py only
   imessage_local.py         read-only chat.db access for scripts/import_imessage.py only
   whatsapp_local.py         read-only ChatStorage.sqlite access for scripts/import_whatsapp.py only
+  gcp_auth.py               Google ID tokens for Cloud Run callers (tasks-api, inbox-api)
+  tasks_api.py              create_task / complete_task / configured — Asana tasks via tasks-api
+  inbox_api.py              create_draft (empty body) — CLI-only (scripts/outreach.py draft), so the
+                             Graph rule still holds: Cloud Functions never use it
   otel.py                   OTel setup + counters (people.* instruments)
 repo/
   schema.sql                people (incl. contact-field columns), sync_state tables
@@ -74,7 +80,15 @@ repo/
   imessage.py               imessage_* snapshot: upserts, stats recompute, API read queries
   whatsapp.py               whatsapp_* snapshot: upserts, stats recompute, audit and re-point,
                              API read queries
+  outreach.py               every SQL statement on outreach_*: writes, queue, follow-ups, report counts,
+                             population, Asana-sync and seed sources — decides nothing
 services/
+  outreach.py               the only stage writer: transition / advance / advance_from_event, opportunities,
+                             merge_person, queue, follow_ups, counts, is_outreach_sender
+  outreach_sync.py          Asana task payloads, sync_events / sync_pending (durable first, retried nightly)
+  outreach_report.py        pure: floors TOML, stage_verdicts, render
+  outreach_seed.py          pure: warm-pool bars over raw rows → SeedPlan
+  person_lookup.py          resolve an email / phone / id to one people row for scripts
   eligibility.py            is_automated / inbound_eligible (spec §5) — pure functions over env
   ingest.py                 record_inbound / record_outbound — counters + eligibility, shared by
                              handlers and scripts/import_contacts.py
@@ -124,6 +138,9 @@ scripts/
   import_linkedin.py        load a LinkedIn export snapshot — --dry-run, --me
   import_imessage.py        import chat.db into the imessage_* tables — --full, --dry-run, --db
   import_whatsapp.py        import ChatStorage.sqlite into the whatsapp_* tables — --full, --dry-run, --db
+  outreach.py               referral outreach CLI: queue, decide, mark, intro, conversation, lost, lead,
+                             draft, followups, report, sync-asana
+  outreach_seed.py          propose outreach candidates from the warm-pool bars — --dry-run
 terraform/                  main, variables, secrets, cloudsql, pubsub, cloud_functions, iam, api, scheduler
 tests/                      one test module per unit
 .github/workflows/          ci.yml, deploy.yml (Functions), deploy-api.yml (Cloud Run)
@@ -171,6 +188,7 @@ exactly as tasks and schedule do.
 | `linkedin_*` tables | LinkedIn data export | Export → DB on manual import (`scripts/import_linkedin.py`). Never written back anywhere; LinkedIn is not a source for any `people` field. |
 | `imessage_*` tables | `chat.db` on Ben's Mac | chat.db → DB on local import (`scripts/import_imessage.py`). Never written back anywhere; iMessage is not a source for any `people` field. |
 | `whatsapp_*` tables | WhatsApp's local store on Ben's Mac | Store → DB on local import (`scripts/import_whatsapp.py`). Never written back anywhere; WhatsApp is not a source for any `people` field. |
+| `outreach_*` tables | DB (`services/outreach.py` is the only stage writer) | Never derived from Google; the Asana tasks are derived from `outreach_events` and retried nightly. Pipeline rows CASCADE with their person. |
 | `phone_numbers`, `company`, `job_title`, `google_fields` | Google Contacts | Google → DB on link, nightly sync, and after every `PATCH`. Event data never writes them; never pushed to HubSpot (contact-field-edits design §4.1). |
 
 If the DB is lost, everything except the counters rebuilds from Google
@@ -178,12 +196,15 @@ Contacts plus a full sync; counters rebuild via `scripts/import_contacts.py`.
 The LinkedIn snapshot rebuilds by re-running `scripts/import_linkedin.py` on the latest export.
 The iMessage snapshot rebuilds by re-running `scripts/import_imessage.py --full` against `chat.db`.
 The WhatsApp snapshot rebuilds by re-running `scripts/import_whatsapp.py --full` against the local store.
+The `outreach_*` tables do **not** rebuild from anything. Export them before any `DELETE FROM people`: `pg_dump --data-only -t 'outreach_*'`.
 
-`scripts/merge_duplicate_contacts.py` (not yet on this branch — PR #18) must call
-`repo/whatsapp.py::repoint_person` from its `_collapse_rows`, beside its iMessage and
-LinkedIn re-points, before deleting the loser `people` row: both `whatsapp_handles.person_id`
+`scripts/merge_duplicate_contacts.py` calls `repo/whatsapp.py::repoint_person` from its
+`_collapse_rows`, beside its iMessage and LinkedIn re-points (and
+`services/outreach.py::merge_person`), before deleting the loser `people` row: both `whatsapp_handles.person_id`
 and `whatsapp_chat_members.person_id` are `ON DELETE SET NULL`, so a merge that deletes
 first silently unlinks WhatsApp handles and memberships rather than moving them.
+It must also call `services/outreach.py::merge_person` there: the `outreach_*` tables
+CASCADE with their person, so deleting first would drop the pipeline history.
 
 ### Identity: id, email, phone (2026-09-24 design; adoption 2026-09-28)
 
@@ -393,6 +414,16 @@ WhatsApp snapshot (see `importing-whatsapp`; **no** Full Disk Access needed):
 `.venv/bin/python scripts/import_whatsapp.py --full --dry-run`, then `--full`;
 routine runs after that are `.venv/bin/python scripts/import_whatsapp.py`
 (incremental).
+
+Referral outreach (see `people-architecture`; `OUTREACH_FROM_ADDRESSES` is
+personal, so it lives in `terraform.tfvars` / a GitHub variable like
+`OWN_ADDRESSES`, never in the repo):
+
+```bash
+.venv/bin/python scripts/outreach_seed.py --dry-run          # then without --dry-run
+.venv/bin/python scripts/outreach.py queue                    # to_contact, warmest channel visible
+.venv/bin/python scripts/outreach.py report --floors ~/src/consulting/docs/client_funnel_floors.toml
+```
 
 ## Deployment
 

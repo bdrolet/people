@@ -13,6 +13,8 @@ Env: CLOUD_SQL_CONNECTION_NAME / POSTGRES_* — people DB
      GOOGLE_CONTACT_GROUP — group new contacts are added to (default "Inbox")
      HUBSPOT_TOKEN / HUBSPOT_OWNER_ID / HUBSPOT_MAX_CONTACTS / HUBSPOT_WRITES_ENABLED
      AUTOMATED_SENDER_PATTERN / AUTOMATED_SENDER_DOMAINS / OWN_ADDRESSES — eligibility
+     OUTREACH_FROM_ADDRESSES — identities whose sent mail counts as a referral brief
+     TASKS_API_URL — tasks-api, for the completed Asana task per outreach stage event
      PEOPLE_SYNC_TOKEN — bearer for POST /sync
      GRAFANA_OTLP_ENDPOINT / GRAFANA_OTLP_TOKEN — OTel export (optional)
 """

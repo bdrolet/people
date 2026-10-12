@@ -221,6 +221,12 @@ def wired(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(mdc.whatsapp_repo, "repoint_person", repoint_wa)
 
+    def merge_outreach(c, frm, to):
+        state["order"].append("repoint_outreach")
+        return 0
+
+    monkeypatch.setattr(mdc.outreach, "merge_person", merge_outreach)
+
     google.backup_path = tmp_path / "backup.json"
     return {"google": google, "conn": conn, "state": state, "backup": google.backup_path}
 
@@ -261,7 +267,7 @@ def test_links_are_repointed_before_the_row_is_deleted(wired):
     # re-points that report a moved row — iMessage and WhatsApp — must land before
     # the delete; LinkedIn's stub moves nothing here so it records nothing.
     mdc.run(lambda: wired["conn"], apply=True, backup_path=wired["backup"])
-    assert wired["state"]["order"] == ["repoint", "repoint", "delete_row"]
+    assert wired["state"]["order"] == ["repoint", "repoint", "repoint_outreach", "delete_row"]
     assert wired["state"]["repointed_whatsapp"] == [(2, 1)]
 
 
@@ -355,6 +361,7 @@ def test_a_surviving_contact_with_no_row_adopts_the_best_loser_row(monkeypatch, 
     monkeypatch.setattr(mdc.imessage_repo, "repoint_person", lambda conn, frm, to: 1)
     monkeypatch.setattr(mdc.linkedin_repo, "repoint_person", lambda conn, frm, to: 0)
     monkeypatch.setattr(mdc.whatsapp_repo, "repoint_person", lambda conn, frm, to: 1)
+    monkeypatch.setattr(mdc.outreach, "merge_person", lambda conn, frm, to: 0)
 
     result = mdc.run(lambda: FakeConn(), apply=True, backup_path=google.backup_path)
 

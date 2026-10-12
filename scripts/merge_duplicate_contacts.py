@@ -58,6 +58,7 @@ from repo import imessage as imessage_repo
 from repo import linkedin as linkedin_repo
 from repo import people as people_repo
 from repo import whatsapp as whatsapp_repo
+from services import outreach
 from services.contact_fields import WRITABLE_FIELDS
 from services.imessage_export import normalize_handle
 
@@ -319,6 +320,9 @@ def _collapse_rows(conn: Any, survivor: dict, loser_rns: list[str]) -> dict[str,
         # would re-derive most of them, but moving them here closes the window in
         # which people-api reports no WhatsApp activity for the survivor.
         counts["links_repointed"] += whatsapp_repo.repoint_person(conn, row["id"], keeper["id"])
+        # outreach_* rows are ON DELETE CASCADE, not SET NULL: deleting first would
+        # erase the loser's referral stage, events and opportunities outright.
+        counts["links_repointed"] += outreach.merge_person(conn, row["id"], keeper["id"])
         people_repo.delete(conn, row["id"])
         counts["rows_deleted"] += 1
     return counts

@@ -303,3 +303,19 @@ LIMIT 50;
 ```sql
 SELECT * FROM whatsapp_imports ORDER BY id DESC LIMIT 5;
 ```
+
+### Referral outreach
+
+**Stage counts right now:**
+```sql
+SELECT stage, COUNT(*) FROM outreach_contacts GROUP BY stage ORDER BY stage;
+```
+
+**Countable events still missing their completed Asana task:**
+```sql
+SELECT id, pipeline, stage, at, asana_task_gid
+FROM outreach_events
+WHERE (asana_task_gid IS NULL OR asana_completed_at IS NULL)
+  AND (pipeline, stage) IN (('referrer','briefed'),('buyer','intro'),('buyer','conversation'),('buyer','proposal'),('buyer','signed'))
+ORDER BY id;
+```

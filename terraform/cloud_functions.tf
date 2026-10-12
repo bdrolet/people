@@ -13,6 +13,8 @@ locals {
     OWN_ADDRESSES             = var.own_addresses
     AUTOMATED_SENDER_DOMAINS  = var.automated_sender_domains
     GOOGLE_CONTACT_GROUP      = var.google_contact_group
+    OUTREACH_FROM_ADDRESSES   = var.outreach_from_addresses
+    TASKS_API_URL             = var.tasks_api_url
   }
 }
 

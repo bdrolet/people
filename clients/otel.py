@@ -6,6 +6,7 @@ from opentelemetry._logs import set_logger_provider
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.metrics import CallbackOptions, Observation
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
@@ -36,6 +37,31 @@ whatsapp_import_messages: metrics.Counter = metrics.NoOpMeter("noop").create_cou
 whatsapp_import_handles: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
 whatsapp_import_duration: metrics.Histogram = metrics.NoOpMeter("noop").create_histogram("noop")
 
+outreach_stage_events: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
+outreach_lost: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
+outreach_sync: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
+outreach_report_runs: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
+
+# Observable gauges read these at export time (each flush). services/outreach.py's
+# record_population() refreshes them from the DB on every people-sync run and every
+# outreach CLI invocation (outreach spec §12.2).
+_outreach_population: list[tuple[int, dict[str, str]]] = []
+_outreach_follow_ups_due: int | None = None
+
+
+def set_outreach_population(rows: list[tuple[int, dict[str, str]]], follow_ups_due: int) -> None:
+    global _outreach_population, _outreach_follow_ups_due
+    _outreach_population = list(rows)
+    _outreach_follow_ups_due = follow_ups_due
+
+
+def _observe_population(options: CallbackOptions) -> list[Observation]:
+    return [Observation(value, attrs) for value, attrs in _outreach_population]
+
+
+def _observe_follow_ups_due(options: CallbackOptions) -> list[Observation]:
+    return [] if _outreach_follow_ups_due is None else [Observation(_outreach_follow_ups_due)]
+
 
 def setup_telemetry(service_name: str) -> None:
     """
@@ -47,6 +73,7 @@ def setup_telemetry(service_name: str) -> None:
     global google_sync_changes, hubspot_contacts_created, hubspot_evictions
     global hubspot_engagements_logged, external_errors, api_requests, errors
     global whatsapp_import_messages, whatsapp_import_handles, whatsapp_import_duration
+    global outreach_stage_events, outreach_lost, outreach_sync, outreach_report_runs
 
     endpoint = os.environ.get("GRAFANA_OTLP_ENDPOINT")
     if not endpoint:
@@ -102,6 +129,30 @@ def setup_telemetry(service_name: str) -> None:
         "people.whatsapp_import_duration_seconds",
         unit="s",
         description="WhatsApp import wall time",
+    )
+
+    outreach_stage_events = meter.create_counter(
+        "people.outreach_stage_events",
+        description="Outreach stage events by pipeline/stage/channel/source",
+    )
+    outreach_lost = meter.create_counter(
+        "people.outreach_lost", description="Buyer opportunities lost, by lost_reason"
+    )
+    outreach_sync = meter.create_counter(
+        "people.outreach_sync", description="Outreach sync attempts by target/outcome/late"
+    )
+    outreach_report_runs = meter.create_counter(
+        "people.outreach_report_runs", description="outreach report runs by stages below floor"
+    )
+    meter.create_observable_gauge(
+        "people.outreach_stage_population",
+        callbacks=[_observe_population],
+        description="Outreach rows per pipeline/stage/cohort_week",
+    )
+    meter.create_observable_gauge(
+        "people.outreach_follow_ups_due",
+        callbacks=[_observe_follow_ups_due],
+        description="Briefed contacts whose follow-up date has arrived",
     )
 
     # --- Logs ---

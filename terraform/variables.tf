@@ -29,6 +29,16 @@ variable "automated_sender_domains" {
   type        = string
   default     = ""
 }
+variable "outreach_from_addresses" {
+  description = "Comma-separated sending identities whose sent mail counts as a referral brief (outreach spec §6.2). Personal: tfvars / GitHub variable only. Empty means no email ever counts as a brief."
+  type        = string
+  default     = ""
+}
+variable "tasks_api_url" {
+  description = "tasks-api base URL; also the ID-token audience (outreach spec §8)"
+  type        = string
+  default     = "https://tasks-api.drolet.cloud"
+}
 variable "google_contact_group" {
   type    = string
   default = "Inbox"
