@@ -236,6 +236,7 @@ def test_sync_handler_runs_google_hubspot_then_the_asana_backstop(monkeypatch):
     monkeypatch.setattr(gsync, "run_sync", lambda c: {"updated": 1})
     monkeypatch.setattr(mirror, "reconcile", lambda c: {"adopted": 1})
     monkeypatch.setattr(outreach_sync, "sync_pending", lambda c: SyncResult(synced=2))
+    monkeypatch.setattr(outreach, "record_population", lambda c, today: None)
     result = sync.run()
     assert conn.commits == 2
     assert result == {
@@ -243,3 +244,17 @@ def test_sync_handler_runs_google_hubspot_then_the_asana_backstop(monkeypatch):
         "hubspot": {"adopted": 1},
         "asana": {"synced": 2, "failed": 0, "skipped": False, "late": {}},
     }
+
+
+def test_sync_handler_records_the_population_and_survives_its_failure(monkeypatch):
+    conn = FakeConn()
+    monkeypatch.setattr(db, "get_conn", lambda: conn)
+    monkeypatch.setattr(gsync, "run_sync", lambda c: {})
+    monkeypatch.setattr(mirror, "reconcile", lambda c: {})
+    monkeypatch.setattr(outreach_sync, "sync_pending", lambda c: SyncResult())
+
+    def boom(c, today):
+        raise RuntimeError("gauge query failed")
+
+    monkeypatch.setattr(outreach, "record_population", boom)
+    assert sync.run()["asana"]["synced"] == 0  # a gauge failure never fails the nightly sync

@@ -325,3 +325,70 @@ def merge_person(conn: Any, from_id: int, to_id: int) -> int:
     else:
         outreach_repo.delete_contact(conn, from_id)
     return moved + 1
+
+
+def _day(ts: datetime | None) -> str | None:
+    return ts.astimezone(TZ).date().isoformat() if ts else None
+
+
+def queue_item(r: dict) -> dict:
+    last = {
+        "email": _day(r["email_last"]),
+        "imessage": _day(r["imessage_last"]),
+        "linkedin": _day(r["linkedin_last"]),
+        "whatsapp": _day(r["whatsapp_last"]),
+    }
+    return {
+        "person": {
+            "id": r["id"],
+            "email": r["email"],
+            "display_name": r["display_name"],
+            "company": r["company"],
+            "job_title": r["job_title"],
+        },
+        "stage": r["stage"],
+        "last_interaction": _day(r["last_interaction"]),
+        "channels": {
+            "email": r["email"] is not None,
+            "imessage": bool(r["has_imessage"]),
+            "linkedin": r["linkedin_url"] or False,
+            "whatsapp": bool(r["has_whatsapp"]),
+        },
+        "last_messages": {k: v for k, v in last.items() if v},
+        "labels": list(r["labels"] or []),
+        "notes": r["notes"],
+        "outreach_notes": r["outreach_notes"],
+        "has_lead": bool(r["has_lead"]),
+        "follow_up_on": r["follow_up_on"].isoformat() if r["follow_up_on"] else None,
+    }
+
+
+def queue(conn: Any, *, stage: str = "to_contact", limit: int = 50) -> list[dict]:
+    if stage not in REFERRER_STAGES:
+        raise ValueError(f"unknown stage {stage!r}; one of {', '.join(REFERRER_STAGES)}")
+    return [queue_item(r) for r in outreach_repo.queue(conn, stage=stage, limit=limit)]
+
+
+def follow_ups(conn: Any, *, today: date) -> list[dict]:
+    return outreach_repo.follow_ups(conn, today=today)
+
+
+def shared_briefs(conn: Any) -> list[dict]:
+    return outreach_repo.shared_briefs(conn)
+
+
+def record_population(conn: Any, *, today: date) -> None:
+    """Refresh the funnel-shape gauges (spec §12.2). The cohort label is an ISO week,
+    the only per-cohort attribute, so cardinality stays one series per stage per week."""
+    rows = [
+        (
+            int(r["n"]),
+            {
+                "pipeline": r["pipeline"],
+                "stage": r["stage"],
+                "cohort_week": iso_week(r["cohort_week"]),
+            },
+        )
+        for r in outreach_repo.population(conn)
+    ]
+    otel.set_outreach_population(rows, outreach_repo.follow_ups_due_count(conn, today))

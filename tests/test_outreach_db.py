@@ -177,3 +177,50 @@ def test_sync_rows_finds_only_unsynced_task_events(conn):
     outreach_repo.set_asana_completed(conn, briefed)
     assert [r["id"] for r in outreach_repo.sync_rows(conn, keys)] == [intro]
     assert [r["id"] for r in outreach_repo.sync_rows(conn, keys, event_id=intro)] == [intro]
+
+
+def test_queue_orders_by_latest_contact_on_any_channel_and_fills_channels(conn):
+    stale = _person(conn, email="stale@example.com", last_seen=datetime(2024, 1, 1, tzinfo=UTC))
+    texted = _person(conn, email="texted@example.com", last_seen=datetime(2024, 1, 1, tzinfo=UTC))
+    never = _person(conn, email=None, phone_numbers=["+15550100003"])
+    conn.execute(
+        "INSERT INTO imessage_handles (handle, person_id, message_count, my_message_count, last_message_at) "
+        "VALUES ('+15550100002', %s, 20, 10, %s)",
+        (texted, datetime(2026, 7, 19, tzinfo=UTC)),
+    )
+    for pid in (stale, texted, never):
+        outreach_repo.insert_contact_if_missing(conn, pid)
+        outreach_repo.update_contact(conn, pid, {"stage": "to_contact"})
+    rows = outreach_repo.queue(conn, stage="to_contact", limit=10)
+    assert [r["id"] for r in rows] == [never, stale, texted]  # never-contacted first
+    by_id = {r["id"]: r for r in rows}
+    assert by_id[texted]["has_imessage"] and not by_id[stale]["has_imessage"]
+    assert by_id[texted]["last_interaction"] == datetime(2026, 7, 19, tzinfo=UTC)
+    assert by_id[never]["email_last"] is None and by_id[never]["labels"] == []
+    assert outreach_repo.queue(conn, stage="briefed", limit=10) == []
+
+
+def test_follow_ups_and_shared_briefs(conn):
+    a, b = _person(conn), _person(conn, email="b@example.com")
+    for pid in (a, b):
+        outreach_repo.insert_contact_if_missing(conn, pid)
+        outreach_repo.update_contact(
+            conn, pid, {"stage": "briefed", "follow_up_on": datetime(2026, 10, 20).date()}
+        )
+        outreach_repo.insert_event(
+            conn,
+            pipeline="referrer",
+            person_id=pid,
+            stage="briefed",
+            at=TS,
+            source="event",
+            channel="email",
+            graph_message_id="g-shared",
+        )
+    outreach_repo.update_contact(conn, b, {"follow_up_on": datetime(2026, 10, 25).date()})
+    today = datetime(2026, 10, 21).date()
+    assert [r["id"] for r in outreach_repo.follow_ups(conn, today=today)] == [a]
+    assert outreach_repo.follow_ups_due_count(conn, today) == 1
+    assert outreach_repo.shared_briefs(conn) == [{"graph_message_id": "g-shared", "n": 2}]
+    pop = {(r["pipeline"], r["stage"]): r["n"] for r in outreach_repo.population(conn)}
+    assert pop == {("referrer", "briefed"): 2}

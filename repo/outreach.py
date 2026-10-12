@@ -2,7 +2,7 @@
 connection; never opens one, never commits, and decides nothing: whether a stage
 change is allowed is services/outreach.py's call."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 _CONTACT_COLUMNS = """
@@ -210,3 +210,104 @@ def set_asana_gid(conn: Any, event_id: int, gid: str) -> None:
 
 def set_asana_completed(conn: Any, event_id: int) -> None:
     conn.execute("UPDATE outreach_events SET asana_completed_at = now() WHERE id = %s", (event_id,))
+
+
+_LABELS = """
+    ARRAY(
+        SELECT g.name FROM people_labels pl
+        JOIN contact_groups g ON g.resource_name = pl.group_resource_name
+        WHERE pl.person_id = p.id
+        ORDER BY lower(g.name), g.name
+    )
+"""
+
+
+def queue(conn: Any, *, stage: str, limit: int) -> list[dict]:
+    """Contacts at `stage` with what Ben needs on screen before writing (spec §7.2),
+    least recently in touch on any channel first; never-contacted rows lead."""
+    return conn.execute(
+        f"""
+        SELECT q.*,
+               GREATEST(q.email_last, q.imessage_last, q.whatsapp_last, q.linkedin_last)
+                   AS last_interaction
+        FROM (
+            SELECT p.id, p.email, p.display_name, p.company, p.job_title, p.notes,
+                   c.stage, c.follow_up_on, c.has_lead, c.notes AS outreach_notes,
+                   NULLIF(GREATEST(COALESCE(p.last_seen, 'epoch'::timestamptz),
+                                   COALESCE(p.last_contacted, 'epoch'::timestamptz)),
+                          'epoch'::timestamptz) AS email_last,
+                   im.last_at AS imessage_last, (im.n IS NOT NULL) AS has_imessage,
+                   wa.last_at AS whatsapp_last, (wa.n IS NOT NULL) AS has_whatsapp,
+                   li.profile_url AS linkedin_url, li.last_message_at AS linkedin_last,
+                   {_LABELS} AS labels
+            FROM outreach_contacts c
+            JOIN people p ON p.id = c.person_id
+            LEFT JOIN LATERAL (
+                SELECT COUNT(*) AS n, MAX(last_message_at) AS last_at
+                FROM imessage_handles WHERE person_id = p.id HAVING COUNT(*) > 0
+            ) im ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT COUNT(*) AS n, MAX(last_message_at) AS last_at
+                FROM whatsapp_handles WHERE person_id = p.id HAVING COUNT(*) > 0
+            ) wa ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT profile_url, last_message_at FROM linkedin_connections
+                WHERE person_id = p.id ORDER BY last_message_at DESC NULLS LAST LIMIT 1
+            ) li ON TRUE
+            WHERE c.stage = %s
+        ) q
+        ORDER BY last_interaction ASC NULLS FIRST, q.id
+        LIMIT %s
+        """,
+        (stage, limit),
+    ).fetchall()
+
+
+def follow_ups(conn: Any, *, today: date) -> list[dict]:
+    return conn.execute(
+        """
+        SELECT p.id, p.email, p.display_name, c.briefed_at, c.channel, c.follow_up_on
+        FROM outreach_contacts c JOIN people p ON p.id = c.person_id
+        WHERE c.stage = 'briefed' AND c.follow_up_on <= %s
+        ORDER BY c.follow_up_on, p.id
+        """,
+        (today,),
+    ).fetchall()
+
+
+def follow_ups_due_count(conn: Any, today: date) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM outreach_contacts WHERE stage = 'briefed' AND follow_up_on <= %s",
+        (today,),
+    ).fetchone()
+    return int(row["n"])
+
+
+def shared_briefs(conn: Any) -> list[dict]:
+    """Emails that briefed more than one contact: a group note, not a brief (spec §6.2)."""
+    return conn.execute(
+        """
+        SELECT graph_message_id, COUNT(DISTINCT person_id) AS n
+        FROM outreach_events
+        WHERE pipeline = 'referrer' AND stage = 'briefed' AND graph_message_id IS NOT NULL
+        GROUP BY graph_message_id
+        HAVING COUNT(DISTINCT person_id) > 1
+        ORDER BY graph_message_id
+        """
+    ).fetchall()
+
+
+def population(conn: Any) -> list[dict]:
+    """Rows per pipeline, stage and cohort week, for the stage-population gauge (§12.2).
+    A buyer row takes its referrer's cohort."""
+    return conn.execute(
+        """
+        SELECT 'referrer' AS pipeline, stage, cohort_week, COUNT(*) AS n
+        FROM outreach_contacts GROUP BY stage, cohort_week
+        UNION ALL
+        SELECT 'buyer' AS pipeline, o.stage, c.cohort_week, COUNT(*) AS n
+        FROM outreach_opportunities o
+        LEFT JOIN outreach_contacts c ON c.person_id = o.referrer_id
+        GROUP BY o.stage, c.cohort_week
+        """
+    ).fetchall()

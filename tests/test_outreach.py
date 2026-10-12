@@ -427,3 +427,83 @@ def test_outreach_sender_is_case_and_space_insensitive(monkeypatch):
     assert not svc.is_outreach_sender("")
     monkeypatch.delenv("OUTREACH_FROM_ADDRESSES")
     assert not svc.is_outreach_sender("ben@consulting.example.com")
+
+
+def test_queue_item_matches_the_spec_shape():
+    row = {
+        "id": 42,
+        "email": "alice@example.com",
+        "display_name": "Alice Example",
+        "company": "Co",
+        "job_title": "CTO",
+        "notes": "met at a conference",
+        "stage": "to_contact",
+        "follow_up_on": None,
+        "has_lead": False,
+        "email_last": datetime(2025, 3, 2, 12, tzinfo=UTC),
+        "imessage_last": datetime(2026, 7, 19, 12, tzinfo=UTC),
+        "has_imessage": True,
+        "whatsapp_last": None,
+        "has_whatsapp": False,
+        "linkedin_url": "https://www.linkedin.com/in/alice-example",
+        "linkedin_last": datetime(2024, 11, 30, 12, tzinfo=UTC),
+        "last_interaction": datetime(2026, 7, 19, 12, tzinfo=UTC),
+        "labels": ["former-colleague"],
+        "outreach_notes": None,
+    }
+    assert svc.queue_item(row) == {
+        "person": {
+            "id": 42,
+            "email": "alice@example.com",
+            "display_name": "Alice Example",
+            "company": "Co",
+            "job_title": "CTO",
+        },
+        "stage": "to_contact",
+        "last_interaction": "2026-07-19",
+        "channels": {
+            "email": True,
+            "imessage": True,
+            "linkedin": "https://www.linkedin.com/in/alice-example",
+            "whatsapp": False,
+        },
+        "last_messages": {
+            "email": "2025-03-02",
+            "imessage": "2026-07-19",
+            "linkedin": "2024-11-30",
+        },
+        "labels": ["former-colleague"],
+        "notes": "met at a conference",
+        "outreach_notes": None,
+        "has_lead": False,
+        "follow_up_on": None,
+    }
+
+
+def test_queue_rejects_an_unknown_stage():
+    with pytest.raises(ValueError):
+        svc.queue(None, stage="pinged")
+
+
+def test_record_population_labels_cohorts_by_iso_week(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        svc.outreach_repo,
+        "population",
+        lambda c: [
+            {"pipeline": "referrer", "stage": "briefed", "cohort_week": date(2026, 10, 12), "n": 3},
+            {"pipeline": "referrer", "stage": "candidate", "cohort_week": None, "n": 40},
+        ],
+    )
+    monkeypatch.setattr(svc.outreach_repo, "follow_ups_due_count", lambda c, today: 2)
+    monkeypatch.setattr(
+        svc.otel, "set_outreach_population", lambda rows, due: seen.update(rows=rows, due=due)
+    )
+    svc.record_population(None, today=date(2026, 10, 20))
+    assert seen == {
+        "rows": [
+            (3, {"pipeline": "referrer", "stage": "briefed", "cohort_week": "2026-W42"}),
+            (40, {"pipeline": "referrer", "stage": "candidate", "cohort_week": "none"}),
+        ],
+        "due": 2,
+    }
