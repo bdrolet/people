@@ -296,3 +296,48 @@ def test_cohort_counts_derive_from_the_event_log(conn):
         r["cohort_week"] for r in outreach_repo.referrer_cohort_counts(conn, since=w2, until=None)
     ] == [w2]
     assert outreach_repo.buyer_cohort_counts(conn, since=w2, until=None) == []
+
+
+def test_seed_source_queries_return_the_columns_the_bars_read(conn):
+    pid = _person(
+        conn,
+        display_name="Alice",
+        eligible=True,
+        message_count=2,
+        my_response_count=1,
+        last_seen=TS,
+    )
+    conn.execute(
+        "INSERT INTO linkedin_connections (profile_url, full_name, person_id, message_count, my_message_count, last_message_at, snapshot_at) "
+        "VALUES ('https://www.linkedin.com/in/a', 'Alice', %s, 4, 2, %s, %s)",
+        (pid, TS, TS),
+    )
+    conn.execute(
+        "INSERT INTO whatsapp_handles (handle, person_id, message_count, my_message_count, last_message_at) "
+        "VALUES ('+15550100001', %s, 12, 5, %s)",
+        (pid, TS),
+    )
+    e = outreach_repo.email_seed_rows(conn)[0]
+    assert {
+        k: e[k]
+        for k in (
+            "id",
+            "eligible",
+            "automated",
+            "message_count",
+            "my_response_count",
+            "last_interaction",
+        )
+    } == {
+        "id": pid,
+        "eligible": True,
+        "automated": False,
+        "message_count": 2,
+        "my_response_count": 1,
+        "last_interaction": TS,
+    }
+    assert outreach_repo.linkedin_seed_rows(conn)[0]["person_id"] == pid
+    assert outreach_repo.whatsapp_seed_rows(conn)[0]["message_count"] == 12
+    assert outreach_repo.imessage_seed_rows(conn) == []
+    outreach_repo.insert_contact_if_missing(conn, pid)
+    assert outreach_repo.pipeline_person_ids(conn) == {pid}

@@ -377,3 +377,51 @@ def lost_reasons(conn: Any, *, since: date | None, until: date | None) -> list[d
         """,
         (since, since, until, until),
     ).fetchall()
+
+
+def email_seed_rows(conn: Any) -> list[dict]:
+    return conn.execute(
+        """
+        SELECT id, email, display_name, eligible, automated, message_count, my_response_count,
+               GREATEST(COALESCE(last_seen, 'epoch'::timestamptz),
+                        COALESCE(last_contacted, 'epoch'::timestamptz)) AS last_interaction
+        FROM people WHERE email IS NOT NULL
+        """
+    ).fetchall()
+
+
+def linkedin_seed_rows(conn: Any) -> list[dict]:
+    return conn.execute(
+        """
+        SELECT person_id, full_name, company, position, profile_url,
+               message_count, my_message_count, last_message_at
+        FROM linkedin_connections
+        """
+    ).fetchall()
+
+
+def imessage_seed_rows(conn: Any) -> list[dict]:
+    """1:1 counters only: imessage_handles.message_count excludes group chats."""
+    return conn.execute(
+        """
+        SELECT person_id, handle, display_name, message_count, my_message_count, last_message_at
+        FROM imessage_handles
+        """
+    ).fetchall()
+
+
+def whatsapp_seed_rows(conn: Any) -> list[dict]:
+    """1:1 counters only: whatsapp_handles.message_count excludes group chats."""
+    return conn.execute(
+        """
+        SELECT person_id, handle, display_name, message_count, my_message_count, last_message_at
+        FROM whatsapp_handles
+        """
+    ).fetchall()
+
+
+def pipeline_person_ids(conn: Any) -> set[int]:
+    return {
+        int(r["person_id"])
+        for r in conn.execute("SELECT person_id FROM outreach_contacts").fetchall()
+    }
