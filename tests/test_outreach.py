@@ -171,6 +171,29 @@ class FakeRepo:
         self.opps[opportunity_id].update(changes)
         return dict(self.opps[opportunity_id])
 
+    def repoint_events(self, conn, from_id, to_id):
+        moved = [e for e in self.events if e.get("person_id") == from_id]
+        for e in moved:
+            e["person_id"] = to_id
+        return len(moved)
+
+    def repoint_opportunities(self, conn, from_id, to_id):
+        n = 0
+        for o in self.opps.values():
+            for col in ("referrer_id", "buyer_id"):
+                if o[col] == from_id:
+                    o[col] = to_id
+                    n += 1
+        return n
+
+    def move_contact(self, conn, from_id, to_id):
+        row = self.contacts.pop(from_id)
+        row["person_id"] = to_id
+        self.contacts[to_id] = row
+
+    def delete_contact(self, conn, person_id):
+        self.contacts.pop(person_id, None)
+
     def insert_event(self, conn, **kw):
         self.events.append(kw)
         return len(self.events)
@@ -361,3 +384,36 @@ def test_set_lead_appends_to_notes(repo):
     assert row["notes"] == "2026-10-14 lead: Pat Example, Co\n2026-10-15 lead: Sam Example, Co"
     with pytest.raises(svc.NotInPipeline):
         svc.set_lead(None, 2, "x", today=date(2026, 10, 14))
+
+
+def test_merge_moves_a_loser_row_the_keeper_lacks(repo):
+    _at(repo, 2, "briefed")
+    repo.insert_event(None, pipeline="referrer", person_id=2, stage="briefed")
+    assert svc.merge_person(None, 2, 1) == 2
+    assert 2 not in repo.contacts and repo.contacts[1]["stage"] == "briefed"
+    assert repo.events[0]["person_id"] == 1
+
+
+def test_merge_keeps_the_further_row(repo):
+    _at(repo, 1, "candidate")
+    _at(repo, 2, "replied")
+    svc.merge_person(None, 2, 1)
+    assert repo.contacts[1]["stage"] == "replied" and 2 not in repo.contacts
+
+
+def test_merge_keeps_the_keeper_on_a_tie_or_when_it_is_further(repo):
+    _at(repo, 1, "introduced")
+    _at(repo, 2, "briefed")
+    svc.merge_person(None, 2, 1)
+    assert repo.contacts[1]["stage"] == "introduced" and 2 not in repo.contacts
+
+
+def test_merge_moves_opportunities_on_both_sides(repo):
+    _at(repo, 2, "replied")
+    svc.open_opportunity(None, 2, "B, Co", at=TS, buyer_id=2)
+    svc.merge_person(None, 2, 1)
+    assert repo.opps[1]["referrer_id"] == 1 and repo.opps[1]["buyer_id"] == 1
+
+
+def test_merge_with_no_pipeline_rows_is_a_noop(repo):
+    assert svc.merge_person(None, 2, 1) == 0

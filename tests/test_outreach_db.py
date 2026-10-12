@@ -124,3 +124,25 @@ def test_repo_round_trip(conn):
         conn, opp["id"], {"stage": "lost", "lost_reason": "price", "lost_at": TS}
     )
     assert lost["lost_reason"] == "price"
+
+
+def test_repoint_then_delete_keeps_history(conn):
+    keeper, loser = _person(conn), _person(conn, email="dup@example.com")
+    outreach_repo.insert_contact_if_missing(conn, loser)
+    outreach_repo.insert_event(
+        conn, pipeline="referrer", person_id=loser, stage="candidate", at=TS, source="seed"
+    )
+    outreach_repo.insert_opportunity(
+        conn, referrer_id=loser, buyer_id=loser, buyer_label="B", at=TS
+    )
+    assert outreach_repo.repoint_events(conn, loser, keeper) == 1
+    assert outreach_repo.repoint_opportunities(conn, loser, keeper) == 2
+    outreach_repo.move_contact(conn, loser, keeper)
+    conn.execute("DELETE FROM people WHERE id = %s", (loser,))
+    assert outreach_repo.get_contact(conn, keeper) is not None
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) AS n FROM outreach_events WHERE person_id = %s", (keeper,)
+        ).fetchone()["n"]
+        == 1
+    )

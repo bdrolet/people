@@ -305,3 +305,23 @@ def set_lead(conn: Any, person_id: int, lead: str, *, today: date) -> dict:
     line = f"{today.isoformat()} lead: {lead.strip()}"
     notes = f"{row['notes']}\n{line}" if row.get("notes") else line
     return outreach_repo.update_contact(conn, person_id, {"has_lead": True, "notes": notes})
+
+
+def merge_person(conn: Any, from_id: int, to_id: int) -> int:
+    """Fold one person's pipeline into another's before the `from_id` people row is
+    deleted (the outreach tables cascade). Events and opportunities all move. When both
+    have a contact row, the further-along one survives; a tie keeps the keeper's."""
+    moved = outreach_repo.repoint_events(conn, from_id, to_id)
+    moved += outreach_repo.repoint_opportunities(conn, from_id, to_id)
+    loser = outreach_repo.lock_contact(conn, from_id)
+    if loser is None:
+        return moved
+    keeper = outreach_repo.lock_contact(conn, to_id)
+    if keeper is None:
+        outreach_repo.move_contact(conn, from_id, to_id)
+    elif REFERRER_RANK[loser["stage"]] > REFERRER_RANK[keeper["stage"]]:
+        outreach_repo.delete_contact(conn, to_id)
+        outreach_repo.move_contact(conn, from_id, to_id)
+    else:
+        outreach_repo.delete_contact(conn, from_id)
+    return moved + 1

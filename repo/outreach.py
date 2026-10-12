@@ -147,3 +147,32 @@ def insert_event(
         ),
     ).fetchone()
     return int(row["id"])
+
+
+def repoint_events(conn: Any, from_id: int, to_id: int) -> int:
+    return conn.execute(
+        "UPDATE outreach_events SET person_id = %s WHERE person_id = %s", (to_id, from_id)
+    ).rowcount
+
+
+def repoint_opportunities(conn: Any, from_id: int, to_id: int) -> int:
+    referrer = conn.execute(
+        "UPDATE outreach_opportunities SET referrer_id = %s, updated_at = now() WHERE referrer_id = %s",
+        (to_id, from_id),
+    ).rowcount
+    buyer = conn.execute(
+        "UPDATE outreach_opportunities SET buyer_id = %s, updated_at = now() WHERE buyer_id = %s",
+        (to_id, from_id),
+    ).rowcount
+    return referrer + buyer
+
+
+def move_contact(conn: Any, from_id: int, to_id: int) -> None:
+    conn.execute(
+        "UPDATE outreach_contacts SET person_id = %s, updated_at = now() WHERE person_id = %s",
+        (to_id, from_id),
+    )
+
+
+def delete_contact(conn: Any, person_id: int) -> None:
+    conn.execute("DELETE FROM outreach_contacts WHERE person_id = %s", (person_id,))
