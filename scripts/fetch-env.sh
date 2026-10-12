@@ -21,6 +21,9 @@ HUBSPOT_MAX_CONTACTS=$(tfvar hubspot_max_contacts)
 HUBSPOT_WRITES_ENABLED=$(tfvar hubspot_writes_enabled)
 AUTOMATED_SENDER_DOMAINS=$(tfvar automated_sender_domains)
 OWN_ADDRESSES=$(tfvar own_addresses)
+OUTREACH_FROM_ADDRESSES=$(tfvar outreach_from_addresses)
+TASKS_API_URL=$(tfvar tasks_api_url || true)
+INBOX_API_URL=https://inbox-api.drolet.cloud
 GRAFANA_OTLP_ENDPOINT=$(secret grafana-otlp-endpoint)
 GRAFANA_OTLP_TOKEN=$(secret grafana-otlp-token)
 CLOUD_SQL_CONNECTION_NAME=bens-project-462804:us-central1:inbox
@@ -29,4 +32,5 @@ POSTGRES_DB=people
 POSTGRES_PASSWORD=$(secret people-db-password 2>/dev/null || echo "")
 PEOPLE_SYNC_TOKEN=$(secret people-sync-token 2>/dev/null || echo "")
 EOF
+grep -q '^TASKS_API_URL=.' .env || sed -i '' 's|^TASKS_API_URL=.*|TASKS_API_URL=https://tasks-api.drolet.cloud|' .env
 echo ".env written"
