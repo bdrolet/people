@@ -9,7 +9,7 @@ import httpx
 
 from clients import gcp_auth
 
-TIMEOUT_S = 20
+TIMEOUT_S = 10
 
 
 class TasksApiUnavailable(RuntimeError):

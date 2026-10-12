@@ -19,7 +19,9 @@
 <person> is an email, an E.164 phone, or a people id. --at takes YYYY-MM-DD (noon, New
 York time) or a full ISO timestamp; it defaults to now. Every stage change is committed
 before any tasks-api, inbox-api or Google call, so a failed side effect never loses a
-count: `sync-asana` retries the Asana half. Runs against whatever DB clients/db.py
+count: `sync-asana` retries the Asana half. `mark --force` reopens a declined or skipped
+referrer to any stage but candidate (e.g. `mark replied --force` records a late reply
+after a no-response decline). Runs against whatever DB clients/db.py
 resolves from env, like the import scripts.
 """
 
@@ -32,6 +34,7 @@ from typing import Any, TextIO
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -56,6 +59,8 @@ USER_ERRORS = (
     outreach.NotInPipeline,
     outreach.OpportunityNotFound,
     outreach_report.FloorsError,
+    inbox_api.InboxApiUnavailable,
+    httpx.HTTPError,
     ValueError,
 )
 
@@ -144,7 +149,8 @@ def cmd_decide(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) 
         conn.commit()
     except Exception as e:  # the label is a convenience; the stage is already recorded
         conn.rollback()
-        print(f"warning: stage recorded, but the {LABEL} label was not added: {e}", file=out)
+        why = "no Google contact is linked yet" if isinstance(e, person_edit.NotLinked) else e
+        print(f"warning: stage recorded, but the {LABEL} label was not added: {why}", file=out)
 
 
 def cmd_draft(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:

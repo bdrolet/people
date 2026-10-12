@@ -1,6 +1,7 @@
 import io
 from datetime import UTC, date, datetime
 
+import httpx
 import pytest
 
 from models.outreach import Advance, CohortCounts, FunnelCounts
@@ -242,3 +243,29 @@ def test_parse_at():
     assert cli.parse_at(None, NOW) == NOW
     assert cli.parse_at("2026-10-10", NOW) == datetime(2026, 10, 10, 12, 0, tzinfo=svc.TZ)
     assert cli.parse_at("2026-10-10T09:30:00Z", NOW) == datetime(2026, 10, 10, 9, 30, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    "exc", [cli.inbox_api.InboxApiUnavailable("inbox-api down"), httpx.ConnectError("down")]
+)
+def test_draft_inbox_failures_are_user_errors_not_tracebacks(monkeypatch, run, exc):
+    monkeypatch.setattr(cli.outreach, "get_contact", lambda c, pid: {"stage": "to_contact"})
+
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(cli.inbox_api, "create_draft", boom)
+    code, _, err = run("draft", "alice@example.com")
+    assert code == 1 and err.startswith("error:")
+
+
+def test_decide_not_linked_warning_says_so(monkeypatch, run):
+    monkeypatch.setattr(cli.outreach, "ensure_contact", lambda c, pid, **kw: None)
+    _advance_returns(monkeypatch, Advance({"stage": "to_contact"}, True, 3))
+
+    def update(c, pid, *, labels):
+        raise cli.person_edit.NotLinked(str(pid))
+
+    monkeypatch.setattr(cli.person_edit, "update", update)
+    code, out, _ = run("decide", "alice@example.com")
+    assert code == 0 and "no Google contact is linked yet" in out

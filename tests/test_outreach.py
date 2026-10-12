@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -536,3 +536,28 @@ def test_counts_merges_referrer_and_buyer_rows_by_cohort(monkeypatch):
     assert [c.cohort_week for c in out.cohorts] == [w1, w2]
     assert (out.cohorts[0].briefed, out.cohorts[0].replied, out.cohorts[0].intro) == (2, 1, 2)
     assert out.lost_reasons == {"timing": 1} and out.follow_ups_due == 4
+
+
+def test_advance_from_event_ignores_a_reply_older_than_the_brief(repo):
+    _at(repo, 1, "briefed")
+    repo.contacts[1]["briefed_at"] = TS
+    early = TS - timedelta(hours=1)
+    assert svc.advance_from_event(None, 1, "replied", at=early, graph_message_id="m") is None
+    assert repo.events == [] and repo.contacts[1]["stage"] == "briefed"
+
+
+def test_advance_from_event_accepts_a_reply_after_or_at_the_brief(repo):
+    _at(repo, 1, "briefed")
+    repo.contacts[1]["briefed_at"] = TS
+    assert svc.advance_from_event(None, 1, "replied", at=TS, graph_message_id="m") == 1
+    _at(repo, 2, "briefed")
+    repo.contacts[2]["briefed_at"] = TS
+    later = TS + timedelta(minutes=1)
+    assert svc.advance_from_event(None, 2, "replied", at=later, graph_message_id="n") == 2
+
+
+def test_the_cli_path_still_allows_a_reply_dated_before_the_brief(repo):
+    _at(repo, 1, "briefed")
+    repo.contacts[1]["briefed_at"] = TS
+    res = svc.advance(None, 1, "replied", at=TS - timedelta(days=1), source="cli", channel="call")
+    assert res is not None and res.changed

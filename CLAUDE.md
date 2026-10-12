@@ -198,9 +198,9 @@ The iMessage snapshot rebuilds by re-running `scripts/import_imessage.py --full`
 The WhatsApp snapshot rebuilds by re-running `scripts/import_whatsapp.py --full` against the local store.
 The `outreach_*` tables do **not** rebuild from anything. Export them before any `DELETE FROM people`: `pg_dump --data-only -t 'outreach_*'`.
 
-`scripts/merge_duplicate_contacts.py` (not yet on this branch — PR #18) must call
-`repo/whatsapp.py::repoint_person` from its `_collapse_rows`, beside its iMessage and
-LinkedIn re-points, before deleting the loser `people` row: both `whatsapp_handles.person_id`
+`scripts/merge_duplicate_contacts.py` calls `repo/whatsapp.py::repoint_person` from its
+`_collapse_rows`, beside its iMessage and LinkedIn re-points (and
+`services/outreach.py::merge_person`), before deleting the loser `people` row: both `whatsapp_handles.person_id`
 and `whatsapp_chat_members.person_id` are `ON DELETE SET NULL`, so a merge that deletes
 first silently unlinks WhatsApp handles and memberships rather than moving them.
 It must also call `services/outreach.py::merge_person` there: the `outreach_*` tables

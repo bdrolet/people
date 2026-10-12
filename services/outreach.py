@@ -97,6 +97,9 @@ class OpportunityNotFound(LookupError):
 
 
 def transition(pipeline: str, current: str, target: str, *, force: bool = False) -> Transition:
+    """Classify a move. `force` reopens a declined or skipped referrer: it may target any
+    stage but candidate, e.g. `mark replied --force` records a late reply after a
+    no-response decline."""
     stages = REFERRER_STAGES if pipeline == "referrer" else BUYER_STAGES
     if target not in stages or current not in stages:
         raise ValueError(f"unknown {pipeline} stage: {current!r} -> {target!r}")
@@ -216,6 +219,12 @@ def advance_from_event(
 ) -> int | None:
     """The event handlers' entry (spec §6.2, §6.3): a move outside the table and a person
     with no pipeline row are both ignored silently. Returns the new event's id, if any."""
+    if stage == "replied":
+        # Spec §6.3: a reply counts only if it came after the brief. Inbox's sweep
+        # republishes older mail, so a pre-brief email can arrive after the brief.
+        row = outreach_repo.lock_contact(conn, person_id)
+        if row and row["briefed_at"] is not None and at < row["briefed_at"]:
+            return None
     try:
         res = advance(
             conn,
@@ -317,7 +326,9 @@ def set_lead(conn: Any, person_id: int, lead: str, *, today: date) -> dict:
 def merge_person(conn: Any, from_id: int, to_id: int) -> int:
     """Fold one person's pipeline into another's before the `from_id` people row is
     deleted (the outreach tables cascade). Events and opportunities all move. When both
-    have a contact row, the further-along one survives; a tie keeps the keeper's."""
+    have a contact row, the further-along one survives; a tie keeps the keeper's. When
+    the keeper's row wins, the loser's notes and has_lead are dropped (events and
+    opportunities are kept)."""
     moved = outreach_repo.repoint_events(conn, from_id, to_id)
     moved += outreach_repo.repoint_opportunities(conn, from_id, to_id)
     loser = outreach_repo.lock_contact(conn, from_id)

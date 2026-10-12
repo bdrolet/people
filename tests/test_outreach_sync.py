@@ -121,9 +121,13 @@ class FakeRepo:
 
 class Conn:
     commits = 0
+    rollbacks = 0
 
     def commit(self):
         self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
 
 
 class Recorder:
@@ -198,3 +202,21 @@ def test_unconfigured_is_skipped_not_failed(monkeypatch, wired):
     monkeypatch.setattr(tasks, "configured", lambda: False)
     res = sync.sync_events(Conn(), [7], now=NOW)
     assert res.skipped and res.failed == 0 and tasks.created == []
+
+
+def test_a_db_failure_rolls_back_and_the_next_event_still_syncs(wired):
+    tasks, repo = wired([ev(id=7), ev(id=8)])
+    original = repo.set_asana_gid
+    state = {"boom": True}
+
+    def flaky(conn, event_id, gid):
+        if state.pop("boom", False):
+            raise RuntimeError("db down")
+        original(conn, event_id, gid)
+
+    repo.set_asana_gid = flaky
+    conn = Conn()
+    res = sync.sync_pending(conn, now=NOW)
+    assert conn.rollbacks == 1
+    assert res.failed == 1 and res.synced == 1
+    assert repo.rows[8]["asana_completed_at"] == NOW

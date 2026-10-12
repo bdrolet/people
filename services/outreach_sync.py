@@ -100,6 +100,7 @@ def _sync_one(conn: Any, ev: dict, now: datetime, result: SyncResult) -> None:
         outreach_repo.set_asana_completed(conn, ev["id"])
         conn.commit()
     except Exception as exc:
+        conn.rollback()  # a DB failure must not leave the shared connection aborted
         result.failed += 1
         otel.external_errors.add(1, {"system": "tasks"})
         otel.outreach_sync.add(1, {"target": "asana", "outcome": _outcome(exc), "late": bucket})
