@@ -310,13 +310,12 @@ skill sends it, inbox publishes `email_sent`, and §6.2 advances the stage.
 No Graph code is added to people, which keeps the repo's rule that only local
 import scripts touch Graph.
 
-`outreach draft <person>` creates the draft itself and always passes
-`from: {address: <consulting address>, shared: false}`, so the sending
-identity is never a judgment call at send time. The consulting address is an
-alias on the primary mailbox (no shared mailbox is configured), which is why
-the sent note lands in the primary Sent Items and inbox's existing
-subscription publishes it with `from` set. A brief sent by hand from the
-wrong identity is not counted: the contact stays at `to_contact` and shows
+`outreach draft <person>` creates the draft itself and omits the `from`
+block, so it goes from the primary mailbox address, which is the consulting
+address; the other domains are aliases on that mailbox and are never used
+for a brief. The sent note lands in the primary Sent Items and inbox's
+existing subscription publishes it with `from` set. A brief sent by hand
+from an alias is not counted: the contact stays at `to_contact` and shows
 up in `outreach queue` as unsent, which is the signal to resend or to mark
 it with `--channel email --from <address>` if it was deliberate.
 
@@ -329,7 +328,7 @@ For texts and LinkedIn, Ben sends by hand and runs
 |---|---|
 | `outreach queue [--stage S] [--limit N]` | §7.2 |
 | `outreach decide <person> [--skip]` | `candidate → to_contact`, or `skipped` |
-| `outreach draft <person> [--subject S]` | creates an empty-bodied inbox-api draft to the person from the consulting alias; Ben writes the body in Outlook |
+| `outreach draft <person> [--subject S]` | creates an empty-bodied inbox-api draft to the person from the primary address; Ben writes the body in Outlook |
 | `outreach mark <person> briefed\|replied\|declined [--channel C] [--at T]` | manual advance |
 | `outreach lead <person> "<name, company>"` | sets `has_lead`; does not create an opportunity |
 | `outreach intro <referrer> "<buyer name, company>" [--buyer <person>] [--at T]` | opens an opportunity, referrer → `introduced` |
@@ -514,13 +513,13 @@ change or none, checked against their code on 2026-10-12.
 | Repo | Change | Why |
 |---|---|---|
 | **tasks** | `terraform`: `api_invoker_service_accounts` variable and `google_cloud_run_v2_service_iam_member` for the two people function accounts. No application change. | Tag names are resolved and created on first use (`services/tags.py`), a completed task's goal is read from its `serves:` tag when it has no score row (`services/goal_state.py`), and `completed_at` is indexed on `PATCH`. The strategy layer counts §8's tasks with no code change. |
-| **inbox** | No application change. Update the `sending-inbox-email` skill's identity table and the `email-builder` agent brief so consulting correspondence is sent from the consulting alias. | The Sent Items subscription already publishes `email_sent` with `from` for mail sent from an alias on the primary mailbox. The identity rule is policy, and the tool enforces it on its own drafts (§7.3). |
+| **inbox** | No application change. Add a line to the `sending-inbox-email` skill and the `email-builder` agent brief: consulting correspondence goes from the primary address, never an alias. | The Sent Items subscription already publishes `email_sent` with `from`. The primary is the default identity, so the rule is "do not add a `from` block", and the tool enforces it on its own drafts (§7.3). |
 | **context** | Already open: PR #4 sizes the referral test at 150 and ties the tripwires to the floors. The `intro` lead and tripwire in that PR assume §8 ships before the first cohort is briefed. | The tags §8 writes are the ones the strategy counts. |
 | **consulting** | Done: `docs/client_funnel.md` and `docs/client_funnel_floors.toml`. The report's `--floors` path points there. | Floors stay out of the public repo. |
 | **~/.claude/skills** | Phase 2: a `working-outreach-queue` skill linked from this repo's `.claude/skills` via `scripts/link-skills.sh`, and a pointer from `adding-referral-contact` to the new pipeline. | The skills are how Ben works the queue from a Claude session. |
 
 - **Env.** `OUTREACH_FROM_ADDRESSES` (comma-separated; which sending
-  identities count as a brief; `outreach draft` sends from the first),
+  identities count as a brief; the primary address alone today),
   `TASKS_API_URL`, `INBOX_API_URL`. Both via Secret Manager and
   terraform like the existing secrets; the `adding-people-secret` skill is the
   path.
@@ -600,10 +599,11 @@ Each phase is its own plan and PR set.
 
 ## 14. Open questions
 
-1. **Which identities count as a brief.** `ben@drolet.ai` certainly; does
-   mail from `drolet.cloud` or the personal address count when the note is a
-   brief? The env var makes it a config choice, but the choice has to be
-   made before §6.2 ships.
+1. **Which identities count as a brief.** Resolved 2026-10-12: only the
+   primary mailbox address, which is the consulting address. Aliases on the
+   same mailbox do not count. `OUTREACH_FROM_ADDRESSES` holds that one
+   address; it stays a list only so a second consulting identity can be
+   added without a code change.
 2. **One row per person, or per person per cycle.** This design keys
    `outreach_contacts` on `person_id`, which is right for cycle one. A second
    referral cycle in 2027 would need a `cycle` column and a composite key.
