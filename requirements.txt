@@ -13,6 +13,10 @@ psycopg>=3.1
 pg8000>=1.31
 cloud-sql-python-connector>=1.7.0
 
+# Cloud Run callers (tasks-api, inbox-api): google.auth's requests transport
+requests>=2.31
+httpx>=0.27
+
 # Observability
 opentelemetry-sdk>=1.24
 opentelemetry-exporter-otlp-proto-http>=1.24
