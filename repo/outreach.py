@@ -176,3 +176,37 @@ def move_contact(conn: Any, from_id: int, to_id: int) -> None:
 
 def delete_contact(conn: Any, person_id: int) -> None:
     conn.execute("DELETE FROM outreach_contacts WHERE person_id = %s", (person_id,))
+
+
+def sync_rows(
+    conn: Any, keys: list[str], *, event_id: int | None = None, limit: int = 200
+) -> list[dict]:
+    """Events of the kinds in `keys` ("pipeline:stage") whose Asana task is missing or
+    not yet completed, oldest first, with what the task name needs. Pass one event_id at
+    a time: an all-int list param is mangled by clients/db.py's pgvector shim."""
+    by_id = "AND e.id = %s" if event_id is not None else ""
+    params: tuple = (keys, event_id, limit) if event_id is not None else (keys, limit)
+    return conn.execute(
+        f"""
+        SELECT e.id, e.pipeline, e.stage, e.at, e.channel, e.asana_task_gid,
+               e.asana_completed_at, o.buyer_label,
+               COALESCE(p.display_name, p.email, 'person ' || p.id::text) AS person_name
+        FROM outreach_events e
+        LEFT JOIN outreach_opportunities o ON o.id = e.opportunity_id
+        LEFT JOIN people p ON p.id = COALESCE(e.person_id, o.referrer_id)
+        WHERE (e.asana_task_gid IS NULL OR e.asana_completed_at IS NULL)
+          AND (e.pipeline || ':' || e.stage) = ANY(%s::text[])
+          {by_id}
+        ORDER BY e.id
+        LIMIT %s
+        """,
+        params,
+    ).fetchall()
+
+
+def set_asana_gid(conn: Any, event_id: int, gid: str) -> None:
+    conn.execute("UPDATE outreach_events SET asana_task_gid = %s WHERE id = %s", (gid, event_id))
+
+
+def set_asana_completed(conn: Any, event_id: int) -> None:
+    conn.execute("UPDATE outreach_events SET asana_completed_at = now() WHERE id = %s", (event_id,))

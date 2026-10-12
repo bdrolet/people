@@ -146,3 +146,34 @@ def test_repoint_then_delete_keeps_history(conn):
         ).fetchone()["n"]
         == 1
     )
+
+
+def test_sync_rows_finds_only_unsynced_task_events(conn):
+    pid = _person(conn, display_name="Alice Example")
+    outreach_repo.insert_contact_if_missing(conn, pid)
+    briefed = outreach_repo.insert_event(
+        conn,
+        pipeline="referrer",
+        person_id=pid,
+        stage="briefed",
+        at=TS,
+        source="cli",
+        channel="email",
+    )
+    outreach_repo.insert_event(
+        conn, pipeline="referrer", person_id=pid, stage="replied", at=TS, source="cli"
+    )
+    opp = outreach_repo.insert_opportunity(
+        conn, referrer_id=pid, buyer_id=None, buyer_label="Bo, Co", at=TS
+    )
+    intro = outreach_repo.insert_event(
+        conn, pipeline="buyer", opportunity_id=opp["id"], stage="intro", at=TS, source="cli"
+    )
+    keys = ["referrer:briefed", "buyer:intro"]
+    rows = outreach_repo.sync_rows(conn, keys)
+    assert [r["id"] for r in rows] == [briefed, intro]
+    assert rows[1]["person_name"] == "Alice Example" and rows[1]["buyer_label"] == "Bo, Co"
+    outreach_repo.set_asana_gid(conn, briefed, "g1")
+    outreach_repo.set_asana_completed(conn, briefed)
+    assert [r["id"] for r in outreach_repo.sync_rows(conn, keys)] == [intro]
+    assert [r["id"] for r in outreach_repo.sync_rows(conn, keys, event_id=intro)] == [intro]
