@@ -368,6 +368,19 @@ def _day(ts: datetime | None) -> str | None:
     return ts.astimezone(TZ).date().isoformat() if ts else None
 
 
+# The order nudge 2 tries channels in when switching away from the brief's.
+SWITCH_ORDER = ("email", "imessage", "whatsapp", "linkedin")
+
+
+def _channels(r: dict) -> dict:
+    return {
+        "email": r["email"] is not None,
+        "imessage": bool(r["has_imessage"]),
+        "linkedin": r["linkedin_url"] or False,
+        "whatsapp": bool(r["has_whatsapp"]),
+    }
+
+
 def queue_item(r: dict) -> dict:
     last = {
         "email": _day(r["email_last"]),
@@ -386,12 +399,7 @@ def queue_item(r: dict) -> dict:
         "stage": r["stage"],
         "rank": r["rank"],
         "last_interaction": _day(r["last_interaction"]),
-        "channels": {
-            "email": r["email"] is not None,
-            "imessage": bool(r["has_imessage"]),
-            "linkedin": r["linkedin_url"] or False,
-            "whatsapp": bool(r["has_whatsapp"]),
-        },
+        "channels": _channels(r),
         "last_messages": {k: v for k, v in last.items() if v},
         "labels": list(r["labels"] or []),
         "notes": r["notes"],
@@ -432,8 +440,40 @@ def clear_ranks(conn: Any) -> int:
     return outreach_repo.clear_ranks(conn)
 
 
+def follow_up_item(r: dict, *, today: date) -> dict:
+    """Working-queue spec §3.4: nudge 1 stays on the brief's channel (and email thread);
+    nudge 2 switches to a channel not used yet when one exists; after two, propose a close."""
+    count = int(r["nudge_count"] or 0)
+    channels = _channels(r)
+    brief_channel = r["brief_channel"]
+    if count == 0:
+        kind, suggested = "nudge 1", brief_channel
+    elif count == 1:
+        used = {brief_channel, r["last_nudge_channel"]}
+        kind = "nudge 2"
+        suggested = next((c for c in SWITCH_ORDER if channels[c] and c not in used), None)
+    else:
+        kind, suggested = "close", None
+    return {
+        "person": {"id": r["id"], "email": r["email"], "display_name": r["display_name"]},
+        "kind": kind,
+        "nudge_count": count,
+        "follow_up_on": r["follow_up_on"].isoformat(),
+        "overdue": r["follow_up_on"] < today,
+        "brief": {
+            "channel": brief_channel,
+            "at": _day(r["brief_at"] or r["briefed_at"]),
+            "graph_message_id": r["brief_message_id"],
+        },
+        "last_nudge_channel": r["last_nudge_channel"],
+        "last_nudged_at": _day(r["last_nudged_at"]),
+        "channels": channels,
+        "suggested_channel": suggested,
+    }
+
+
 def follow_ups(conn: Any, *, today: date) -> list[dict]:
-    return outreach_repo.follow_ups(conn, today=today)
+    return [follow_up_item(r, today=today) for r in outreach_repo.follow_ups(conn, today=today)]
 
 
 def shared_briefs(conn: Any) -> list[dict]:

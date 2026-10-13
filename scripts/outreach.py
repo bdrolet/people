@@ -233,26 +233,35 @@ def cmd_buyer(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -
 
 
 def cmd_followups(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:
-    rows = outreach.follow_ups(conn, today=now.astimezone(outreach.TZ).date())
-    if not rows:
+    items = outreach.follow_ups(conn, today=now.astimezone(outreach.TZ).date())
+    if not items:
         print("no follow-ups due", file=out)
         return
     print(
         outreach_report.table(
-            ["id", "name", "briefed", "channel", "follow-up"],
+            ["id", "name", "action", "briefed", "due", "channel"],
             [
                 [
-                    r["id"],
-                    _label(r),
-                    r["briefed_at"].astimezone(outreach.TZ).date() if r["briefed_at"] else "",
-                    r["channel"] or "",
-                    r["follow_up_on"],
+                    i["person"]["id"],
+                    _label(i["person"]),
+                    i["kind"],
+                    i["brief"]["at"] or "",
+                    i["follow_up_on"] + (" (overdue)" if i["overdue"] else ""),
+                    _how(i),
                 ]
-                for r in rows
+                for i in items
             ],
         ),
         file=out,
     )
+
+
+def _how(item: dict) -> str:
+    brief = item["brief"]["channel"]
+    if item["kind"] == "close":
+        return f"outreach mark {item['person']['id']} declined"
+    via = item["suggested_channel"] or brief or "any channel"
+    return f"switch to {via}" if item["kind"] == "nudge 2" and via != brief else via
 
 
 def cmd_report(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:

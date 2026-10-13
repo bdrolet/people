@@ -799,3 +799,57 @@ def test_set_ranks_refuses_a_repeat_before_writing(repo):
     with pytest.raises(ValueError):
         svc.set_ranks(None, [1, 2, 1])
     assert repo.contacts[1]["rank"] == 5
+
+
+def _fu(**over):
+    row = {
+        "id": 5,
+        "email": "bob@example.com",
+        "display_name": "Bob Example",
+        "nudge_count": 0,
+        "follow_up_on": date(2026, 10, 13),
+        "last_nudged_at": None,
+        "briefed_at": datetime(2026, 10, 6, 15, tzinfo=UTC),
+        "brief_at": datetime(2026, 10, 6, 15, tzinfo=UTC),
+        "brief_channel": "email",
+        "brief_message_id": "g1",
+        "last_nudge_channel": None,
+        "has_imessage": True,
+        "has_whatsapp": False,
+        "linkedin_url": None,
+    }
+    return row | over
+
+
+def test_first_nudge_stays_on_the_brief_channel_and_thread():
+    item = svc.follow_up_item(_fu(), today=date(2026, 10, 14))
+    assert item["kind"] == "nudge 1" and item["suggested_channel"] == "email"
+    assert item["overdue"] is True and item["follow_up_on"] == "2026-10-13"
+    assert item["brief"] == {"channel": "email", "at": "2026-10-06", "graph_message_id": "g1"}
+    assert item["person"] == {"id": 5, "email": "bob@example.com", "display_name": "Bob Example"}
+
+
+def test_second_nudge_switches_to_a_channel_not_used_yet():
+    item = svc.follow_up_item(
+        _fu(nudge_count=1, last_nudge_channel="email", follow_up_on=date(2026, 10, 20)),
+        today=date(2026, 10, 20),
+    )
+    assert item["kind"] == "nudge 2" and item["suggested_channel"] == "imessage"
+    assert item["overdue"] is False
+
+
+def test_second_nudge_with_no_other_channel_suggests_none():
+    item = svc.follow_up_item(_fu(nudge_count=1, has_imessage=False), today=date(2026, 10, 20))
+    assert item["suggested_channel"] is None
+
+
+def test_two_nudges_proposes_a_close():
+    item = svc.follow_up_item(_fu(nudge_count=2), today=date(2026, 10, 27))
+    assert item["kind"] == "close" and item["suggested_channel"] is None
+
+
+def test_a_missing_brief_event_falls_back_to_briefed_at():
+    item = svc.follow_up_item(
+        _fu(brief_at=None, brief_channel=None, brief_message_id=None), today=date(2026, 10, 14)
+    )
+    assert item["brief"] == {"channel": None, "at": "2026-10-06", "graph_message_id": None}

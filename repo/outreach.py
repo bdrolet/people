@@ -299,12 +299,25 @@ def clear_ranks(conn: Any) -> int:
 
 
 def follow_ups(conn: Any, *, today: date) -> list[dict]:
+    """Briefed contacts whose follow-up date has arrived, with the brief itself (its
+    channel and email thread, so nudge 1 can reply in it) and the last nudge's channel
+    (so nudge 2 can switch). Working-queue spec §3.4."""
     return conn.execute(
-        """
-        SELECT p.id, p.email, p.display_name, c.briefed_at, c.channel, c.follow_up_on
-        FROM outreach_contacts c JOIN people p ON p.id = c.person_id
-        WHERE c.stage = 'briefed' AND c.follow_up_on <= %s
-        ORDER BY c.follow_up_on, p.id
+        f"""
+        SELECT q.*, b.at AS brief_at, b.channel AS brief_channel,
+               b.graph_message_id AS brief_message_id, n.channel AS last_nudge_channel
+        FROM ({_pipeline_rows("c.stage = 'briefed' AND c.follow_up_on <= %s")}) q
+        LEFT JOIN LATERAL (
+            SELECT at, channel, graph_message_id FROM outreach_events
+            WHERE pipeline = 'referrer' AND person_id = q.id AND stage = 'briefed'
+            ORDER BY at, id LIMIT 1
+        ) b ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT channel FROM outreach_events
+            WHERE pipeline = 'referrer' AND person_id = q.id AND stage = 'nudge'
+            ORDER BY at DESC, id DESC LIMIT 1
+        ) n ON TRUE
+        ORDER BY q.follow_up_on, q.id
         """,
         (today,),
     ).fetchall()

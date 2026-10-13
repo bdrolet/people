@@ -2,7 +2,7 @@
 TEST_DATABASE_URL is set; see the plan's Global Constraints for a throwaway container."""
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import psycopg
@@ -429,3 +429,44 @@ def test_queue_puts_ranked_rows_first_in_rank_order(conn):
         None,
         None,
     ]
+
+
+def test_follow_ups_carry_the_brief_thread_and_the_last_nudge(conn):
+    pid = _person(conn)
+    outreach_repo.insert_contact_if_missing(conn, pid)
+    outreach_repo.update_contact(
+        conn,
+        pid,
+        {
+            "stage": "briefed",
+            "briefed_at": TS,
+            "channel": "email",
+            "nudge_count": 1,
+            "follow_up_on": date(2026, 10, 27),
+        },
+    )
+    outreach_repo.insert_event(
+        conn,
+        pipeline="referrer",
+        person_id=pid,
+        stage="briefed",
+        at=TS,
+        source="event",
+        channel="email",
+        graph_message_id="g-brief",
+    )
+    outreach_repo.insert_event(
+        conn,
+        pipeline="referrer",
+        person_id=pid,
+        stage="nudge",
+        at=TS + timedelta(days=7),
+        source="cli",
+        channel="imessage",
+    )
+    [row] = outreach_repo.follow_ups(conn, today=date(2026, 10, 27))
+    assert row["brief_message_id"] == "g-brief" and row["brief_channel"] == "email"
+    assert row["brief_at"] == TS and row["last_nudge_channel"] == "imessage"
+    assert row["nudge_count"] == 1 and row["email"] == "alice@example.com"
+    assert row["has_imessage"] is False
+    assert outreach_repo.follow_ups(conn, today=date(2026, 10, 26)) == []
