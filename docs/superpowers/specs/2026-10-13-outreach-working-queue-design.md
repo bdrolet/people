@@ -418,7 +418,7 @@ replaced by a pointer to phase 2's HubSpot mirror.
 **State as of 2026-10-13**
 
 - This spec is the only artifact. It is committed on branch
-  `outreach-working-queue` in `~/src/people`, not pushed, with no PR.
+  `outreach-working-queue` in `~/src/people`, pushed to origin, with no PR yet.
 - No implementation plan exists yet.
 - **Next step:** Ben reviews this spec, confirming §7–§8 in particular. Then
   write the plan with `superpowers:writing-plans` and save it to
