@@ -243,45 +243,59 @@ _LABELS = """
 """
 
 
+def _pipeline_rows(where: str) -> str:
+    """One row per pipeline contact with what Ben needs on screen before writing:
+    identity, the pipeline columns, each channel's last message and the person's
+    labels. `where` filters on `c` (outreach_contacts) and `p` (people)."""
+    return f"""
+        SELECT p.id, p.email, p.display_name, p.company, p.job_title, p.notes,
+               c.stage, c.follow_up_on, c.has_lead, c.notes AS outreach_notes, c.rank,
+               c.briefed_at, c.channel, c.nudge_count, c.last_nudged_at,
+               NULLIF(GREATEST(COALESCE(p.last_seen, 'epoch'::timestamptz),
+                               COALESCE(p.last_contacted, 'epoch'::timestamptz)),
+                      'epoch'::timestamptz) AS email_last,
+               im.last_at AS imessage_last, (im.n IS NOT NULL) AS has_imessage,
+               wa.last_at AS whatsapp_last, (wa.n IS NOT NULL) AS has_whatsapp,
+               li.profile_url AS linkedin_url, li.last_message_at AS linkedin_last,
+               {_LABELS} AS labels
+        FROM outreach_contacts c
+        JOIN people p ON p.id = c.person_id
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS n, MAX(last_message_at) AS last_at
+            FROM imessage_handles WHERE person_id = p.id HAVING COUNT(*) > 0
+        ) im ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS n, MAX(last_message_at) AS last_at
+            FROM whatsapp_handles WHERE person_id = p.id HAVING COUNT(*) > 0
+        ) wa ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT profile_url, last_message_at FROM linkedin_connections
+            WHERE person_id = p.id ORDER BY last_message_at DESC NULLS LAST LIMIT 1
+        ) li ON TRUE
+        WHERE {where}
+    """
+
+
 def queue(conn: Any, *, stage: str, limit: int) -> list[dict]:
-    """Contacts at `stage` with what Ben needs on screen before writing (spec §7.2),
-    least recently in touch on any channel first; never-contacted rows lead."""
+    """Contacts at `stage` (spec §7.2): Ben's saved order first (working-queue spec §6.1),
+    then least recently in touch on any channel; never-contacted rows lead that part."""
     return conn.execute(
         f"""
         SELECT q.*,
                GREATEST(q.email_last, q.imessage_last, q.whatsapp_last, q.linkedin_last)
                    AS last_interaction
-        FROM (
-            SELECT p.id, p.email, p.display_name, p.company, p.job_title, p.notes,
-                   c.stage, c.follow_up_on, c.has_lead, c.notes AS outreach_notes,
-                   NULLIF(GREATEST(COALESCE(p.last_seen, 'epoch'::timestamptz),
-                                   COALESCE(p.last_contacted, 'epoch'::timestamptz)),
-                          'epoch'::timestamptz) AS email_last,
-                   im.last_at AS imessage_last, (im.n IS NOT NULL) AS has_imessage,
-                   wa.last_at AS whatsapp_last, (wa.n IS NOT NULL) AS has_whatsapp,
-                   li.profile_url AS linkedin_url, li.last_message_at AS linkedin_last,
-                   {_LABELS} AS labels
-            FROM outreach_contacts c
-            JOIN people p ON p.id = c.person_id
-            LEFT JOIN LATERAL (
-                SELECT COUNT(*) AS n, MAX(last_message_at) AS last_at
-                FROM imessage_handles WHERE person_id = p.id HAVING COUNT(*) > 0
-            ) im ON TRUE
-            LEFT JOIN LATERAL (
-                SELECT COUNT(*) AS n, MAX(last_message_at) AS last_at
-                FROM whatsapp_handles WHERE person_id = p.id HAVING COUNT(*) > 0
-            ) wa ON TRUE
-            LEFT JOIN LATERAL (
-                SELECT profile_url, last_message_at FROM linkedin_connections
-                WHERE person_id = p.id ORDER BY last_message_at DESC NULLS LAST LIMIT 1
-            ) li ON TRUE
-            WHERE c.stage = %s
-        ) q
-        ORDER BY last_interaction ASC NULLS FIRST, q.id
+        FROM ({_pipeline_rows("c.stage = %s")}) q
+        ORDER BY q.rank ASC NULLS LAST, last_interaction ASC NULLS FIRST, q.id
         LIMIT %s
         """,
         (stage, limit),
     ).fetchall()
+
+
+def clear_ranks(conn: Any) -> int:
+    return conn.execute(
+        "UPDATE outreach_contacts SET rank = NULL, updated_at = now() WHERE rank IS NOT NULL"
+    ).rowcount
 
 
 def follow_ups(conn: Any, *, today: date) -> list[dict]:

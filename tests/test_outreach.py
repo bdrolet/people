@@ -465,6 +465,7 @@ def test_queue_item_matches_the_spec_shape():
         "job_title": "CTO",
         "notes": "met at a conference",
         "stage": "to_contact",
+        "rank": 4,
         "follow_up_on": None,
         "has_lead": False,
         "email_last": datetime(2025, 3, 2, 12, tzinfo=UTC),
@@ -487,6 +488,7 @@ def test_queue_item_matches_the_spec_shape():
             "job_title": "CTO",
         },
         "stage": "to_contact",
+        "rank": 4,
         "last_interaction": "2026-07-19",
         "channels": {
             "email": True,
@@ -752,3 +754,48 @@ def test_advance_from_sent_replaying_the_brief_records_nothing(repo):
     assert svc.advance_from_sent(None, 1, at=TS, graph_message_id="g1") == ("briefed", 1)
     assert svc.advance_from_sent(None, 1, at=TS, graph_message_id="g1") is None
     assert len(repo.events) == 1
+
+
+def test_leaving_to_contact_clears_the_rank(repo):
+    _at(repo, 1, "to_contact")
+    repo.contacts[1]["rank"] = 3
+    svc.advance(None, 1, "briefed", at=TS, source="cli", channel="imessage")
+    assert repo.contacts[1]["rank"] is None
+
+
+def test_skipping_clears_the_rank(repo):
+    _at(repo, 1, "to_contact")
+    repo.contacts[1]["rank"] = 3
+    svc.advance(None, 1, "skipped", at=TS, source="cli")
+    assert repo.contacts[1]["rank"] is None
+
+
+def test_set_rank_needs_a_to_contact_row(repo):
+    _at(repo, 1, "briefed")
+    with pytest.raises(svc.NotQueued):
+        svc.set_rank(None, 1, 1)
+    with pytest.raises(svc.NotInPipeline):
+        svc.set_rank(None, 9, 1)
+
+
+def test_set_rank_rejects_a_rank_below_one(repo):
+    _at(repo, 1, "to_contact")
+    with pytest.raises(ValueError):
+        svc.set_rank(None, 1, 0)
+
+
+def test_set_ranks_assigns_in_order_and_clears_the_rest(repo):
+    for pid in (1, 2, 3):
+        _at(repo, pid, "to_contact")
+    repo.contacts[3]["rank"] = 1
+    svc.set_ranks(None, [2, 1])
+    assert [repo.contacts[p]["rank"] for p in (1, 2, 3)] == [2, 1, None]
+
+
+def test_set_ranks_refuses_a_repeat_before_writing(repo):
+    for pid in (1, 2):
+        _at(repo, pid, "to_contact")
+    repo.contacts[1]["rank"] = 5
+    with pytest.raises(ValueError):
+        svc.set_ranks(None, [1, 2, 1])
+    assert repo.contacts[1]["rank"] == 5

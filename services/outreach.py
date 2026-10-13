@@ -93,6 +93,10 @@ class NotInPipeline(LookupError):
     """The person has no outreach_contacts row (run `outreach decide` first)."""
 
 
+class NotQueued(ValueError):
+    """Only a `to_contact` referrer has a queue position (working-queue spec §6)."""
+
+
 class OpportunityNotFound(LookupError):
     pass
 
@@ -201,6 +205,8 @@ def advance(
         return Advance(row=row, changed=False, event_id=None)
 
     changes: dict[str, Any] = {"stage": stage}
+    if row["stage"] == "to_contact":
+        changes["rank"] = None  # a queue position means nothing once they leave the queue
     if stage == "briefed":
         changes["follow_up_on"] = follow_up_date(at)
         if row["briefed_at"] is None:
@@ -378,6 +384,7 @@ def queue_item(r: dict) -> dict:
             "job_title": r["job_title"],
         },
         "stage": r["stage"],
+        "rank": r["rank"],
         "last_interaction": _day(r["last_interaction"]),
         "channels": {
             "email": r["email"] is not None,
@@ -398,6 +405,31 @@ def queue(conn: Any, *, stage: str = "to_contact", limit: int = 50) -> list[dict
     if stage not in REFERRER_STAGES:
         raise ValueError(f"unknown stage {stage!r}; one of {', '.join(REFERRER_STAGES)}")
     return [queue_item(r) for r in outreach_repo.queue(conn, stage=stage, limit=limit)]
+
+
+def set_rank(conn: Any, person_id: int, rank: int) -> dict:
+    if rank < 1:
+        raise ValueError("rank must be 1 or more")
+    row = outreach_repo.lock_contact(conn, person_id)
+    if row is None:
+        raise NotInPipeline(str(person_id))
+    if row["stage"] != "to_contact":
+        raise NotQueued(f"person {person_id} is at {row['stage']}, not to_contact")
+    return outreach_repo.update_contact(conn, person_id, {"rank": rank})
+
+
+def set_ranks(conn: Any, person_ids: list[int]) -> None:
+    """Rank 1..N in the given order and clear every other rank (working-queue spec §6.2).
+    The caller commits, so a failure part-way leaves nothing behind."""
+    if len(set(person_ids)) != len(person_ids):
+        raise ValueError("a person appears more than once")
+    outreach_repo.clear_ranks(conn)
+    for n, person_id in enumerate(person_ids, start=1):
+        set_rank(conn, person_id, n)
+
+
+def clear_ranks(conn: Any) -> int:
+    return outreach_repo.clear_ranks(conn)
 
 
 def follow_ups(conn: Any, *, today: date) -> list[dict]:

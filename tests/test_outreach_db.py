@@ -409,3 +409,23 @@ def test_nudge_columns_and_message_lookup_round_trip(conn):
     assert outreach_repo.referrer_event_with_message(conn, pid, "g9")
     assert not outreach_repo.referrer_event_with_message(conn, pid, "g10")
     assert conn.execute("SELECT note FROM outreach_events").fetchone() == {"note": "hi"}
+
+
+def test_queue_puts_ranked_rows_first_in_rank_order(conn):
+    a = _person(conn)
+    b = _person(conn, email="b@example.com")
+    c = _person(conn, email="c@example.com")
+    for pid in (a, b, c):
+        outreach_repo.insert_contact_if_missing(conn, pid)
+        outreach_repo.update_contact(conn, pid, {"stage": "to_contact"})
+    outreach_repo.update_contact(conn, c, {"rank": 1})
+    outreach_repo.update_contact(conn, b, {"rank": 2})
+    rows = outreach_repo.queue(conn, stage="to_contact", limit=10)
+    assert [r["id"] for r in rows] == [c, b, a]
+    assert [r["rank"] for r in rows] == [1, 2, None]
+    assert outreach_repo.clear_ranks(conn) == 2
+    assert [r["rank"] for r in outreach_repo.queue(conn, stage="to_contact", limit=10)] == [
+        None,
+        None,
+        None,
+    ]
