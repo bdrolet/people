@@ -6,7 +6,8 @@
 - §3 (the identity and data model), which he approved as presented.
 
 Ben asked for the spec to be written after §3. §4–§8 were drafted after that
-and are being reviewed section by section; each reviewed section is marked.
+and reviewed section by section on 2026-10-13; the plan is
+`docs/superpowers/plans/2026-10-13-linkedin-identity.md`.
 
 **Builds on:**
 - `2026-09-24-person-identity-design.md`: id/email/phone identity and the
@@ -291,23 +292,47 @@ it).
 - `create_from_google`, `update_from_google` and `set_google` round-trip
   `linkedin_url`.
 
-## 8. Rollout (drafted)
+## 8. Rollout (reviewed 2026-10-13)
 
-1. Run `scripts/migrate_db.py` against production before merging.
+Every step is Ben's to run; nothing here happens automatically except the
+deploys in step 2.
+
+1. From the branch, run `scripts/migrate_db.py` against production before
+   merging. The change only adds a nullable column with a UNIQUE index and
+   loosens the CHECK, so the code already deployed keeps working against it.
 2. Merge. The functions and people-api deploy, and the nightly sync starts
    deriving `linkedin_url`.
-3. Run `scripts/clear_sync_token.py`, then trigger `people-sync` once. That
-   full pass adopts existing Google contacts that carry a LinkedIn URL, which
-   step 5's duplicate check depends on.
+3. Run `scripts/clear_sync_token.py`, then trigger `people-sync` once
+   (`gcloud scheduler jobs run people-sync --location us-central1`). The
+   incremental sync only revisits contacts that changed, so this one full pass
+   is what:
+   - writes `linkedin_url` onto already-linked rows (measured 2026-10-13: only
+     5 rows carry a profile URL in Google today);
+   - adopts the previously skipped contacts whose only identifier is a
+     LinkedIn URL.
+
+   The §5 Google index already stops the seed from creating duplicates of
+   these. This pass makes them `link` instead of `in Google, not synced`.
+   Check the run's counts in the logs (`fetch-people-logs`): `linkedin_conflict`
+   should be 0. Any other number is the count of Google contacts sharing a
+   profile URL, which is worth merging in Google before step 6.
 4. Run `.venv/bin/python scripts/import_linkedin.py <latest export>`, so
-   connections link by URL.
+   connections link by URL (`match_method = 'url'`). Optional: the seed's
+   `link` outcome would link them anyway, but this keeps the snapshot's own
+   match counts truthful.
 5. Run `.venv/bin/python scripts/outreach_seed.py --dry-run`. Ben reviews the
-   creates and the possible duplicates.
+   four lists.
    - To merge a possible duplicate, add the LinkedIn URL to the existing
-     Google contact with `editing-person`, which updates its `urls`, then
-     re-run the dry run.
-6. Run `scripts/outreach_seed.py`, then reassess the queue with the
-   `working-outreach-queue` skill.
+     Google contact with `editing-person`. A `urls` PATCH replaces the whole
+     list, so it includes the contact's existing URLs. The PATCH's own
+     `sync_one` writes `linkedin_url`; the re-run dry run then shows the
+     person as `link`.
+   - An `in Google, not synced` entry clears after the next nightly sync, or
+     at once with `POST /people/{ident}/sync` on the contact.
+6. Run `.venv/bin/python scripts/outreach_seed.py`. Check that
+   `outreach queue --stage candidate` grew by the link and create counts, then
+   reassess the queue with the `working-outreach-queue` skill. The new
+   contacts carry the `from-linkedin` label in Google Contacts.
 
 ## 9. Out of scope
 
