@@ -161,11 +161,11 @@ def cmd_draft(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -
     stage = contact["stage"] if contact else "not in the pipeline"
     if stage != "to_contact":
         print(f"warning: {_label(person)} is {stage}, not to_contact", file=out)
-    draft = inbox_api.create_draft([person["email"]], subject=args.subject)
-    print(
-        f"draft created from the primary mailbox: {draft.get('web_link') or draft.get('id')}",
-        file=out,
-    )
+    sender = outreach.brief_from_address()
+    if not sender:
+        raise CliError("OUTREACH_FROM_ADDRESSES is unset; no address to send the brief from")
+    draft = inbox_api.create_draft([person["email"]], subject=args.subject, from_address=sender)
+    print(f"draft created from {sender}: {draft.get('web_link') or draft.get('id')}", file=out)
 
 
 def cmd_mark(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:

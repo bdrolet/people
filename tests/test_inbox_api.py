@@ -1,7 +1,33 @@
 from clients import inbox_api
 
 
-def test_create_draft_never_sends_a_from_block(monkeypatch):
+def _capture_post(monkeypatch):
+    monkeypatch.setenv("INBOX_API_URL", "https://inbox.example.test")
+    monkeypatch.setattr(inbox_api.gcp_auth, "id_token_for", lambda aud: "tok")
+    seen = {}
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"id": "d1"}
+
+    def post(url, json, headers, timeout):
+        seen.update(json=json)
+        return Resp()
+
+    monkeypatch.setattr(inbox_api.httpx, "post", post)
+    return seen
+
+
+def test_create_draft_sends_the_from_address_as_an_alias(monkeypatch):
+    seen = _capture_post(monkeypatch)
+    inbox_api.create_draft(["alice@example.com"], subject="", from_address="ben@example.com")
+    assert seen["json"]["from"] == {"address": "ben@example.com", "shared": False}
+
+
+def test_create_draft_without_from_address_sends_no_from_block(monkeypatch):
     monkeypatch.setenv("INBOX_API_URL", "https://inbox.example.test")
     monkeypatch.setattr(inbox_api.gcp_auth, "id_token_for", lambda aud: "tok")
     seen = {}

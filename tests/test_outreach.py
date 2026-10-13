@@ -429,6 +429,13 @@ def test_outreach_sender_is_case_and_space_insensitive(monkeypatch):
     assert not svc.is_outreach_sender("ben@consulting.example.com")
 
 
+def test_brief_from_address_is_the_first_outreach_address(monkeypatch):
+    monkeypatch.setenv("OUTREACH_FROM_ADDRESSES", " Ben@Consulting.Example.com , other@example.com")
+    assert svc.brief_from_address() == "ben@consulting.example.com"
+    monkeypatch.setenv("OUTREACH_FROM_ADDRESSES", " ")
+    assert svc.brief_from_address() is None
+
+
 def test_queue_item_matches_the_spec_shape():
     row = {
         "id": 42,
