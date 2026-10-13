@@ -515,3 +515,30 @@ def nudge(
         1, {"channel": channel, "source": source, "n": NUDGE_LABELS[min(n, 3) - 1]}
     )
     return event_id
+
+
+def advance_from_sent(
+    conn: Any, person_id: int, *, at: datetime, graph_message_id: str | None
+) -> tuple[str, int] | None:
+    """Mail from an outreach address to a pipeline contact (working-queue spec §3.3): it
+    briefs a `to_contact` row and nudges a `briefed` one. Any other stage, or no row, is
+    ignored. Returns the kind and the new event id, if one was written."""
+    row = outreach_repo.lock_contact(conn, person_id)
+    if row is None:
+        return None
+    if row["stage"] == "to_contact":
+        event_id = advance_from_event(
+            conn, person_id, "briefed", at=at, graph_message_id=graph_message_id
+        )
+        return ("briefed", event_id) if event_id is not None else None
+    if row["stage"] == "briefed":
+        event_id = nudge(
+            conn,
+            person_id,
+            at=at,
+            channel="email",
+            source="event",
+            graph_message_id=graph_message_id,
+        )
+        return ("nudge", event_id) if event_id is not None else None
+    return None

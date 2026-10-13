@@ -718,3 +718,37 @@ def test_advance_stores_a_note_on_the_event(repo):
     _at(repo, 1, "to_contact")
     svc.advance(None, 1, "skipped", at=TS, source="cli", note="moved abroad")
     assert repo.events[-1]["note"] == "moved abroad"
+
+
+def test_advance_from_sent_briefs_a_to_contact_row(repo):
+    _at(repo, 1, "to_contact")
+    assert svc.advance_from_sent(None, 1, at=TS, graph_message_id="g1") == ("briefed", 1)
+    assert repo.contacts[1]["stage"] == "briefed"
+
+
+def test_advance_from_sent_nudges_a_briefed_row(repo):
+    _briefed(repo)
+    at = BRIEF + timedelta(days=7)
+    assert svc.advance_from_sent(None, 1, at=at, graph_message_id="g2") == ("nudge", 1)
+    assert repo.events[0]["channel"] == "email" and repo.events[0]["source"] == "event"
+
+
+@pytest.mark.parametrize("stage", ["candidate", "replied", "introduced", "declined", "skipped"])
+def test_advance_from_sent_ignores_other_stages(repo, stage):
+    # e.g. a thank-you from the consulting address to someone who already replied
+    _briefed(repo)
+    repo.contacts[1]["stage"] = stage
+    at = BRIEF + timedelta(days=8)
+    assert svc.advance_from_sent(None, 1, at=at, graph_message_id="g3") is None
+    assert repo.events == [] and repo.contacts[1]["stage"] == stage
+
+
+def test_advance_from_sent_without_a_row(repo):
+    assert svc.advance_from_sent(None, 9, at=TS, graph_message_id="g1") is None
+
+
+def test_advance_from_sent_replaying_the_brief_records_nothing(repo):
+    _at(repo, 1, "to_contact")
+    assert svc.advance_from_sent(None, 1, at=TS, graph_message_id="g1") == ("briefed", 1)
+    assert svc.advance_from_sent(None, 1, at=TS, graph_message_id="g1") is None
+    assert len(repo.events) == 1
