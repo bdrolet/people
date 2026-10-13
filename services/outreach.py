@@ -133,15 +133,25 @@ def iso_week(d: date | None) -> str:
     return f"{year}-W{week:02d}"
 
 
-def is_outreach_sender(address: str) -> bool:
-    """Spec §6.2: only these identities' sent mail counts as a brief. The list is env
-    (OUTREACH_FROM_ADDRESSES, comma-separated) so the public repo holds no address."""
-    wanted = {
+def _outreach_addresses() -> list[str]:
+    return [
         a.strip().lower()
         for a in os.environ.get("OUTREACH_FROM_ADDRESSES", "").split(",")
         if a.strip()
-    }
-    return (address or "").strip().lower() in wanted
+    ]
+
+
+def is_outreach_sender(address: str) -> bool:
+    """Spec §6.2: only these identities' sent mail counts as a brief. The list is env
+    (OUTREACH_FROM_ADDRESSES, comma-separated) so the public repo holds no address."""
+    return (address or "").strip().lower() in set(_outreach_addresses())
+
+
+def brief_from_address() -> str | None:
+    """The identity `outreach draft` sends from: the first OUTREACH_FROM_ADDRESSES entry.
+    inbox-api's default sender is not a consulting address, so drafts name it explicitly."""
+    addresses = _outreach_addresses()
+    return addresses[0] if addresses else None
 
 
 def _count_event(pipeline: str, stage: str, channel: str | None, source: str) -> None:

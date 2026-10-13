@@ -224,19 +224,33 @@ def test_draft_refuses_a_person_without_email(monkeypatch, run):
     assert code == 1 and "no email" in err
 
 
-def test_draft_goes_from_the_primary_mailbox(monkeypatch, run):
+def test_draft_goes_from_the_consulting_address(monkeypatch, run):
+    monkeypatch.setenv("OUTREACH_FROM_ADDRESSES", "ben@consulting.example.com,other@example.com")
     monkeypatch.setattr(cli.outreach, "get_contact", lambda c, pid: {"stage": "to_contact"})
     seen = {}
     monkeypatch.setattr(
         cli.inbox_api,
         "create_draft",
-        lambda to, subject, body="": (
-            seen.update(to=to, subject=subject, body=body) or {"id": "d", "web_link": "https://o/d"}
+        lambda to, subject, body="", from_address=None: (
+            seen.update(to=to, subject=subject, body=body, from_address=from_address)
+            or {"id": "d", "web_link": "https://o/d"}
         ),
     )
     code, out, _ = run("draft", "alice@example.com")
-    assert code == 0 and "https://o/d" in out
-    assert seen == {"to": ["alice@example.com"], "subject": "", "body": ""}
+    assert code == 0 and "https://o/d" in out and "ben@consulting.example.com" in out
+    assert seen == {
+        "to": ["alice@example.com"],
+        "subject": "",
+        "body": "",
+        "from_address": "ben@consulting.example.com",
+    }
+
+
+def test_draft_without_outreach_addresses_is_a_user_error(monkeypatch, run):
+    monkeypatch.delenv("OUTREACH_FROM_ADDRESSES", raising=False)
+    monkeypatch.setattr(cli.outreach, "get_contact", lambda c, pid: {"stage": "to_contact"})
+    code, _, err = run("draft", "alice@example.com")
+    assert code == 1 and "OUTREACH_FROM_ADDRESSES" in err
 
 
 def test_parse_at():
