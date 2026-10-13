@@ -116,49 +116,78 @@ them needs the guards below, not just the linked branch.
   URL, so a re-created contact with the same URL conflicts, just as a
   re-created contact with a tombstoned email is left alone today.
 
-## 5. The seed creates LinkedIn-only contacts (drafted)
+## 5. The seed creates LinkedIn-only contacts (reviewed 2026-10-13)
 
 `services/outreach_seed.py` stays pure. It already reports warm LinkedIn rows
 with `person_id IS NULL` as `unlinked`. It gains one new piece of output: for
-each unlinked LinkedIn row, a classification.
+each unlinked LinkedIn row, exactly one outcome, checked in this order.
 
-- **`create`.** Nothing in `people` could be this person.
-- **`possible duplicate of <ids>`.** A `people` row whose `display_name`
-  shares the normalized last name and first initial. Examples are
-  "Jon Smith" for "Jonathan Smith" (placeholder names; the repo is public).
-  These are listed, never created.
+- **`link <id>`.** A `people` row already holds this normalized URL in
+  `people.linkedin_url`. It got there through rollout step 3's adoption, a
+  possible duplicate Ben resolved by adding the URL (§8 step 5), or an
+  earlier seed run that `import_linkedin` hasn't re-matched yet. Google is
+  not touched.
+- **`in Google, not synced`.** No `people` row holds the URL, but a Google
+  contact does (see the Google index below). Listed, never created: the
+  nightly sync adopts it, and the next run links it.
+- **`possible duplicate of <ids>`.** A `people` row, or a Google contact with
+  no row, whose name shares the normalized last name and first initial, for
+  example "Jon Smith" for "Jonathan Smith" (placeholder names; the repo is
+  public). A Google-only match carries no id and is shown as "in Google, no
+  row". These are listed, never created.
+- **`create`.** None of the above.
 
-`scripts/outreach_seed.py` then works through the `create` entries.
+**The Google index.** The People API's `searchContacts` doesn't index `urls`,
+but the repo already reads the whole contact list for phone duplicates
+(`clients/google_contacts.py::list_phone_index`, one page per 1,000
+contacts). A matching `list_url_index()` does the same for profile URLs
+(normalized with `normalize_profile_url`) and returns each contact's name
+alongside. The script fetches it once per run and passes the URL and name
+indexes to `plan()`. The name index is what makes D4 hold on the Google side
+too: the 87 Google contacts with no identifier at all (measured 2026-09-28)
+have no `people` row, so a name check against `people` alone can't see them.
 
-1. It calls `services/person_create.py::create(conn, contact=...)`. That is
-   the same path as `POST /people`, so validation, the duplicate refusal and
-   `apply_person` are reused. The contact holds:
+**Inputs.** `plan()` gains `people_rows` (`id`, `display_name`,
+`linkedin_url`) and the two Google indexes. `repo/outreach.py::linkedin_seed_rows`
+also selects `first_name` and `last_name`, which `linkedin_connections`
+already stores.
+
+`scripts/outreach_seed.py` then works through the `link` and `create`
+entries.
+
+1. **`link`** sets `linkedin_connections.person_id` with `match_method = 'url'`
+   and enters the person at `candidate` (`outreach.ensure_contact`,
+   `source = 'seed'`).
+2. **`create`** calls `services/person_create.py::create(conn, contact=...)`.
+   That is the same path as `POST /people`, so validation, the duplicate
+   refusal and `apply_person` are reused. The contact holds:
    - `names: [{givenName, familyName}]` from the export;
    - `organizations: [{name: company, title: position}]`;
    - `urls: [{value: "https://www.linkedin.com/in/<slug>", type: "profile"}]`.
 
    The call adds a `from-linkedin` label, so Ben can find or clean these in
-   Google Contacts.
-2. `person_create.create` accepts a LinkedIn URL as the identifier, extending
-   `contact_fields.identifiers` to return it. It refuses a duplicate found by
-   `people.linkedin_url`.
-   - There is no Google-side URL search, because the People API's
-     `searchContacts` doesn't index `urls`.
-   - The safeguard is rollout step 3 (§8): a full sync before the first
-     seeded run adopts every existing contact that carries a LinkedIn URL.
-3. It sets `linkedin_connections.person_id` for that profile URL, with
-   `match_method = 'url'`.
-4. It enters the person at `candidate` (`outreach.ensure_contact`,
-   `source = 'seed'`).
-5. It commits after each person.
-   - A Google or quota failure on one person is reported and counted. The run
-     continues.
-   - Re-running is safe: a created person now has a `people.linkedin_url`, so
-     a second run links instead of creating.
+   Google Contacts. It then links and enters the person exactly as `link`
+   does.
+3. `person_create.create` accepts a LinkedIn URL as the identifier
+   (`contact_fields.identifiers` returns it). It refuses a duplicate found by
+   `people.linkedin_url` (409 with the existing id), and a Google-only match
+   from `list_url_index()` (409 with no candidates), as it does for phones.
+4. The script commits after each person, so `run()` stops being one
+   `with get_conn()` transaction.
+   - A Google or quota failure on one person is reported and counted. The
+     run continues.
+   - Re-running is safe. A created person now has a `people.linkedin_url`,
+     so a second run classifies them as `link`. If the Google create
+     succeeded but the DB commit didn't, the Google index catches the
+     orphan as `in Google, not synced` instead of creating a second contact.
+5. Google calls retry on HTTP 429 with backoff (`execute(num_retries=…)`).
+   Nothing in `clients/google_contacts.py` retries today, so this is new.
+   Creation is sequential.
 
-`--dry-run` prints three counts: created, possible duplicates and skipped. It
-then lists every `create` and every possible duplicate with its candidate ids,
-and writes nothing. Creation is sequential, retrying on HTTP 429.
+`--dry-run` prints four counts: link, create, possible duplicate, and in
+Google not synced. It then lists every entry with its candidate ids, and
+writes nothing. Unlinked iMessage and WhatsApp rows are still listed
+separately, as today.
 
 The CLI needs no new channel: `outreach mark <person> briefed --channel
 linkedin` and `outreach nudge … --channel linkedin` already exist. A
