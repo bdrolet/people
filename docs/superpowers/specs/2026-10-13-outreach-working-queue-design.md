@@ -1,6 +1,9 @@
 # Outreach working queue: follow-ups, targets, ranking and a skill
 
-**Status:** design, approved in conversation 2026-10-13
+**Status:** design. §1–§6 were approved section by section in conversation on
+2026-10-13. Ben approved writing the spec without reviewing §7–§8 section by
+section, so treat them as drafted and confirm them at spec review. See §12 for
+handoff.
 **Builds on:** `2026-10-12-referral-outreach-tooling-design.md` (phase 1, shipped as PR #23).
 Section references of the form "phase-1 §6.2" point there.
 
@@ -351,6 +354,19 @@ The bulk-import entry point keeps pointing at `scripts/import_contacts.py`,
 followed by `outreach_seed.py`. The "HubSpot pipeline stage" section is
 replaced by a pointer to phase 2's HubSpot mirror.
 
+## 8a. CLI changes at a glance
+
+| Command | Change |
+|---|---|
+| `outreach today [--targets PATH] [--json]` | **New** (§5) |
+| `outreach nudge <person> --channel C [--at] [--from] [--note]` | **New** (§3.3) |
+| `outreach rank <person> <n>` / `--file PATH` / `--clear` | **New** (§6.2) |
+| `outreach queue` | **Adds `--json`**: emits `services/outreach.py::queue_item` dicts, already JSON-shaped. `--stage candidate` already works. The skill needs both (§7.3). |
+| `outreach followups` | Prints the nudge 1 / nudge 2 / close classification and the suggested channel (§3.4) |
+| `outreach decide --skip` | **Adds `--note`** (§6.3) |
+| `outreach mark <person> declined` | **Adds `--note`** (§6.3). `declined` is already in `MARK_STAGES`. |
+| `outreach report` | `--floors` falls back to `OUTREACH_FLOORS` (§4.2) |
+
 ## 9. Testing
 
 - `tests/test_outreach.py`, for `nudge`:
@@ -396,3 +412,63 @@ replaced by a pointer to phase 2's HubSpot mirror.
 2. Create `outreach_targets.toml` in the consulting repo and commit it there.
 3. Re-run `scripts/fetch-env.sh`, then `scripts/link-skills.sh`.
 4. Check `outreach today` against production.
+
+## 12. Handoff
+
+**State as of 2026-10-13**
+
+- This spec is the only artifact. It is committed on branch
+  `outreach-working-queue` in `~/src/people`, not pushed, with no PR.
+- No implementation plan exists yet.
+- **Next step:** Ben reviews this spec, confirming §7–§8 in particular. Then
+  write the plan with `superpowers:writing-plans` and save it to
+  `docs/superpowers/plans/2026-10-13-outreach-working-queue.md`. Phase 1 was
+  executed subagent-driven; ask Ben which execution method to use for this
+  one.
+
+**Repo rules** (from `CLAUDE.md`)
+
+- The repo is public. Addresses, targets and floors live in env vars,
+  uncommitted tfvars, or the private `~/src/consulting` repo.
+- Code goes through a feature branch and a PR opened with `/pr-open`,
+  proactively.
+- Run `scripts/migrate_db.py` against production before merging any schema
+  change (§11).
+
+**Current production context**
+
+- **Sending identities.** inbox-api's default sender is `ben@drolet.cloud`
+  (inbox PR #67, `DEFAULT_FROM_ADDRESS`). Consulting mail must name
+  `ben@drolet.ai` explicitly. `OUTREACH_FROM_ADDRESSES=ben@drolet.ai` is the
+  only identity whose sent mail proves a brief, and after this design, a
+  nudge. `outreach draft` already sends from it (people PR #24). Exchange's
+  `SendFromAliasEnabled` was turned on 2026-10-13; verified by test sends.
+- **Pipeline.** The outreach tables are live and empty. The seed
+  (`scripts/outreach_seed.py`, dry run: 122 candidates) has not been run yet;
+  Ben runs it.
+- **Asana.** Phase 1's result tasks (one completed task per countable stage
+  event, tagged `outreach` + `serves:consulting`) stay as they are.
+
+**Phase-1 items parked from review, not part of this work**
+
+- 4xx Asana failures retry forever.
+- The `LIMIT 200` retry can starve newer events.
+- `merge_person` drops the loser's notes and `has_lead`.
+
+## 13. Sources for §3.1
+
+These are vendor studies and advice pieces, directional only.
+
+- Follow-up share of replies and diminishing returns:
+  - <https://belkins.io/blog/sales-follow-up-statistics>
+  - <https://woodpecker.co/blog/cold-email-statistics/>
+  - <https://instantly.ai/blog/follow-up-emails-vs-no-followup/>
+  - <https://www.lemlist.com/blog/how-many-cold-email-follow-ups>
+  - <https://whali.co.uk/blog/how-many-follow-ups-to-send>
+  - <https://optif.ai/learn/questions/follow-up-email-response-rate/>
+  - <https://growthlist.co/cold-email-follow-up-timing/>
+- Referral-request etiquette:
+  - <https://www.salesforge.ai/blog/follow-up-after-no-response>
+  - <https://rolewyn.com/blog/how-to-follow-up-referral-request>
+  - <https://www.scienceofpeople.com/how-to-ask-for-referrals/>
+  - <https://refer.me/blog/how-to-write-the-perfect-referral-request-message>
