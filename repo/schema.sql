@@ -498,3 +498,26 @@ DO $$ BEGIN
              'intro','conversation','proposal','signed','lost','nudge'));
     END IF;
 END $$;
+
+-- LinkedIn profile URL as a third identifier
+-- (docs/superpowers/specs/2026-10-13-linkedin-identity-design.md §3). Normal form
+-- linkedin.com/in/<slug>, derived from the Google contact's urls; NULL for most rows.
+-- UNIQUE so two rows never claim one profile (many NULLs are fine).
+ALTER TABLE people ADD COLUMN IF NOT EXISTS linkedin_url TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS people_linkedin_url_key ON people (linkedin_url);
+
+-- people_has_an_identifier gains the URL. Replaced once: a database whose CHECK already
+-- names linkedin_url is left alone, so the file stays safe to re-run. position(), not LIKE
+-- with wildcards: this file holds no percent sign, so no driver's paramstyle can misread it.
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'people'::regclass
+          AND conname = 'people_has_an_identifier'
+          AND position('linkedin_url' in pg_get_constraintdef(oid)) > 0
+    ) THEN
+        ALTER TABLE people DROP CONSTRAINT IF EXISTS people_has_an_identifier;
+        ALTER TABLE people ADD CONSTRAINT people_has_an_identifier
+            CHECK (email IS NOT NULL OR cardinality(phone_numbers) > 0 OR linkedin_url IS NOT NULL);
+    END IF;
+END $$;

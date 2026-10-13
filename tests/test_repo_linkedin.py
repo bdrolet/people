@@ -68,9 +68,10 @@ REC = LinkedInRecommendation(
 
 
 def test_names_for_matching():
-    conn = FakeConn(results=[[{"id": 1, "email": "a@b.c", "display_name": "A"}]])
-    assert people.names_for_matching(conn) == [{"id": 1, "email": "a@b.c", "display_name": "A"}]
-    assert conn.calls[0] == ("SELECT id, email, display_name FROM people", None)
+    found = [{"id": 1, "email": "a@b.c", "display_name": "A", "linkedin_url": None}]
+    conn = FakeConn(results=[found])
+    assert people.names_for_matching(conn) == found
+    assert conn.calls[0] == ("SELECT id, email, display_name, linkedin_url FROM people", None)
 
 
 def test_replace_snapshot_writes_person_id():

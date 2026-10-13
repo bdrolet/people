@@ -9,7 +9,7 @@ _COLUMNS = """
     id, email, display_name, first_seen, last_seen, last_contacted, message_count,
     my_response_count, notes, eligible, automated,
     google_resource_name, google_etag, google_deleted_at, hubspot_contact_id,
-    hubspot_synced_at, phone_numbers, company, job_title, google_fields, updated_at,
+    hubspot_synced_at, phone_numbers, company, job_title, google_fields, linkedin_url, updated_at,
     GREATEST(COALESCE(last_seen, 'epoch'::timestamptz), COALESCE(last_contacted, 'epoch'::timestamptz)) AS last_interaction,
     ARRAY(
         SELECT g.name FROM people_labels pl
@@ -97,6 +97,12 @@ def get_by_phone(conn: Any, e164: str) -> list[dict]:
     ).fetchall()
 
 
+def get_by_linkedin_url(conn: Any, url: str) -> dict | None:
+    """`url` is already normalized (services/linkedin_export.py::normalize_profile_url);
+    the UNIQUE index means at most one row."""
+    return conn.execute(f"SELECT {_COLUMNS} FROM people WHERE linkedin_url = %s", (url,)).fetchone()
+
+
 def get_by_google_resource(conn: Any, resource_name: str) -> dict | None:
     return conn.execute(
         f"SELECT {_COLUMNS} FROM people WHERE google_resource_name = %s", (resource_name,)
@@ -149,6 +155,7 @@ def set_google(
     company: str | None,
     job_title: str | None,
     google_fields: dict,
+    linkedin_url: str | None = None,
 ) -> None:
     conn.execute(
         """
@@ -161,6 +168,7 @@ def set_google(
             company              = %s,
             job_title            = %s,
             google_fields        = %s::jsonb,
+            linkedin_url         = %s,
             updated_at           = now()
         WHERE email = %s
         """,
@@ -173,6 +181,7 @@ def set_google(
             company,
             job_title,
             google_fields,
+            linkedin_url,
             _norm(email),
         ),
     )
@@ -189,6 +198,7 @@ def update_from_google(
     company: str | None,
     job_title: str | None,
     google_fields: dict,
+    linkedin_url: str | None = None,
     email: str | None = None,
 ) -> None:
     """Google is the truth for these fields: overwrite, including with NULL.
@@ -205,6 +215,7 @@ def update_from_google(
         "company = %s",
         "job_title = %s",
         "google_fields = %s::jsonb",
+        "linkedin_url = %s",
         "updated_at = now()",
     ]
     params: list[Any] = [
@@ -215,6 +226,7 @@ def update_from_google(
         company,
         job_title,
         google_fields,
+        linkedin_url,
     ]
     if email is not None:
         set_clauses.append("email = %s")
@@ -230,6 +242,14 @@ def email_owner(conn: Any, email: str) -> int | None:
     """The id of the person holding this address, or None. Guards promotion:
     writing a claimed address violates people_email_key and aborts the sync."""
     row = conn.execute("SELECT id FROM people WHERE email = %s", (_norm(email),)).fetchone()
+    return row["id"] if row else None
+
+
+def linkedin_owner(conn: Any, url: str) -> int | None:
+    """The id of the person holding this profile URL, or None. Guards every
+    apply_person write: a claimed URL violates people_linkedin_url_key and
+    aborts the sync (linkedin-identity design §4)."""
+    row = conn.execute("SELECT id FROM people WHERE linkedin_url = %s", (url,)).fetchone()
     return row["id"] if row else None
 
 
@@ -256,14 +276,15 @@ def create_from_google(
     company: str | None,
     job_title: str | None,
     google_fields: dict,
+    linkedin_url: str | None = None,
 ) -> dict:
     """A contact Ben made by hand that people has never seen mail from."""
     return conn.execute(
         f"""
         INSERT INTO people (email, display_name, first_seen, eligible, automated,
                             google_resource_name, google_etag, notes,
-                            phone_numbers, company, job_title, google_fields)
-        VALUES (%s, %s, now(), TRUE, FALSE, %s, %s, %s, %s::text[], %s, %s, %s::jsonb)
+                            phone_numbers, company, job_title, google_fields, linkedin_url)
+        VALUES (%s, %s, now(), TRUE, FALSE, %s, %s, %s, %s::text[], %s, %s, %s::jsonb, %s)
         ON CONFLICT (email) DO UPDATE SET
             google_resource_name = EXCLUDED.google_resource_name,
             google_etag = EXCLUDED.google_etag,
@@ -271,6 +292,7 @@ def create_from_google(
             notes = EXCLUDED.notes,
             phone_numbers = EXCLUDED.phone_numbers, company = EXCLUDED.company,
             job_title = EXCLUDED.job_title, google_fields = EXCLUDED.google_fields,
+            linkedin_url = EXCLUDED.linkedin_url,
             eligible = TRUE, updated_at = now()
         RETURNING {_COLUMNS}
         """,
@@ -284,6 +306,7 @@ def create_from_google(
             company,
             job_title,
             google_fields,
+            linkedin_url,
         ),
     ).fetchone()
 
@@ -352,8 +375,9 @@ def eligible_not_in_hubspot(conn: Any, limit: int) -> list[dict]:
 
 
 def names_for_matching(conn: Any) -> list[dict]:
-    """Every row's id, email and display_name, for scripts/import_linkedin.py's soft link."""
-    return conn.execute("SELECT id, email, display_name FROM people").fetchall()
+    """Every row's id, email, display_name and LinkedIn URL, for scripts/import_linkedin.py's
+    soft link (URL first, then email, then name)."""
+    return conn.execute("SELECT id, email, display_name, linkedin_url FROM people").fetchall()
 
 
 def rows_for_imessage_matching(conn: Any) -> list[dict]:
