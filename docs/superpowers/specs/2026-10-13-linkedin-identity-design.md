@@ -209,40 +209,87 @@ channel names, not hardcoded), and adds a separating space:
 same column whatever mix of channels a person has. A full line is about 85
 characters.
 
-## 7. Testing (drafted)
+## 7. Testing (reviewed 2026-10-13)
 
+Unit tests use the existing fakes. The real-Postgres tests run only with
+`TEST_DATABASE_URL` set (a throwaway `postgres:16` container locally; CI sets
+it).
+
+**§3: identity and data model**
 - `tests/test_linkedin_export.py`:
-  - `normalize_profile_url`: scheme, `www`, query string, trailing slash,
-    case, and a company URL giving `None`;
-  - `match_people` gains a URL step that takes precedence over name.
-- `tests/test_contact_fields.py`:
-  - `derive` returns `linkedin_url` from `urls`: the first valid one wins, and
-    a non-profile URL is ignored;
-  - `identifiers` includes it.
-- `tests/test_identity.py`: a profile URL classifies as `linkedin`; an email
-  containing "linkedin" is still classified as an email.
+  - `normalize_profile_url`: scheme, `www`, query string, fragment, trailing
+    slash and case are stripped; a company URL (`/company/…`) and a bare
+    `linkedin.com` give `None`. This is a behaviour change: today a company
+    URL comes back unchanged. Production has none outside `/in/` (measured
+    2026-10-13: 0 of 1,885 connection URLs, 0 message sender URLs), so no
+    stored key changes;
+  - parsing a messages CSV whose sender is a non-profile URL drops it, as a
+    blank one is dropped today;
+  - `match_people`: the URL step comes first, wins over email and name, and
+    sets `match_method = 'url'`.
+- `tests/test_import_linkedin.py`: `names_for_matching` returns
+  `linkedin_url`, and the import links by it.
+- `tests/test_contact_fields.py`: `derive` returns `linkedin_url` from `urls`
+  (the first one that normalizes wins; a non-profile URL is ignored;
+  `None` when there is none); `identifiers` returns it.
+- `tests/test_identity.py`: a profile URL, with or without scheme, classifies
+  as `linkedin`; `linkedin.com/in/12345` is `linkedin`, not an id or a phone;
+  an email containing "linkedin" is still an email.
+- `tests/test_person_lookup.py`: resolves a person by URL.
+- `tests/test_api.py`: GET, PATCH and `POST …/sync` resolve a person by a
+  `%2F`-encoded URL and by a raw one (`{ident:path}`).
+
+**§4: sync edge cases**
 - `tests/test_google_contacts_sync.py`:
   - adopting a LinkedIn-only contact;
-  - a claimed URL counted as `linkedin_conflict` and not written;
-  - the last identifier kept;
-  - a later email promoted.
-- `tests/test_person_create.py`:
-  - a URL-only contact is accepted;
-  - a duplicate URL gets a 409 naming the existing id.
-- `tests/test_outreach_seed.py`: classification into create and possible
-  duplicate, including the last name plus first initial rule.
-- Script test (`tests/test_outreach_seed.py`, scripted fakes):
-  - per-person commit;
-  - one failure doesn't stop the run;
+  - a URL claimed by another row is dropped on each of the four write paths
+    (linked update, `_link`, email-less adoption, email create); a contact
+    left with no identifier is counted `linkedin_conflict`;
+  - a linked row keeps its own URL across repeated syncs (the owner check
+    excludes the row itself);
+  - a row's last identifier is kept when Google loses it;
+  - a phone-only row whose contact swaps its phone for a URL is updated,
+    not skipped;
+  - a LinkedIn-only row that gains an email is promoted.
+- `tests/test_repo_people.py`: `linkedin_owner` returns the holder's id or
+  `None`.
+- `tests/test_contact_fields.py`: `check_identifier_kept` refuses a `urls`
+  submission that removes a LinkedIn-only person's last URL, allows an empty
+  `phoneNumbers` while a URL remains, and keeps today's phone-only behaviour.
+- `tests/test_person_edit.py`: that refusal is a 409 and writes nothing to
+  Google.
+
+**§5: the seed**
+- `tests/test_google_contacts.py`: `list_url_index` normalizes URLs, keeps
+  names, ignores non-profile URLs, and pages; Google calls pass
+  `num_retries`.
+- `tests/test_person_create.py`: a URL-only contact is accepted; a duplicate
+  `people.linkedin_url` is a 409 naming the existing id; a Google-only URL
+  match is a 409 with no candidates.
+- `tests/test_outreach_seed.py`, `plan()`:
+  - each of the four outcomes, and their precedence (`link` before
+    `in Google, not synced` before `possible duplicate` before `create`);
+  - the last-name-plus-first-initial rule against `people` rows and against
+    Google-only names.
+- `tests/test_outreach_seed.py`, the script with scripted fakes:
+  - `link` sets `person_id` and enters at `candidate` without calling Google;
+  - `create` commits per person; one failure doesn't stop the run;
   - a re-run links instead of creating;
-  - the dry run writes nothing.
-- Real-Postgres tests (`tests/test_schema.py`, `tests/test_outreach_db.py`):
-  - the constraint accepts a row with only `linkedin_url` and rejects a row
-    with none of the three;
-  - the migration runs twice;
-  - the UNIQUE constraint on `linkedin_url` holds.
+  - an orphaned Google contact (create succeeded, commit failed) is reported
+    as `in Google, not synced`, not created again;
+  - the dry run prints the four counts and writes nothing.
+
+**§6: the `today` column**
 - `tests/test_outreach_today.py`: with all four channels, `last` is preceded
   by a space and starts in the same column as on a one-channel line.
+
+**Real Postgres** (`tests/test_schema.py`, `tests/test_outreach_db.py`)
+- the constraint accepts a row with only `linkedin_url` and rejects a row with
+  none of the three;
+- the migration runs twice, and resumes after a partial apply;
+- the UNIQUE constraint on `linkedin_url` holds, and several NULLs coexist;
+- `create_from_google`, `update_from_google` and `set_google` round-trip
+  `linkedin_url`.
 
 ## 8. Rollout (drafted)
 
