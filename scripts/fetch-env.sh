@@ -33,4 +33,8 @@ POSTGRES_PASSWORD=$(secret people-db-password 2>/dev/null || echo "")
 PEOPLE_SYNC_TOKEN=$(secret people-sync-token 2>/dev/null || echo "")
 EOF
 grep -q '^TASKS_API_URL=.' .env || sed -i '' 's|^TASKS_API_URL=.*|TASKS_API_URL=https://tasks-api.drolet.cloud|' .env
+# Outreach targets and floors live in the private consulting repo (the repo is public).
+CONSULTING_DOCS="$HOME/src/consulting/docs"
+[ -f "$CONSULTING_DOCS/outreach_targets.toml" ] && echo "OUTREACH_TARGETS=$CONSULTING_DOCS/outreach_targets.toml" >> .env
+[ -f "$CONSULTING_DOCS/client_funnel_floors.toml" ] && echo "OUTREACH_FLOORS=$CONSULTING_DOCS/client_funnel_floors.toml" >> .env
 echo ".env written"

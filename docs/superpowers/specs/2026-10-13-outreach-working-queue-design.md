@@ -1,6 +1,6 @@
 # Outreach working queue: follow-ups, targets, ranking and a skill
 
-**Status:** design. §1–§6 were approved section by section in conversation on
+**Status:** implemented (see `docs/superpowers/plans/2026-10-13-outreach-working-queue.md`). Design. §1–§6 were approved section by section in conversation on
 2026-10-13. §7–§8 were reviewed the same day and revised: `adding-referral-contact`
 is folded into `working-outreach-queue`, nudge items carry the brief's thread,
 and the outcome commands match the CLI. See §12 for handoff.
@@ -229,10 +229,10 @@ Both are capped at `per_week`, or at `total` for the plan.
 ### 5.2 Output
 
 ```
-Outreach: Tue 2026-10-14                                    ON PACE
+Outreach: Wed 2026-10-14                                    BEHIND
 
 Briefs   today 2/5 · week 7/10 expected (25) · need 3 today · plan 7/10 by today (150 by Nov 21)
-Nudges   due 3 (1 overdue) · sent this week 4
+Nudges   due 2 (1 overdue) · sent this week 4
 Queue    38 at to_contact (7.6 workdays)
 
 Brief next
@@ -243,6 +243,8 @@ Nudge
 Propose close
   Kim Wu            briefed 09-22 · 2 nudges, no reply → outreach mark 41 declined
 ```
+
+2026-10-14 is a Wednesday; Monday 10-12 is before the plan's start, so the week's marks count from Tuesday. An overdue nudge makes the verdict `BEHIND`. Nudges due counts nudge items; proposed closes are listed separately.
 
 `--json` emits the same data for the skill. Each nudge and propose-close
 item carries `brief: {channel, at, graph_message_id}`,
@@ -485,7 +487,7 @@ so it becomes the **Add a person** procedure in `working-outreach-queue`
   - email-proven events are never recorded by hand;
   - target edits are committed in the consulting repo, not pushed;
   - PDL and Apify enrichment are out of scope.
-- No implementation plan exists yet.
+- The plan is `docs/superpowers/plans/2026-10-13-outreach-working-queue.md`.
 - **Next step:** Ben approves this spec as a whole. Then write the plan with
   `superpowers:writing-plans` and save it to
   `docs/superpowers/plans/2026-10-13-outreach-working-queue.md`. Phase 1 was
