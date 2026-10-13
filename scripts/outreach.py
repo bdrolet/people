@@ -3,11 +3,14 @@
 """Work the referral outreach pipeline
 (docs/superpowers/specs/2026-10-12-referral-outreach-tooling-design.md §7.4). Local only.
 
-  python scripts/outreach.py queue [--stage S] [--limit N]
-  python scripts/outreach.py decide <person> [--skip]
+  python scripts/outreach.py today [--targets PATH] [--json]
+  python scripts/outreach.py queue [--stage S] [--limit N] [--json]
+  python scripts/outreach.py decide <person> [--skip [--note TEXT]]
+  python scripts/outreach.py rank <person> <n> | --file PATH | --clear
   python scripts/outreach.py draft <person> [--subject S]
   python scripts/outreach.py mark <person> briefed|replied|declined|to_contact
-                                  [--channel C] [--at T] [--from ADDR] [--force]
+                                  [--channel C] [--at T] [--from ADDR] [--force] [--note TEXT]
+  python scripts/outreach.py nudge <person> --channel C [--at T] [--from ADDR] [--note TEXT]
   python scripts/outreach.py lead <person> "<name, company>"
   python scripts/outreach.py intro <referrer> "<buyer name, company>" [--buyer <person>] [--at T]
   python scripts/outreach.py conversation|proposal|signed <opportunity-id> [--at T]
@@ -21,11 +24,17 @@ York time) or a full ISO timestamp; it defaults to now. Every stage change is co
 before any tasks-api, inbox-api or Google call, so a failed side effect never loses a
 count: `sync-asana` retries the Asana half. `mark --force` reopens a declined or skipped
 referrer to any stage but candidate (e.g. `mark replied --force` records a late reply
-after a no-response decline). Runs against whatever DB clients/db.py
+after a no-response decline). `today` reads its targets from --targets or OUTREACH_TARGETS;
+`report` reads floors from --floors or OUTREACH_FLOORS (scripts/fetch-env.sh writes both).
+`--note` goes on `decide --skip`, `mark ... declined` and `nudge`, and is never sent anywhere.
+Runs against whatever DB clients/db.py
 resolves from env, like the import scripts.
 """
 
 import argparse
+import contextlib
+import json
+import os
 import sys
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time
@@ -42,7 +51,15 @@ load_dotenv()
 import clients.otel as otel
 from clients import inbox_api
 from models.outreach import CHANNELS, LOST_REASONS, REFERRER_STAGES, Advance
-from services import outreach, outreach_report, outreach_sync, person_edit, person_lookup
+from services import (
+    outreach,
+    outreach_report,
+    outreach_sync,
+    outreach_targets,
+    outreach_today,
+    person_edit,
+    person_lookup,
+)
 from services.ingest import parse_ts
 
 LABEL = "consulting-outreach"  # Google Contacts label marking cohort membership (spec §7.1)
@@ -58,6 +75,8 @@ USER_ERRORS = (
     outreach.InvalidTransition,
     outreach.NotInPipeline,
     outreach.OpportunityNotFound,
+    outreach.NotQueued,
+    outreach_targets.TargetsError,
     outreach_report.FloorsError,
     inbox_api.InboxApiUnavailable,
     httpx.HTTPError,
@@ -104,40 +123,46 @@ def _changed(res: Advance) -> str:
 
 def cmd_queue(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:
     items = outreach.queue(conn, stage=args.stage, limit=args.limit)
-    rows = [
-        [
-            i["person"]["id"],
-            _label(i["person"]),
-            i["person"]["company"] or "",
-            i["last_interaction"] or "never",
-            " ".join(k for k, v in i["channels"].items() if v),
-            i["follow_up_on"] or "",
-            "lead" if i["has_lead"] else "",
+    if args.json:
+        print(json.dumps(items, indent=2), file=out)
+    elif items:
+        rows = [
+            [
+                i["person"]["id"],
+                i["rank"] or "",
+                _label(i["person"]),
+                i["person"]["company"] or "",
+                i["last_interaction"] or "never",
+                " ".join(k for k, v in i["channels"].items() if v),
+                i["follow_up_on"] or "",
+                "lead" if i["has_lead"] else "",
+            ]
+            for i in items
         ]
-        for i in items
-    ]
-    if rows:
         print(
             outreach_report.table(
-                ["id", "name", "company", "last", "channels", "follow-up", ""], rows
+                ["id", "rank", "name", "company", "last", "channels", "follow-up", ""], rows
             ),
             file=out,
         )
     else:
         print(f"no contacts at {args.stage}", file=out)
+    warn_to = sys.stderr if args.json else out
     for s in outreach.shared_briefs(conn):
         print(
             f"warning: one email ({s['graph_message_id']}) briefed {s['n']} contacts; "
             "a group note is not a brief",
-            file=out,
+            file=warn_to,
         )
 
 
 def cmd_decide(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:
+    if args.note and not args.skip:
+        raise CliError("--note goes with --skip (a reason to skip); put context in the notes")
     person = _resolve(conn, args.person)
     target = "skipped" if args.skip else "to_contact"
     outreach.ensure_contact(conn, person["id"], at=now, source="cli")
-    res = outreach.advance(conn, person["id"], target, at=now, source="cli")
+    res = outreach.advance(conn, person["id"], target, at=now, source="cli", note=args.note)
     if res is None:  # ensure_contact just made the row; only a concurrent delete gets here
         raise CliError(f"{_label(person)} vanished from the pipeline")
     conn.commit()
@@ -169,6 +194,8 @@ def cmd_draft(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -
 
 
 def cmd_mark(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:
+    if args.note and args.stage != "declined":
+        raise CliError("--note applies only to declined")
     if args.stage in ("briefed", "replied") and not args.channel:
         raise CliError("--channel is required for briefed and replied")
     if args.from_address and args.channel != "email":
@@ -183,6 +210,7 @@ def cmd_mark(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) ->
         source="cli",
         from_address=args.from_address,
         force=args.force,
+        note=args.note,
     )
     if res is None:
         raise CliError(f"{_label(person)} is not in the pipeline; run `outreach decide` first")
@@ -232,6 +260,117 @@ def cmd_buyer(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -
     _sync(conn, res, "buyer", stage, out)
 
 
+def _config_path(flag: str | None, env: str) -> Path | None:
+    value = flag or os.environ.get(env)
+    return Path(value).expanduser() if value else None
+
+
+def cmd_today(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:
+    path = _config_path(args.targets, "OUTREACH_TARGETS")
+    if path is None:
+        raise CliError("no targets file: pass --targets PATH or set OUTREACH_TARGETS")
+    targets = outreach_targets.load_targets(path)
+    counts = outreach.today_counts(
+        conn,
+        today=now.astimezone(outreach.TZ).date(),
+        per_day=targets.per_day,
+        plan_start=targets.start,
+        plan_end=targets.end,
+    )
+    today = outreach_today.build(counts, targets, now=now)
+    print(outreach_today.to_json(today) if args.json else outreach_today.render(today), file=out)
+
+
+def cmd_nudge(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:
+    if args.from_address and args.channel != "email":
+        raise CliError("--from applies only with --channel email")
+    person = _resolve(conn, args.person)
+    contact = outreach.get_contact(conn, person["id"])
+    if contact is None:
+        raise CliError(f"{_label(person)} is not in the pipeline; run `outreach decide` first")
+    if contact["stage"] != "briefed":
+        raise CliError(
+            f"{_label(person)} is at {contact['stage']}; only a briefed contact is nudged"
+        )
+    event_id = outreach.nudge(
+        conn,
+        person["id"],
+        at=parse_at(args.at, now),
+        channel=args.channel,
+        source="cli",
+        from_address=args.from_address,
+        note=args.note,
+    )
+    if event_id is None:
+        raise CliError(
+            f"{_label(person)}: a nudge must come at least a day after the brief "
+            f"({contact['briefed_at'].astimezone(outreach.TZ).date()})"
+        )
+    conn.commit()
+    row = outreach.get_contact(conn, person["id"]) or {}
+    print(
+        f"{_label(person)}: nudge {row.get('nudge_count')} recorded; "
+        f"next follow-up {row.get('follow_up_on')}",
+        file=out,
+    )
+
+
+def _rank_file(conn: Any, path: Path) -> list[int]:
+    try:
+        text = path.read_text()
+    except FileNotFoundError as e:
+        raise CliError(f"rank file not found: {path}") from e
+    ids: list[int] = []
+    seen: dict[int, int] = {}
+    bad: list[str] = []
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            person = _resolve(conn, line)
+        except CliError as e:
+            bad.append(f"  line {lineno}: {e}")
+            continue
+        contact = outreach.get_contact(conn, person["id"])
+        stage = contact["stage"] if contact else "not in the pipeline"
+        if stage != "to_contact":
+            bad.append(f"  line {lineno}: {line} is {stage}, not to_contact")
+        elif person["id"] in seen:
+            bad.append(f"  line {lineno}: {line} repeats line {seen[person['id']]}")
+        else:
+            seen[person["id"]] = lineno
+            ids.append(person["id"])
+    if bad:
+        raise CliError("rank file refused; nothing changed:\n" + "\n".join(bad))
+    if not ids:
+        raise CliError("rank file lists nobody; use `outreach rank --clear` to clear ranks")
+    return ids
+
+
+def cmd_rank(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:
+    forms = sum([args.clear, args.file is not None, args.person is not None])
+    if forms != 1:
+        raise CliError("give exactly one of: outreach rank <person> <n>, --file PATH, --clear")
+    if args.clear:
+        n = outreach.clear_ranks(conn)
+        conn.commit()
+        print(f"cleared {n} ranks", file=out)
+        return
+    if args.file is not None:
+        ids = _rank_file(conn, Path(args.file).expanduser())
+        outreach.set_ranks(conn, ids)
+        conn.commit()
+        print(f"ranked {len(ids)}; every other to_contact rank cleared", file=out)
+        return
+    if args.n is None:
+        raise CliError("give the rank: outreach rank <person> <n>")
+    person = _resolve(conn, args.person)
+    outreach.set_rank(conn, person["id"], args.n)
+    conn.commit()
+    print(f"{_label(person)}: rank {args.n}", file=out)
+
+
 def cmd_followups(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:
     items = outreach.follow_ups(conn, today=now.astimezone(outreach.TZ).date())
     if not items:
@@ -266,7 +405,8 @@ def _how(item: dict) -> str:
 
 def cmd_report(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:
     today = now.astimezone(outreach.TZ).date()
-    floors = outreach_report.load_floors(Path(args.floors).expanduser()) if args.floors else None
+    path = _config_path(args.floors, "OUTREACH_FLOORS")
+    floors = outreach_report.load_floors(path) if path else None
     counts = outreach.counts(
         conn,
         today=today,
@@ -291,10 +431,13 @@ def cmd_sync_asana(conn: Any, args: argparse.Namespace, out: TextIO, now: dateti
 
 
 COMMANDS: dict[str, Callable[[Any, argparse.Namespace, TextIO, datetime], None]] = {
+    "today": cmd_today,
     "queue": cmd_queue,
     "decide": cmd_decide,
     "draft": cmd_draft,
     "mark": cmd_mark,
+    "nudge": cmd_nudge,
+    "rank": cmd_rank,
     "lead": cmd_lead,
     "intro": cmd_intro,
     "conversation": cmd_buyer,
@@ -310,12 +453,17 @@ COMMANDS: dict[str, Callable[[Any, argparse.Namespace, TextIO, datetime], None]]
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="outreach", description="Work the referral outreach pipeline.")
     sub = p.add_subparsers(dest="command", required=True)
+    t = sub.add_parser("today")
+    t.add_argument("--targets")
+    t.add_argument("--json", action="store_true")
     q = sub.add_parser("queue")
     q.add_argument("--stage", default="to_contact", choices=REFERRER_STAGES)
     q.add_argument("--limit", type=int, default=50)
+    q.add_argument("--json", action="store_true")
     d = sub.add_parser("decide")
     d.add_argument("person")
     d.add_argument("--skip", action="store_true")
+    d.add_argument("--note")
     dr = sub.add_parser("draft")
     dr.add_argument("person")
     dr.add_argument("--subject", default="")
@@ -326,6 +474,18 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--at")
     m.add_argument("--from", dest="from_address")
     m.add_argument("--force", action="store_true")
+    m.add_argument("--note")
+    n = sub.add_parser("nudge")
+    n.add_argument("person")
+    n.add_argument("--channel", required=True, choices=CHANNELS)
+    n.add_argument("--at")
+    n.add_argument("--from", dest="from_address")
+    n.add_argument("--note")
+    rk = sub.add_parser("rank")
+    rk.add_argument("person", nargs="?")
+    rk.add_argument("n", nargs="?", type=int)
+    rk.add_argument("--file")
+    rk.add_argument("--clear", action="store_true")
     le = sub.add_parser("lead")
     le.add_argument("person")
     le.add_argument("lead")
@@ -365,7 +525,8 @@ def main_with(
     try:
         with get_conn() as conn:
             try:
-                COMMANDS[args.command](conn, args, out, now)
+                with contextlib.redirect_stderr(err):
+                    COMMANDS[args.command](conn, args, out, now)
             except USER_ERRORS as e:
                 conn.rollback()
                 print(f"error: {e}", file=err)
