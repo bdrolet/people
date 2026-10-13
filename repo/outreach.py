@@ -292,6 +292,20 @@ def queue(conn: Any, *, stage: str, limit: int) -> list[dict]:
     ).fetchall()
 
 
+def pipeline_row(conn: Any, person_id: int) -> dict | None:
+    """One person's pipeline row in the same shape `queue` returns, or None when
+    they are not in the pipeline."""
+    return conn.execute(
+        f"""
+        SELECT q.*,
+               GREATEST(q.email_last, q.imessage_last, q.whatsapp_last, q.linkedin_last)
+                   AS last_interaction
+        FROM ({_pipeline_rows("c.person_id = %s")}) q
+        """,
+        (person_id,),
+    ).fetchone()
+
+
 def clear_ranks(conn: Any) -> int:
     return conn.execute(
         "UPDATE outreach_contacts SET rank = NULL, updated_at = now() WHERE rank IS NOT NULL"

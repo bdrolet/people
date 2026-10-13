@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# `outreach-sessions` on PATH (scripts/link-skills.sh). Runs scripts/outreach_sessions.py
+# under the repo's venv: unlike tasks' stdlib-only task-sessions, it reads the people DB.
+set -euo pipefail
+REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+exec "$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/scripts/outreach_sessions.py" "$@"

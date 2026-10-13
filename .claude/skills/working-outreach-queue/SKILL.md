@@ -5,12 +5,13 @@ description: >
   "what's my outreach today", "am I on track with outreach", "brief the next
   person", "who do I need to nudge", "reassess the outreach queue", "set my
   outreach targets", "add X to my outreach list", "X could refer me",
-  "record that X replied to my outreach", "X introduced me to Y". Runs the
-  outreach CLI in ~/src/people and supplies the judgment: who to brief, what
-  to write, which channel. Not for job-search activity (logging-job-search)
-  or the general task list (prioritizing-tasks).
+  "record that X replied to my outreach", "X introduced me to Y", "prep my
+  brief for X", "start a session for X", "open sessions for my next briefs".
+  Runs the outreach CLI in ~/src/people and supplies the judgment: who to
+  brief, what to write, which channel. Not for job-search activity
+  (logging-job-search) or the general task list (prioritizing-tasks).
 metadata:
-  depends-on: "sending-inbox-email, searching-people, fetching-person, creating-person"
+  depends-on: "sending-inbox-email, searching-inbox-emails, searching-people, fetching-person, creating-person, matching-writing-style, anthropic-skills:chrome-browser"
 ---
 
 # Working the outreach queue
@@ -69,6 +70,51 @@ If `low_queue` is true, say so and offer a reassessment.
    leave `next_up`. If not, it most likely went from the default sender and
    does not count. Say so; record it by hand only if Ben confirms it went
    from the consulting identity: `$O mark <person> briefed --channel email --from <consulting identity>`.
+
+## Start sessions
+
+To work a person in their own session ("start a session for Jonah", "open
+sessions for my next 5"), dispatch the `outreach-launcher` agent with who is
+meant. It runs `outreach-sessions`, which spawns one background session per
+person preloaded with their DB snapshot and already prepping (below), and
+returns `claude attach <id>` lines. Attaching needs a real terminal.
+
+## Prep a brief
+
+Run this in a session opened by `outreach-sessions` (its system prompt carries
+the person's snapshot), or on request for one person here. Do it all before
+Ben attaches; then present it and wait.
+
+1. **Context.** Read the snapshot: identity, pipeline stage, notes, and the
+   message history on every channel. Re-pull with
+   `outreach-sessions --print-context <id>` if it looks stale.
+2. **Email.** Search with `searching-inbox-emails` (graph mode) for the
+   person's surname and each email address on file. Note threads that matter.
+3. **News.** With `anthropic-skills:chrome-browser`, in a new tab: a Google
+   search for `"<full name>"`, then Google News for the person (past year) and
+   for their company (past 3 months). Close the tabs you opened. Only what's
+   relevant to the conversation.
+4. **Briefing.** Write it for Ben:
+   - **Who they are now** — role, company, what they work on, what they care
+     about outside work.
+   - **History with Ben** — how they know each other, favors in both
+     directions, and **the last thread** (date, what it was about, anything left
+     open). Message text is private: summarize, quote only what's needed.
+   - **Recent news** — or "nothing on them personally".
+   - **Talking points** — open with them (the open thread, their life), connect
+     through their work, Ben's one-line news
+     (`~/src/consulting/docs/offer_one_pager.md`), then **the ask**: who they
+     know at a healthcare or health-tech startup with an AI pilot stuck short
+     of production; jog their memory with their own networks; the "say it back
+     to me" check from `client_funnel.md`; ask for a three-way intro and offer a
+     forwardable paragraph. Close with a concrete next touch.
+   - **Mechanics** — the best channel and how the brief gets recorded (email
+     from the consulting identity proves itself; any other channel is
+     `outreach mark <id> briefed --channel <c>` after Ben confirms).
+5. **Offer the draft.** Offer to write the message in Ben's voice
+   (`matching-writing-style`): an email draft via `email-builder` from the
+   consulting identity, or text for Ben to send himself. Never send, and record
+   nothing until Ben confirms.
 
 ## Nudge
 

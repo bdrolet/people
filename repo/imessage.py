@@ -335,6 +335,26 @@ def summary_for_person(conn: Any, person_id: int) -> dict | None:
     ).fetchone()
 
 
+def recent_direct_messages(conn: Any, person_id: int, limit: int) -> list[dict]:
+    """The newest `limit` messages from 1:1 chats with any handle linked to this
+    person, returned oldest first. Message text is private: only local scripts
+    (scripts/outreach_sessions.py) read it, never people-api."""
+    rows = conn.execute(
+        """
+        SELECT m.sent_at, m.from_me, m.text, m.has_attachments
+        FROM imessage_messages m
+        JOIN imessage_chats c ON c.chat_guid = m.chat_guid
+        WHERE NOT c.is_group AND NOT m.retracted
+          AND c.participant_handles &&
+              ARRAY(SELECT handle FROM imessage_handles WHERE person_id = %s)
+        ORDER BY m.sent_at DESC
+        LIMIT %s
+        """,
+        (person_id, limit),
+    ).fetchall()
+    return list(reversed(rows))
+
+
 def search_handles(conn: Any, q: str, limit: int) -> list[dict]:
     term = q.strip()
     like = f"%{term.lower()}%"
