@@ -30,8 +30,11 @@ O=".venv/bin/python scripts/outreach.py"
 
 ## Rules
 
-- Briefs and email nudges go from **`ben@drolet.ai`**. Mail from the default
-  sender, `ben@drolet.cloud`, never counts.
+- Briefs and email nudges go from **the consulting identity** (the first entry of
+  `OUTREACH_FROM_ADDRESSES` in `~/src/people/.env`; read it once with
+  `grep '^OUTREACH_FROM_ADDRESSES=' ~/src/people/.env`, first comma-separated
+  entry, before dispatching `email-builder` or using `mark ... --from`). Mail
+  from the default sender (inbox-api's `DEFAULT_FROM_ADDRESS`) never counts.
 - **Never send.** Email is left as an Outlook draft; other channels are
   Ben's to send.
 - Record a non-email brief, nudge or reply **only after Ben confirms it
@@ -57,15 +60,15 @@ If `low_queue` is true, say so and offer a reassessment.
    `labels`; use `fetching-person` when that's not enough.
 3. **Email is the best channel:** dispatch the `email-builder` agent with
    the brief, the recipient's address and the explicit identity
-   `ben@drolet.ai`. It leaves a draft; Ben sends it.
+   the consulting identity. It leaves a draft; Ben sends it.
 4. **Another channel:** write the text for Ben to send from his phone.
    After he confirms it went:
    `$O mark <person> briefed --channel imessage|whatsapp|linkedin|call|in_person`.
 5. **Verify an email brief:** once Ben says it's sent, re-run
    `$O today --json`. The week's briefs should rise and the person should
-   leave `next_up`. If not, it most likely went from `ben@drolet.cloud` and
+   leave `next_up`. If not, it most likely went from the default sender and
    does not count. Say so; record it by hand only if Ben confirms it went
-   from `drolet.ai`: `$O mark <person> briefed --channel email --from ben@drolet.ai`.
+   from the consulting identity: `$O mark <person> briefed --channel email --from <consulting identity>`.
 
 ## Nudge
 
@@ -73,7 +76,7 @@ Work the `nudges` items in `today --json`.
 
 - **`nudge 1`:** short and light, same channel. For an email brief,
   dispatch `email-builder` as a **reply to `brief.graph_message_id`** from
-  `ben@drolet.ai`, so it lands in the same thread.
+  the consulting identity, so it lands in the same thread.
 - **`nudge 2`:** use `suggested_channel` when it is set (otherwise the same
   channel). Word it as a graceful exit: no pressure, door open.
 - A non-email nudge, after Ben confirms it went:

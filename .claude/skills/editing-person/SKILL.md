@@ -204,6 +204,5 @@ message so far was automated/filed `ignore` and nobody has replied.
 To add someone by hand instead — met in person, given a business card, no
 email exchanged yet — use **creating-person** (`POST /people`).
 
-For adding someone to the **referral outreach** pipeline specifically (a
-different, HubSpot-only concern), see the global `adding-referral-contact`
-skill instead.
+For adding someone to the **referral outreach** pipeline specifically, see
+the **working-outreach-queue** skill's "Add a person" procedure instead.

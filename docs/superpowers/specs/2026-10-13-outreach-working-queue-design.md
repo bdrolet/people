@@ -1,6 +1,6 @@
 # Outreach working queue: follow-ups, targets, ranking and a skill
 
-**Status:** implemented (see `docs/superpowers/plans/2026-10-13-outreach-working-queue.md`). Design. §1–§6 were approved section by section in conversation on
+**Status:** implemented (see `docs/superpowers/plans/2026-10-13-outreach-working-queue.md`). The design's §1–§6 were approved section by section in conversation on
 2026-10-13. §7–§8 were reviewed the same day and revised: `adding-referral-contact`
 is folded into `working-outreach-queue`, nudge items carry the brief's thread,
 and the outcome commands match the CLI. See §12 for handoff.
@@ -319,7 +319,7 @@ not compete with `logging-job-search` ("heard back from Acme") or
   2. Read their context: the `queue_item` (channels, last messages,
      notes, `outreach_notes`), plus `fetching-person` when it's needed.
   3. If the best channel is email, dispatch `email-builder` with the brief
-     and the explicit identity `ben@drolet.ai`. It leaves an Outlook draft
+     and the explicit consulting identity. It leaves an Outlook draft
      and Ben sends it. The `email_sent` event records the brief, so the
      skill records nothing.
   4. Otherwise, write the text for Ben to send from his phone. After he
@@ -327,14 +327,14 @@ not compete with `logging-job-search` ("heard back from Acme") or
   5. **Verify:** once Ben says an email brief is sent, re-run `today
      --json`. The brief count should rise and the person should leave
      brief-next. If neither happens, the mail most likely went from
-     `ben@drolet.cloud` and does not count. Say so, and do not record it by
-     hand unless Ben confirms it went from `drolet.ai`
-     (`mark ... --from ben@drolet.ai`).
+     the default sender and does not count. Say so, and do not record it by
+     hand unless Ben confirms it went from the consulting identity
+     (`mark ... --from <consulting identity>`).
 - **Nudge:** the same email/other split, driven by the nudge items in
   `today --json`.
   - **Nudge 1:** stays in the brief's channel. For an email brief,
     dispatch `email-builder` as a reply to `brief.graph_message_id` from
-    `ben@drolet.ai`, so it lands in the same thread.
+    the consulting identity, so it lands in the same thread.
   - **Nudge 2:** uses `suggested_channel` when one is set. It is worded as
     a graceful exit.
   - A non-email nudge is recorded with `outreach nudge <person> --channel
@@ -386,8 +386,9 @@ not compete with `logging-job-search` ("heard back from Acme") or
 
 ### 7.4 Rules the skill states
 
-- Briefs and email nudges go from `ben@drolet.ai`. Mail from the default
-  sender, `ben@drolet.cloud`, never counts.
+- Briefs and email nudges go from the consulting identity (the first entry of
+  `OUTREACH_FROM_ADDRESSES`). Mail from the default sender (inbox-api's
+  `DEFAULT_FROM_ADDRESS`) never counts.
 - The skill never sends. Email is left as a draft, and Ben sends other
   channels himself.
 - A non-email brief, nudge or reply is recorded only after Ben confirms it
@@ -505,9 +506,10 @@ so it becomes the **Add a person** procedure in `working-outreach-queue`
 
 **Current production context**
 
-- **Sending identities.** inbox-api's default sender is `ben@drolet.cloud`
-  (inbox PR #67, `DEFAULT_FROM_ADDRESS`). Consulting mail must name
-  `ben@drolet.ai` explicitly. `OUTREACH_FROM_ADDRESSES=ben@drolet.ai` is the
+- **Sending identities.** inbox-api's default sender is `DEFAULT_FROM_ADDRESS`
+  (inbox PR #67). Consulting mail must name the consulting identity
+  explicitly. The first entry of `OUTREACH_FROM_ADDRESSES` (kept out of the
+  repo) is the
   only identity whose sent mail proves a brief, and after this design, a
   nudge. `outreach draft` already sends from it (people PR #24). Exchange's
   `SendFromAliasEnabled` was turned on 2026-10-13; verified by test sends.
