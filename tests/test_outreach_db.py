@@ -386,3 +386,26 @@ def test_the_stage_check_upgrade_runs_on_a_phase1_database(conn):
         "WHERE conrelid = 'outreach_events'::regclass AND conname = 'outreach_events_stage_check'"
     ).fetchall()
     assert len(names) == 1
+
+
+def test_nudge_columns_and_message_lookup_round_trip(conn):
+    pid = _person(conn)
+    outreach_repo.insert_contact_if_missing(conn, pid)
+    row = outreach_repo.update_contact(
+        conn, pid, {"stage": "briefed", "nudge_count": 1, "last_nudged_at": TS, "rank": None}
+    )
+    assert row["nudge_count"] == 1 and row["last_nudged_at"] == TS and row["rank"] is None
+    outreach_repo.insert_event(
+        conn,
+        pipeline="referrer",
+        person_id=pid,
+        stage="nudge",
+        at=TS,
+        source="event",
+        channel="email",
+        graph_message_id="g9",
+        note="hi",
+    )
+    assert outreach_repo.referrer_event_with_message(conn, pid, "g9")
+    assert not outreach_repo.referrer_event_with_message(conn, pid, "g10")
+    assert conn.execute("SELECT note FROM outreach_events").fetchone() == {"note": "hi"}

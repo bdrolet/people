@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import clients.otel as otel
 from models.outreach import (
     BUYER_STAGES,
+    CHANNELS,
     LOST_REASONS,
     REFERRER_STAGES,
     Advance,
@@ -186,6 +187,7 @@ def advance(
     graph_message_id: str | None = None,
     from_address: str | None = None,
     force: bool = False,
+    note: str | None = None,
 ) -> Advance | None:
     """Move a referrer to `stage` (spec §6.1). None when the person has no pipeline row;
     a no-op Advance when they are already at or past it; InvalidTransition otherwise."""
@@ -219,6 +221,7 @@ def advance(
         source=source,
         graph_message_id=graph_message_id,
         from_address=from_address,
+        note=note,
     )
     _count_event("referrer", stage, channel, source)
     return Advance(row=updated, changed=True, event_id=event_id)
@@ -446,3 +449,69 @@ def counts(
         for r in outreach_repo.lost_reasons(conn, since=since, until=until)
     }
     return FunnelCounts(cohorts, lost, outreach_repo.follow_ups_due_count(conn, today))
+
+
+NUDGE_LABELS = ("1", "2", "3+")
+
+
+def nudge_due_date(briefed_at: datetime, nudge_count: int) -> date:
+    """Working-queue spec §3.1: due dates count from the brief, never from the last nudge,
+    so a late nudge does not push the schedule back. +14 after nudge 1, +21 after 2 or more."""
+    return briefed_at.astimezone(TZ).date() + timedelta(
+        days=FOLLOW_UP_DAYS * (min(nudge_count, 2) + 1)
+    )
+
+
+def nudge(
+    conn: Any,
+    person_id: int,
+    *,
+    at: datetime,
+    channel: str,
+    source: str,
+    graph_message_id: str | None = None,
+    from_address: str | None = None,
+    note: str | None = None,
+) -> int | None:
+    """Record a follow-up on a briefed referrer (working-queue spec §3.3). A nudge is an
+    event, not a stage: the contact stays at `briefed`. Returns the event id, or None when
+    the person is not at `briefed`, `at` is less than a day after the brief (a same-day
+    correction is not a follow-up), or this email was already recorded for them."""
+    if channel not in CHANNELS:
+        raise ValueError(f"unknown channel {channel!r}; one of {', '.join(CHANNELS)}")
+    row = outreach_repo.lock_contact(conn, person_id)
+    if row is None or row["stage"] != "briefed" or row["briefed_at"] is None:
+        return None
+    if at < row["briefed_at"] + timedelta(days=1):
+        return None
+    if graph_message_id and outreach_repo.referrer_event_with_message(
+        conn, person_id, graph_message_id
+    ):
+        return None
+    n = int(row["nudge_count"] or 0) + 1
+    last = row["last_nudged_at"]
+    outreach_repo.update_contact(
+        conn,
+        person_id,
+        {
+            "nudge_count": n,
+            "last_nudged_at": max(at, last) if last else at,
+            "follow_up_on": nudge_due_date(row["briefed_at"], n),
+        },
+    )
+    event_id = outreach_repo.insert_event(
+        conn,
+        pipeline="referrer",
+        person_id=person_id,
+        stage="nudge",
+        at=at,
+        channel=channel,
+        source=source,
+        graph_message_id=graph_message_id,
+        from_address=from_address,
+        note=note,
+    )
+    otel.outreach_nudges.add(
+        1, {"channel": channel, "source": source, "n": NUDGE_LABELS[min(n, 3) - 1]}
+    )
+    return event_id

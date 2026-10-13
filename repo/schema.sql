@@ -483,7 +483,7 @@ ALTER TABLE outreach_events   ADD COLUMN IF NOT EXISTS note           TEXT;     
 
 -- A phase-1 database has the inline stage CHECK without 'nudge' (Postgres names it
 -- outreach_events_stage_check). Replace it once; a database that already admits 'nudge'
--- is left alone, so the file stays safe to re-run. position(), not LIKE '%…%': this file
+-- is left alone, so the file stays safe to re-run. position(), not LIKE with wildcards: this file
 -- holds no percent sign, so no driver's paramstyle can misread it.
 DO $$ BEGIN
     IF NOT EXISTS (

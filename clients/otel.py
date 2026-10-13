@@ -41,6 +41,7 @@ outreach_stage_events: metrics.Counter = metrics.NoOpMeter("noop").create_counte
 outreach_lost: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
 outreach_sync: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
 outreach_report_runs: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
+outreach_nudges: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
 
 # Observable gauges read these at export time (each flush). services/outreach.py's
 # record_population() refreshes them from the DB on every people-sync run and every
@@ -74,6 +75,7 @@ def setup_telemetry(service_name: str) -> None:
     global hubspot_engagements_logged, external_errors, api_requests, errors
     global whatsapp_import_messages, whatsapp_import_handles, whatsapp_import_duration
     global outreach_stage_events, outreach_lost, outreach_sync, outreach_report_runs
+    global outreach_nudges
 
     endpoint = os.environ.get("GRAFANA_OTLP_ENDPOINT")
     if not endpoint:
@@ -143,6 +145,10 @@ def setup_telemetry(service_name: str) -> None:
     )
     outreach_report_runs = meter.create_counter(
         "people.outreach_report_runs", description="outreach report runs by stages below floor"
+    )
+    outreach_nudges = meter.create_counter(
+        "people.outreach_nudges",
+        description="Outreach follow-up nudges by channel/source/n (1, 2, 3+)",
     )
     meter.create_observable_gauge(
         "people.outreach_stage_population",

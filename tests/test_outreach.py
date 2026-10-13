@@ -133,6 +133,9 @@ class FakeRepo:
             "has_lead": False,
             "follow_up_on": None,
             "notes": None,
+            "nudge_count": 0,
+            "last_nudged_at": None,
+            "rank": None,
         }
         return dict(self.contacts[person_id])
 
@@ -198,6 +201,22 @@ class FakeRepo:
         self.events.append(kw)
         return len(self.events)
 
+    def referrer_event_with_message(self, conn, person_id, graph_message_id):
+        return any(
+            e.get("pipeline") == "referrer"
+            and e.get("person_id") == person_id
+            and e.get("graph_message_id") == graph_message_id
+            for e in self.events
+        )
+
+    def clear_ranks(self, conn):
+        n = 0
+        for row in self.contacts.values():
+            if row.get("rank") is not None:
+                row["rank"] = None
+                n += 1
+        return n
+
 
 class Recorder:
     def __init__(self):
@@ -211,7 +230,7 @@ class Recorder:
 def repo(monkeypatch):
     fake = FakeRepo()
     monkeypatch.setattr(svc, "outreach_repo", fake)
-    for name in ("outreach_stage_events", "outreach_lost"):
+    for name in ("outreach_stage_events", "outreach_lost", "outreach_nudges"):
         monkeypatch.setattr(svc.otel, name, Recorder())
     return fake
 
@@ -246,6 +265,7 @@ def test_briefed_sets_cohort_first_brief_and_follow_up(repo):
         "source": "event",
         "graph_message_id": "g1",
         "from_address": None,
+        "note": None,
     }
     assert svc.otel.outreach_stage_events.calls == [
         (1, {"pipeline": "referrer", "stage": "briefed", "channel": "email", "source": "event"})
@@ -568,3 +588,133 @@ def test_the_cli_path_still_allows_a_reply_dated_before_the_brief(repo):
     repo.contacts[1]["briefed_at"] = TS
     res = svc.advance(None, 1, "replied", at=TS - timedelta(days=1), source="cli", channel="call")
     assert res is not None and res.changed
+
+
+BRIEF = datetime(2026, 10, 6, 15, 0, tzinfo=UTC)  # Tue 2026-10-06, 11:00 New York
+
+
+def _briefed(repo, pid=1, at=BRIEF, channel="email"):
+    _at(repo, pid, "briefed")
+    repo.contacts[pid].update(briefed_at=at, channel=channel, follow_up_on=date(2026, 10, 13))
+
+
+def test_nudge_due_date_counts_from_the_brief_in_new_york():
+    # 02:00 UTC on 10-07 is still 10-06 in New York.
+    brief = datetime(2026, 10, 7, 2, 0, tzinfo=UTC)
+    assert svc.nudge_due_date(brief, 1) == date(2026, 10, 20)
+    assert svc.nudge_due_date(brief, 2) == date(2026, 10, 27)
+    assert svc.nudge_due_date(brief, 5) == date(2026, 10, 27)
+
+
+def test_nudge_records_the_event_and_moves_the_follow_up(repo):
+    _briefed(repo)
+    at = datetime(2026, 10, 13, 15, 0, tzinfo=UTC)
+    eid = svc.nudge(None, 1, at=at, channel="email", source="event", graph_message_id="g2")
+    assert eid == 1
+    row = repo.contacts[1]
+    assert row["stage"] == "briefed"
+    assert row["nudge_count"] == 1 and row["last_nudged_at"] == at
+    assert row["follow_up_on"] == date(2026, 10, 20)  # brief + 14
+    assert repo.events[0] == {
+        "pipeline": "referrer",
+        "person_id": 1,
+        "stage": "nudge",
+        "at": at,
+        "channel": "email",
+        "source": "event",
+        "graph_message_id": "g2",
+        "from_address": None,
+        "note": None,
+    }
+    assert svc.otel.outreach_nudges.calls == [
+        (1, {"channel": "email", "source": "event", "n": "1"})
+    ]
+
+
+@pytest.mark.parametrize(
+    "n,due,label",
+    [(1, date(2026, 10, 20), "1"), (2, date(2026, 10, 27), "2"), (3, date(2026, 10, 27), "3+")],
+)
+def test_nudge_due_dates_stop_at_twenty_one_days(repo, n, due, label):
+    _briefed(repo)
+    for i in range(n):
+        svc.nudge(None, 1, at=BRIEF + timedelta(days=8 + i), channel="imessage", source="cli")
+    assert repo.contacts[1]["nudge_count"] == n
+    assert repo.contacts[1]["follow_up_on"] == due
+    assert svc.otel.outreach_nudges.calls[-1][1]["n"] == label
+
+
+def test_a_late_nudge_does_not_push_the_schedule_back(repo):
+    _briefed(repo)
+    svc.nudge(None, 1, at=BRIEF + timedelta(days=12), channel="email", source="cli")
+    assert repo.contacts[1]["follow_up_on"] == date(2026, 10, 20)
+
+
+def test_a_nudge_within_a_day_of_the_brief_is_ignored(repo):
+    _briefed(repo)
+    at = BRIEF + timedelta(hours=23)
+    assert svc.nudge(None, 1, at=at, channel="email", source="event") is None
+    assert repo.events == [] and repo.contacts[1]["nudge_count"] == 0
+
+
+def test_a_nudge_exactly_a_day_after_the_brief_counts(repo):
+    _briefed(repo)
+    assert svc.nudge(None, 1, at=BRIEF + timedelta(days=1), channel="call", source="cli") == 1
+
+
+@pytest.mark.parametrize("stage", ["candidate", "to_contact", "replied", "introduced", "declined"])
+def test_a_nudge_outside_briefed_is_ignored(repo, stage):
+    _briefed(repo)
+    repo.contacts[1]["stage"] = stage
+    assert svc.nudge(None, 1, at=BRIEF + timedelta(days=8), channel="email", source="cli") is None
+    assert repo.events == []
+
+
+def test_a_nudge_without_a_pipeline_row_is_ignored(repo):
+    assert svc.nudge(None, 9, at=TS, channel="email", source="cli") is None
+
+
+def test_a_replayed_nudge_email_is_not_a_second_nudge(repo):
+    _briefed(repo)
+    at = BRIEF + timedelta(days=7)
+    assert svc.nudge(None, 1, at=at, channel="email", source="event", graph_message_id="g2") == 1
+    assert svc.nudge(None, 1, at=at, channel="email", source="event", graph_message_id="g2") is None
+    assert repo.contacts[1]["nudge_count"] == 1
+
+
+def test_a_replayed_brief_is_not_a_nudge(repo):
+    # Inbox's sweep republishes the brief email days later, after the contact is briefed.
+    _briefed(repo)
+    repo.events.append(
+        {"pipeline": "referrer", "person_id": 1, "stage": "briefed", "graph_message_id": "g1"}
+    )
+    at = BRIEF + timedelta(days=9)
+    assert svc.nudge(None, 1, at=at, channel="email", source="event", graph_message_id="g1") is None
+    assert repo.contacts[1]["nudge_count"] == 0
+
+
+def test_nudge_keeps_from_address_and_note(repo):
+    _briefed(repo)
+    svc.nudge(
+        None,
+        1,
+        at=BRIEF + timedelta(days=8),
+        channel="email",
+        source="cli",
+        from_address="alias@example.com",
+        note="sent from phone",
+    )
+    assert repo.events[0]["from_address"] == "alias@example.com"
+    assert repo.events[0]["note"] == "sent from phone"
+
+
+def test_nudge_rejects_an_unknown_channel(repo):
+    _briefed(repo)
+    with pytest.raises(ValueError):
+        svc.nudge(None, 1, at=BRIEF + timedelta(days=8), channel="pigeon", source="cli")
+
+
+def test_advance_stores_a_note_on_the_event(repo):
+    _at(repo, 1, "to_contact")
+    svc.advance(None, 1, "skipped", at=TS, source="cli", note="moved abroad")
+    assert repo.events[-1]["note"] == "moved abroad"

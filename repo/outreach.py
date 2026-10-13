@@ -7,7 +7,8 @@ from typing import Any
 
 _CONTACT_COLUMNS = """
     person_id, stage, cohort_week, briefed_at, replied_at, channel, has_lead,
-    follow_up_on, notes, hubspot_synced_at, created_at, updated_at
+    follow_up_on, notes, nudge_count, last_nudged_at, rank, hubspot_synced_at,
+    created_at, updated_at
 """
 _OPPORTUNITY_COLUMNS = """
     id, referrer_id, buyer_id, buyer_label, stage, lost_reason, intro_at,
@@ -16,6 +17,9 @@ _OPPORTUNITY_COLUMNS = """
 """
 _CONTACT_UPDATABLE = frozenset(
     {
+        "nudge_count",
+        "last_nudged_at",
+        "rank",
         "stage",
         "cohort_week",
         "briefed_at",
@@ -125,13 +129,14 @@ def insert_event(
     channel: str | None = None,
     graph_message_id: str | None = None,
     from_address: str | None = None,
+    note: str | None = None,
 ) -> int:
     row = conn.execute(
         """
         INSERT INTO outreach_events
             (pipeline, person_id, opportunity_id, stage, at, channel, source,
-             graph_message_id, from_address)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+             graph_message_id, from_address, note)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
@@ -144,9 +149,25 @@ def insert_event(
             source,
             graph_message_id,
             from_address,
+            note,
         ),
     ).fetchone()
     return int(row["id"])
+
+
+def referrer_event_with_message(conn: Any, person_id: int, graph_message_id: str) -> bool:
+    """Has this email already been recorded for this person, as a brief or a nudge? Inbox's
+    sweep can republish a brief days later, after the contact has reached `briefed`."""
+    row = conn.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM outreach_events
+            WHERE pipeline = 'referrer' AND person_id = %s AND graph_message_id = %s
+        ) AS found
+        """,
+        (person_id, graph_message_id),
+    ).fetchone()
+    return bool(row["found"])
 
 
 def repoint_events(conn: Any, from_id: int, to_id: int) -> int:
