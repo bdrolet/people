@@ -194,11 +194,20 @@ linkedin` and `outreach nudge … --channel linkedin` already exist. A
 LinkedIn-only person has no email, so their briefs are never email-proven.
 They are recorded by hand after Ben confirms, as the skill already says.
 
-## 6. Incidental fix
+## 6. Incidental fix (reviewed 2026-10-13)
 
-`outreach today` pads the channel column to 24 characters. "email · imessage ·
-whatsapp" is 26, so it runs into `last`. The fix adds a separating space in
-`services/outreach_today.py::_brief_line`.
+`outreach today` pads the channel column to 24 characters with no separator,
+so anything longer runs into `last`. `services/outreach.py::_channels` reports
+four channels, joined in the order email, imessage, linkedin, whatsapp: all
+four make "email · imessage · linkedin · whatsapp", 38 characters. Every
+seeded LinkedIn person carries `linkedin`, so long strings become common.
+
+The fix is in `services/outreach_today.py::_brief_line`. It pads to
+`_CHANNELS_WIDTH`, the width of all four channels joined (computed from the
+channel names, not hardcoded), and adds a separating space:
+`f"{channels:<{_CHANNELS_WIDTH}} last {last}"`. `last` then starts in the
+same column whatever mix of channels a person has. A full line is about 85
+characters.
 
 ## 7. Testing (drafted)
 
@@ -232,8 +241,8 @@ whatsapp" is 26, so it runs into `last`. The fix adds a separating space in
     with none of the three;
   - the migration runs twice;
   - the UNIQUE constraint on `linkedin_url` holds.
-- `tests/test_outreach_today.py`: the channel column is separated from `last`
-  when all three channels are present.
+- `tests/test_outreach_today.py`: with all four channels, `last` is preceded
+  by a space and starts in the same column as on a one-channel line.
 
 ## 8. Rollout (drafted)
 
