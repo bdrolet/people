@@ -473,3 +473,39 @@ def pipeline_person_ids(conn: Any) -> set[int]:
         int(r["person_id"])
         for r in conn.execute("SELECT person_id FROM outreach_contacts").fetchall()
     }
+
+
+def first_briefs_between(conn: Any, *, since: date, until: date) -> int:
+    """People whose first brief fell between two New York dates, inclusive. A re-brief
+    after a reopen does not count again (working-queue spec §5)."""
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS n FROM (
+            SELECT MIN(at) AS first_at FROM outreach_events
+            WHERE pipeline = 'referrer' AND stage = 'briefed'
+            GROUP BY person_id
+        ) f
+        WHERE (f.first_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
+        """,
+        (since, until),
+    ).fetchone()
+    return int(row["n"])
+
+
+def nudges_between(conn: Any, *, since: date, until: date) -> int:
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS n FROM outreach_events
+        WHERE pipeline = 'referrer' AND stage = 'nudge'
+          AND (at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
+        """,
+        (since, until),
+    ).fetchone()
+    return int(row["n"])
+
+
+def stage_count(conn: Any, stage: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM outreach_contacts WHERE stage = %s", (stage,)
+    ).fetchone()
+    return int(row["n"])

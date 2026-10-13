@@ -470,3 +470,43 @@ def test_follow_ups_carry_the_brief_thread_and_the_last_nudge(conn):
     assert row["nudge_count"] == 1 and row["email"] == "alice@example.com"
     assert row["has_imessage"] is False
     assert outreach_repo.follow_ups(conn, today=date(2026, 10, 26)) == []
+
+
+def test_today_counts_use_new_york_dates(conn):
+    early = _person(conn)
+    late = _person(conn, email="b@example.com")
+    # October is EDT (UTC-4): 03:30 UTC on 10-14 is 23:30 on 10-13 in New York;
+    # 04:30 UTC is 00:30 on 10-14.
+    for pid, at in (
+        (early, datetime(2026, 10, 14, 3, 30, tzinfo=UTC)),
+        (late, datetime(2026, 10, 14, 4, 30, tzinfo=UTC)),
+    ):
+        outreach_repo.insert_contact_if_missing(conn, pid)
+        outreach_repo.insert_event(
+            conn, pipeline="referrer", person_id=pid, stage="briefed", at=at, source="event"
+        )
+    # A re-brief after a reopen is not a first brief.
+    outreach_repo.insert_event(
+        conn,
+        pipeline="referrer",
+        person_id=early,
+        stage="briefed",
+        at=datetime(2026, 10, 15, 15, tzinfo=UTC),
+        source="cli",
+    )
+    outreach_repo.insert_event(
+        conn,
+        pipeline="referrer",
+        person_id=late,
+        stage="nudge",
+        at=datetime(2026, 10, 14, 3, 59, tzinfo=UTC),
+        source="cli",
+    )
+    d13, d14, d15 = date(2026, 10, 13), date(2026, 10, 14), date(2026, 10, 15)
+    assert outreach_repo.first_briefs_between(conn, since=d13, until=d13) == 1
+    assert outreach_repo.first_briefs_between(conn, since=d14, until=d15) == 1
+    assert outreach_repo.first_briefs_between(conn, since=d13, until=d15) == 2
+    assert outreach_repo.nudges_between(conn, since=d13, until=d13) == 1
+    assert outreach_repo.nudges_between(conn, since=d14, until=d15) == 0
+    assert outreach_repo.stage_count(conn, "candidate") == 2
+    assert outreach_repo.stage_count(conn, "to_contact") == 0

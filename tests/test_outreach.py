@@ -853,3 +853,69 @@ def test_a_missing_brief_event_falls_back_to_briefed_at():
         _fu(brief_at=None, brief_channel=None, brief_message_id=None), today=date(2026, 10, 14)
     )
     assert item["brief"] == {"channel": None, "at": "2026-10-06", "graph_message_id": None}
+
+
+def test_today_counts_windows(monkeypatch):
+    calls = []
+
+    class Repo:
+        def first_briefs_between(self, conn, *, since, until):
+            calls.append(("briefs", since, until))
+            return len(calls)
+
+        def nudges_between(self, conn, *, since, until):
+            calls.append(("nudges", since, until))
+            return 4
+
+        def stage_count(self, conn, stage):
+            return 38 if stage == "to_contact" else 0
+
+        def follow_ups(self, conn, *, today):
+            return []
+
+        def queue(self, conn, *, stage, limit):
+            calls.append(("queue", stage, limit))
+            return []
+
+    monkeypatch.setattr(svc, "outreach_repo", Repo())
+    wed = date(2026, 10, 14)
+    counts = svc.today_counts(
+        None, today=wed, per_day=5, plan_start=date(2026, 10, 13), plan_end=date(2026, 11, 21)
+    )
+    assert calls == [
+        ("briefs", wed, wed),
+        ("briefs", date(2026, 10, 12), wed),
+        ("briefs", date(2026, 10, 13), wed),
+        ("nudges", date(2026, 10, 12), wed),
+        ("queue", "to_contact", 5),
+    ]
+    assert (counts.briefs_today, counts.briefs_week, counts.briefs_plan) == (1, 2, 3)
+    assert counts.nudges_week == 4 and counts.queue_depth == 38
+
+
+def test_today_counts_before_the_plan_counts_no_plan_briefs(monkeypatch):
+    class Repo:
+        def first_briefs_between(self, conn, *, since, until):
+            assert since <= until
+            return 1
+
+        nudges_between = first_briefs_between
+
+        def stage_count(self, conn, stage):
+            return 0
+
+        def follow_ups(self, conn, *, today):
+            return []
+
+        def queue(self, conn, *, stage, limit):
+            return []
+
+    monkeypatch.setattr(svc, "outreach_repo", Repo())
+    counts = svc.today_counts(
+        None,
+        today=date(2026, 10, 12),
+        per_day=5,
+        plan_start=date(2026, 10, 13),
+        plan_end=date(2026, 11, 21),
+    )
+    assert counts.briefs_plan == 0

@@ -17,6 +17,7 @@ from models.outreach import (
     Advance,
     CohortCounts,
     FunnelCounts,
+    TodayCounts,
 )
 from repo import outreach as outreach_repo
 
@@ -474,6 +475,27 @@ def follow_up_item(r: dict, *, today: date) -> dict:
 
 def follow_ups(conn: Any, *, today: date) -> list[dict]:
     return [follow_up_item(r, today=today) for r in outreach_repo.follow_ups(conn, today=today)]
+
+
+def today_counts(
+    conn: Any, *, today: date, per_day: int, plan_start: date, plan_end: date
+) -> TodayCounts:
+    """The numbers `outreach today` needs (working-queue spec §5), in New York dates. The
+    week runs Monday to today; the plan from its start to today, capped at its end."""
+    week_start = today - timedelta(days=today.weekday())
+    return TodayCounts(
+        briefs_today=outreach_repo.first_briefs_between(conn, since=today, until=today),
+        briefs_week=outreach_repo.first_briefs_between(conn, since=week_start, until=today),
+        briefs_plan=(
+            outreach_repo.first_briefs_between(conn, since=plan_start, until=min(today, plan_end))
+            if today >= plan_start
+            else 0
+        ),
+        nudges_week=outreach_repo.nudges_between(conn, since=week_start, until=today),
+        queue_depth=outreach_repo.stage_count(conn, "to_contact"),
+        follow_ups=follow_ups(conn, today=today),
+        next_up=queue(conn, limit=per_day),
+    )
 
 
 def shared_briefs(conn: Any) -> list[dict]:
