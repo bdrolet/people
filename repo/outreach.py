@@ -7,7 +7,8 @@ from typing import Any
 
 _CONTACT_COLUMNS = """
     person_id, stage, cohort_week, briefed_at, replied_at, channel, has_lead,
-    follow_up_on, notes, hubspot_synced_at, created_at, updated_at
+    follow_up_on, notes, nudge_count, last_nudged_at, rank, hubspot_synced_at,
+    created_at, updated_at
 """
 _OPPORTUNITY_COLUMNS = """
     id, referrer_id, buyer_id, buyer_label, stage, lost_reason, intro_at,
@@ -16,6 +17,9 @@ _OPPORTUNITY_COLUMNS = """
 """
 _CONTACT_UPDATABLE = frozenset(
     {
+        "nudge_count",
+        "last_nudged_at",
+        "rank",
         "stage",
         "cohort_week",
         "briefed_at",
@@ -125,13 +129,14 @@ def insert_event(
     channel: str | None = None,
     graph_message_id: str | None = None,
     from_address: str | None = None,
+    note: str | None = None,
 ) -> int:
     row = conn.execute(
         """
         INSERT INTO outreach_events
             (pipeline, person_id, opportunity_id, stage, at, channel, source,
-             graph_message_id, from_address)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+             graph_message_id, from_address, note)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
@@ -144,9 +149,25 @@ def insert_event(
             source,
             graph_message_id,
             from_address,
+            note,
         ),
     ).fetchone()
     return int(row["id"])
+
+
+def referrer_event_with_message(conn: Any, person_id: int, graph_message_id: str) -> bool:
+    """Has this email already been recorded for this person, as a brief or a nudge? Inbox's
+    sweep can republish a brief days later, after the contact has reached `briefed`."""
+    row = conn.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM outreach_events
+            WHERE pipeline = 'referrer' AND person_id = %s AND graph_message_id = %s
+        ) AS found
+        """,
+        (person_id, graph_message_id),
+    ).fetchone()
+    return bool(row["found"])
 
 
 def repoint_events(conn: Any, from_id: int, to_id: int) -> int:
@@ -222,54 +243,81 @@ _LABELS = """
 """
 
 
+def _pipeline_rows(where: str) -> str:
+    """One row per pipeline contact with what Ben needs on screen before writing:
+    identity, the pipeline columns, each channel's last message and the person's
+    labels. `where` filters on `c` (outreach_contacts) and `p` (people)."""
+    return f"""
+        SELECT p.id, p.email, p.display_name, p.company, p.job_title, p.notes,
+               c.stage, c.follow_up_on, c.has_lead, c.notes AS outreach_notes, c.rank,
+               c.briefed_at, c.channel, c.nudge_count, c.last_nudged_at,
+               NULLIF(GREATEST(COALESCE(p.last_seen, 'epoch'::timestamptz),
+                               COALESCE(p.last_contacted, 'epoch'::timestamptz)),
+                      'epoch'::timestamptz) AS email_last,
+               im.last_at AS imessage_last, (im.n IS NOT NULL) AS has_imessage,
+               wa.last_at AS whatsapp_last, (wa.n IS NOT NULL) AS has_whatsapp,
+               li.profile_url AS linkedin_url, li.last_message_at AS linkedin_last,
+               {_LABELS} AS labels
+        FROM outreach_contacts c
+        JOIN people p ON p.id = c.person_id
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS n, MAX(last_message_at) AS last_at
+            FROM imessage_handles WHERE person_id = p.id HAVING COUNT(*) > 0
+        ) im ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS n, MAX(last_message_at) AS last_at
+            FROM whatsapp_handles WHERE person_id = p.id HAVING COUNT(*) > 0
+        ) wa ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT profile_url, last_message_at FROM linkedin_connections
+            WHERE person_id = p.id ORDER BY last_message_at DESC NULLS LAST LIMIT 1
+        ) li ON TRUE
+        WHERE {where}
+    """
+
+
 def queue(conn: Any, *, stage: str, limit: int) -> list[dict]:
-    """Contacts at `stage` with what Ben needs on screen before writing (spec §7.2),
-    least recently in touch on any channel first; never-contacted rows lead."""
+    """Contacts at `stage` (spec §7.2): Ben's saved order first (working-queue spec §6.1),
+    then least recently in touch on any channel; never-contacted rows lead that part."""
     return conn.execute(
         f"""
         SELECT q.*,
                GREATEST(q.email_last, q.imessage_last, q.whatsapp_last, q.linkedin_last)
                    AS last_interaction
-        FROM (
-            SELECT p.id, p.email, p.display_name, p.company, p.job_title, p.notes,
-                   c.stage, c.follow_up_on, c.has_lead, c.notes AS outreach_notes,
-                   NULLIF(GREATEST(COALESCE(p.last_seen, 'epoch'::timestamptz),
-                                   COALESCE(p.last_contacted, 'epoch'::timestamptz)),
-                          'epoch'::timestamptz) AS email_last,
-                   im.last_at AS imessage_last, (im.n IS NOT NULL) AS has_imessage,
-                   wa.last_at AS whatsapp_last, (wa.n IS NOT NULL) AS has_whatsapp,
-                   li.profile_url AS linkedin_url, li.last_message_at AS linkedin_last,
-                   {_LABELS} AS labels
-            FROM outreach_contacts c
-            JOIN people p ON p.id = c.person_id
-            LEFT JOIN LATERAL (
-                SELECT COUNT(*) AS n, MAX(last_message_at) AS last_at
-                FROM imessage_handles WHERE person_id = p.id HAVING COUNT(*) > 0
-            ) im ON TRUE
-            LEFT JOIN LATERAL (
-                SELECT COUNT(*) AS n, MAX(last_message_at) AS last_at
-                FROM whatsapp_handles WHERE person_id = p.id HAVING COUNT(*) > 0
-            ) wa ON TRUE
-            LEFT JOIN LATERAL (
-                SELECT profile_url, last_message_at FROM linkedin_connections
-                WHERE person_id = p.id ORDER BY last_message_at DESC NULLS LAST LIMIT 1
-            ) li ON TRUE
-            WHERE c.stage = %s
-        ) q
-        ORDER BY last_interaction ASC NULLS FIRST, q.id
+        FROM ({_pipeline_rows("c.stage = %s")}) q
+        ORDER BY q.rank ASC NULLS LAST, last_interaction ASC NULLS FIRST, q.id
         LIMIT %s
         """,
         (stage, limit),
     ).fetchall()
 
 
-def follow_ups(conn: Any, *, today: date) -> list[dict]:
+def clear_ranks(conn: Any) -> int:
     return conn.execute(
-        """
-        SELECT p.id, p.email, p.display_name, c.briefed_at, c.channel, c.follow_up_on
-        FROM outreach_contacts c JOIN people p ON p.id = c.person_id
-        WHERE c.stage = 'briefed' AND c.follow_up_on <= %s
-        ORDER BY c.follow_up_on, p.id
+        "UPDATE outreach_contacts SET rank = NULL, updated_at = now() WHERE rank IS NOT NULL"
+    ).rowcount
+
+
+def follow_ups(conn: Any, *, today: date) -> list[dict]:
+    """Briefed contacts whose follow-up date has arrived, with the brief itself (its
+    channel and email thread, so nudge 1 can reply in it) and the last nudge's channel
+    (so nudge 2 can switch). Working-queue spec §3.4."""
+    return conn.execute(
+        f"""
+        SELECT q.*, b.at AS brief_at, b.channel AS brief_channel,
+               b.graph_message_id AS brief_message_id, n.channel AS last_nudge_channel
+        FROM ({_pipeline_rows("c.stage = 'briefed' AND c.follow_up_on <= %s")}) q
+        LEFT JOIN LATERAL (
+            SELECT at, channel, graph_message_id FROM outreach_events
+            WHERE pipeline = 'referrer' AND person_id = q.id AND stage = 'briefed'
+            ORDER BY at, id LIMIT 1
+        ) b ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT channel FROM outreach_events
+            WHERE pipeline = 'referrer' AND person_id = q.id AND stage = 'nudge'
+            ORDER BY at DESC, id DESC LIMIT 1
+        ) n ON TRUE
+        ORDER BY q.follow_up_on, q.id
         """,
         (today,),
     ).fetchall()
@@ -425,3 +473,39 @@ def pipeline_person_ids(conn: Any) -> set[int]:
         int(r["person_id"])
         for r in conn.execute("SELECT person_id FROM outreach_contacts").fetchall()
     }
+
+
+def first_briefs_between(conn: Any, *, since: date, until: date) -> int:
+    """People whose first brief fell between two New York dates, inclusive. A re-brief
+    after a reopen does not count again (working-queue spec §5)."""
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS n FROM (
+            SELECT MIN(at) AS first_at FROM outreach_events
+            WHERE pipeline = 'referrer' AND stage = 'briefed'
+            GROUP BY person_id
+        ) f
+        WHERE (f.first_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
+        """,
+        (since, until),
+    ).fetchone()
+    return int(row["n"])
+
+
+def nudges_between(conn: Any, *, since: date, until: date) -> int:
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS n FROM outreach_events
+        WHERE pipeline = 'referrer' AND stage = 'nudge'
+          AND (at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
+        """,
+        (since, until),
+    ).fetchone()
+    return int(row["n"])
+
+
+def stage_count(conn: Any, stage: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM outreach_contacts WHERE stage = %s", (stage,)
+    ).fetchone()
+    return int(row["n"])

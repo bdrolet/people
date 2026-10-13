@@ -11,11 +11,13 @@ from zoneinfo import ZoneInfo
 import clients.otel as otel
 from models.outreach import (
     BUYER_STAGES,
+    CHANNELS,
     LOST_REASONS,
     REFERRER_STAGES,
     Advance,
     CohortCounts,
     FunnelCounts,
+    TodayCounts,
 )
 from repo import outreach as outreach_repo
 
@@ -90,6 +92,10 @@ class InvalidTransition(Exception):
 
 class NotInPipeline(LookupError):
     """The person has no outreach_contacts row (run `outreach decide` first)."""
+
+
+class NotQueued(ValueError):
+    """Only a `to_contact` referrer has a queue position (working-queue spec §6)."""
 
 
 class OpportunityNotFound(LookupError):
@@ -186,6 +192,7 @@ def advance(
     graph_message_id: str | None = None,
     from_address: str | None = None,
     force: bool = False,
+    note: str | None = None,
 ) -> Advance | None:
     """Move a referrer to `stage` (spec §6.1). None when the person has no pipeline row;
     a no-op Advance when they are already at or past it; InvalidTransition otherwise."""
@@ -199,6 +206,8 @@ def advance(
         return Advance(row=row, changed=False, event_id=None)
 
     changes: dict[str, Any] = {"stage": stage}
+    if row["stage"] == "to_contact":
+        changes["rank"] = None  # a queue position means nothing once they leave the queue
     if stage == "briefed":
         changes["follow_up_on"] = follow_up_date(at)
         if row["briefed_at"] is None:
@@ -219,6 +228,7 @@ def advance(
         source=source,
         graph_message_id=graph_message_id,
         from_address=from_address,
+        note=note,
     )
     _count_event("referrer", stage, channel, source)
     return Advance(row=updated, changed=True, event_id=event_id)
@@ -359,6 +369,19 @@ def _day(ts: datetime | None) -> str | None:
     return ts.astimezone(TZ).date().isoformat() if ts else None
 
 
+# The order nudge 2 tries channels in when switching away from the brief's.
+SWITCH_ORDER = ("email", "imessage", "whatsapp", "linkedin")
+
+
+def _channels(r: dict) -> dict:
+    return {
+        "email": r["email"] is not None,
+        "imessage": bool(r["has_imessage"]),
+        "linkedin": r["linkedin_url"] or False,
+        "whatsapp": bool(r["has_whatsapp"]),
+    }
+
+
 def queue_item(r: dict) -> dict:
     last = {
         "email": _day(r["email_last"]),
@@ -375,13 +398,9 @@ def queue_item(r: dict) -> dict:
             "job_title": r["job_title"],
         },
         "stage": r["stage"],
+        "rank": r["rank"],
         "last_interaction": _day(r["last_interaction"]),
-        "channels": {
-            "email": r["email"] is not None,
-            "imessage": bool(r["has_imessage"]),
-            "linkedin": r["linkedin_url"] or False,
-            "whatsapp": bool(r["has_whatsapp"]),
-        },
+        "channels": _channels(r),
         "last_messages": {k: v for k, v in last.items() if v},
         "labels": list(r["labels"] or []),
         "notes": r["notes"],
@@ -397,8 +416,86 @@ def queue(conn: Any, *, stage: str = "to_contact", limit: int = 50) -> list[dict
     return [queue_item(r) for r in outreach_repo.queue(conn, stage=stage, limit=limit)]
 
 
+def set_rank(conn: Any, person_id: int, rank: int) -> dict:
+    if rank < 1:
+        raise ValueError("rank must be 1 or more")
+    row = outreach_repo.lock_contact(conn, person_id)
+    if row is None:
+        raise NotInPipeline(str(person_id))
+    if row["stage"] != "to_contact":
+        raise NotQueued(f"person {person_id} is at {row['stage']}, not to_contact")
+    return outreach_repo.update_contact(conn, person_id, {"rank": rank})
+
+
+def set_ranks(conn: Any, person_ids: list[int]) -> None:
+    """Rank 1..N in the given order and clear every other rank (working-queue spec §6.2).
+    The caller commits, so a failure part-way leaves nothing behind."""
+    if len(set(person_ids)) != len(person_ids):
+        raise ValueError("a person appears more than once")
+    outreach_repo.clear_ranks(conn)
+    for n, person_id in enumerate(person_ids, start=1):
+        set_rank(conn, person_id, n)
+
+
+def clear_ranks(conn: Any) -> int:
+    return outreach_repo.clear_ranks(conn)
+
+
+def follow_up_item(r: dict, *, today: date) -> dict:
+    """Working-queue spec §3.4: nudge 1 stays on the brief's channel (and email thread);
+    nudge 2 switches to a channel not used yet when one exists; after two, propose a close."""
+    count = int(r["nudge_count"] or 0)
+    channels = _channels(r)
+    brief_channel = r["brief_channel"]
+    if count == 0:
+        kind, suggested = "nudge 1", brief_channel
+    elif count == 1:
+        used = {brief_channel, r["last_nudge_channel"]}
+        kind = "nudge 2"
+        suggested = next((c for c in SWITCH_ORDER if channels[c] and c not in used), None)
+    else:
+        kind, suggested = "close", None
+    return {
+        "person": {"id": r["id"], "email": r["email"], "display_name": r["display_name"]},
+        "kind": kind,
+        "nudge_count": count,
+        "follow_up_on": r["follow_up_on"].isoformat(),
+        "overdue": r["follow_up_on"] < today,
+        "brief": {
+            "channel": brief_channel,
+            "at": _day(r["brief_at"] or r["briefed_at"]),
+            "graph_message_id": r["brief_message_id"],
+        },
+        "last_nudge_channel": r["last_nudge_channel"],
+        "last_nudged_at": _day(r["last_nudged_at"]),
+        "channels": channels,
+        "suggested_channel": suggested,
+    }
+
+
 def follow_ups(conn: Any, *, today: date) -> list[dict]:
-    return outreach_repo.follow_ups(conn, today=today)
+    return [follow_up_item(r, today=today) for r in outreach_repo.follow_ups(conn, today=today)]
+
+
+def today_counts(
+    conn: Any, *, today: date, per_day: int, plan_start: date, plan_end: date
+) -> TodayCounts:
+    """The numbers `outreach today` needs (working-queue spec §5), in New York dates. The
+    week runs Monday to today; the plan from its start to today, capped at its end."""
+    week_start = today - timedelta(days=today.weekday())
+    return TodayCounts(
+        briefs_today=outreach_repo.first_briefs_between(conn, since=today, until=today),
+        briefs_week=outreach_repo.first_briefs_between(conn, since=week_start, until=today),
+        briefs_plan=(
+            outreach_repo.first_briefs_between(conn, since=plan_start, until=min(today, plan_end))
+            if today >= plan_start
+            else 0
+        ),
+        nudges_week=outreach_repo.nudges_between(conn, since=week_start, until=today),
+        queue_depth=outreach_repo.stage_count(conn, "to_contact"),
+        follow_ups=follow_ups(conn, today=today),
+        next_up=queue(conn, limit=per_day),
+    )
 
 
 def shared_briefs(conn: Any) -> list[dict]:
@@ -446,3 +543,96 @@ def counts(
         for r in outreach_repo.lost_reasons(conn, since=since, until=until)
     }
     return FunnelCounts(cohorts, lost, outreach_repo.follow_ups_due_count(conn, today))
+
+
+NUDGE_LABELS = ("1", "2", "3+")
+
+
+def nudge_due_date(briefed_at: datetime, nudge_count: int) -> date:
+    """Working-queue spec §3.1: due dates count from the brief, never from the last nudge,
+    so a late nudge does not push the schedule back. +14 after nudge 1, +21 after 2 or more."""
+    return briefed_at.astimezone(TZ).date() + timedelta(
+        days=FOLLOW_UP_DAYS * (min(nudge_count, 2) + 1)
+    )
+
+
+def nudge(
+    conn: Any,
+    person_id: int,
+    *,
+    at: datetime,
+    channel: str,
+    source: str,
+    graph_message_id: str | None = None,
+    from_address: str | None = None,
+    note: str | None = None,
+) -> int | None:
+    """Record a follow-up on a briefed referrer (working-queue spec §3.3). A nudge is an
+    event, not a stage: the contact stays at `briefed`. Returns the event id, or None when
+    the person is not at `briefed`, `at` is less than a day after the brief (a same-day
+    correction is not a follow-up), or this email was already recorded for them."""
+    if channel not in CHANNELS:
+        raise ValueError(f"unknown channel {channel!r}; one of {', '.join(CHANNELS)}")
+    row = outreach_repo.lock_contact(conn, person_id)
+    if row is None or row["stage"] != "briefed" or row["briefed_at"] is None:
+        return None
+    if at < row["briefed_at"] + timedelta(days=1):
+        return None
+    if graph_message_id and outreach_repo.referrer_event_with_message(
+        conn, person_id, graph_message_id
+    ):
+        return None
+    n = int(row["nudge_count"] or 0) + 1
+    last = row["last_nudged_at"]
+    outreach_repo.update_contact(
+        conn,
+        person_id,
+        {
+            "nudge_count": n,
+            "last_nudged_at": max(at, last) if last else at,
+            "follow_up_on": nudge_due_date(row["briefed_at"], n),
+        },
+    )
+    event_id = outreach_repo.insert_event(
+        conn,
+        pipeline="referrer",
+        person_id=person_id,
+        stage="nudge",
+        at=at,
+        channel=channel,
+        source=source,
+        graph_message_id=graph_message_id,
+        from_address=from_address,
+        note=note,
+    )
+    otel.outreach_nudges.add(
+        1, {"channel": channel, "source": source, "n": NUDGE_LABELS[min(n, 3) - 1]}
+    )
+    return event_id
+
+
+def advance_from_sent(
+    conn: Any, person_id: int, *, at: datetime, graph_message_id: str | None
+) -> tuple[str, int] | None:
+    """Mail from an outreach address to a pipeline contact (working-queue spec §3.3): it
+    briefs a `to_contact` row and nudges a `briefed` one. Any other stage, or no row, is
+    ignored. Returns the kind and the new event id, if one was written."""
+    row = outreach_repo.lock_contact(conn, person_id)
+    if row is None:
+        return None
+    if row["stage"] == "to_contact":
+        event_id = advance_from_event(
+            conn, person_id, "briefed", at=at, graph_message_id=graph_message_id
+        )
+        return ("briefed", event_id) if event_id is not None else None
+    if row["stage"] == "briefed":
+        event_id = nudge(
+            conn,
+            person_id,
+            at=at,
+            channel="email",
+            source="event",
+            graph_message_id=graph_message_id,
+        )
+        return ("nudge", event_id) if event_id is not None else None
+    return None

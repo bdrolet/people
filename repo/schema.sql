@@ -455,7 +455,7 @@ CREATE TABLE IF NOT EXISTS outreach_events (
     opportunity_id      BIGINT REFERENCES outreach_opportunities(id) ON DELETE CASCADE,
     stage               TEXT NOT NULL CHECK (stage IN
                           ('candidate','to_contact','briefed','replied','introduced','declined','skipped',
-                           'intro','conversation','proposal','signed','lost')),
+                           'intro','conversation','proposal','signed','lost','nudge')),
     at                  TIMESTAMPTZ NOT NULL,
     channel             TEXT CHECK (channel IN ('email','imessage','whatsapp','linkedin','call','in_person')),
     source              TEXT NOT NULL CHECK (source IN ('event','cli','hubspot','seed')),
@@ -472,3 +472,29 @@ CREATE INDEX IF NOT EXISTS outreach_events_person_idx ON outreach_events (person
 CREATE INDEX IF NOT EXISTS outreach_events_opportunity_idx ON outreach_events (opportunity_id);
 CREATE INDEX IF NOT EXISTS outreach_events_unsynced_idx ON outreach_events (id)
     WHERE asana_task_gid IS NULL OR asana_completed_at IS NULL;
+
+-- Outreach working queue (docs/superpowers/specs/2026-10-13-outreach-working-queue-design.md
+-- §3.2, §6). A `nudge` is an event on a briefed referrer, not a stage: the contact stays at
+-- `briefed`, and outreach_contacts.stage never takes the value.
+ALTER TABLE outreach_contacts ADD COLUMN IF NOT EXISTS nudge_count    SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE outreach_contacts ADD COLUMN IF NOT EXISTS last_nudged_at TIMESTAMPTZ;
+ALTER TABLE outreach_contacts ADD COLUMN IF NOT EXISTS rank           INTEGER;  -- queue order, to_contact only
+ALTER TABLE outreach_events   ADD COLUMN IF NOT EXISTS note           TEXT;     -- free text, never sent anywhere
+
+-- A phase-1 database has the inline stage CHECK without 'nudge' (Postgres names it
+-- outreach_events_stage_check). Replace it once; a database that already admits 'nudge'
+-- is left alone, so the file stays safe to re-run. position(), not LIKE with wildcards: this file
+-- holds no percent sign, so no driver's paramstyle can misread it.
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'outreach_events'::regclass
+          AND conname = 'outreach_events_stage_check'
+          AND position('nudge' in pg_get_constraintdef(oid)) > 0
+    ) THEN
+        ALTER TABLE outreach_events DROP CONSTRAINT IF EXISTS outreach_events_stage_check;
+        ALTER TABLE outreach_events ADD CONSTRAINT outreach_events_stage_check CHECK (stage IN
+            ('candidate','to_contact','briefed','replied','introduced','declined','skipped',
+             'intro','conversation','proposal','signed','lost','nudge'));
+    END IF;
+END $$;

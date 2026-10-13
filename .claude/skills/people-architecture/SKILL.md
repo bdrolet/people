@@ -373,6 +373,17 @@ stage log), all keyed to `people.id` and CASCADE-deleted with the person.
   gid or completion, and records the population gauges.
 - **Not rebuildable.** Nothing derives these tables; export them
   (`pg_dump --data-only -t 'outreach_*'`) before any `DELETE FROM people`.
+- **Follow-ups (working-queue spec).** A `nudge` is an `outreach_events` row on
+  a `briefed` contact, never a stage and never an Asana task.
+  `services/outreach.py::nudge` sets `follow_up_on` from the brief: +14 after
+  nudge 1, +21 after nudge 2 (propose close). Mail from an outreach address to a
+  `briefed` contact records one (`advance_from_sent`); a replayed email never
+  does (any referrer event with the same `graph_message_id` blocks it).
+- **Queue order.** `outreach_contacts.rank` (to_contact only, cleared on leaving)
+  sorts `queue` first; `outreach rank --file` rewrites it in one transaction.
+- **`outreach today`.** `services/outreach_today.py` turns `today_counts` and the
+  private targets TOML into `ON TRACK` / `ON PACE` / `BEHIND`. Marks count only
+  workdays inside the plan window.
 
 ## Layer rules
 

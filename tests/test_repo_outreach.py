@@ -61,4 +61,26 @@ def test_insert_event_returns_the_new_id():
     assert eid == 42
     sql, params = conn.calls[0]
     assert sql.startswith("INSERT INTO outreach_events") and "RETURNING id" in sql
-    assert params == ("referrer", 1, None, "briefed", TS, "email", "cli", None, None)
+    assert params == ("referrer", 1, None, "briefed", TS, "email", "cli", None, None, None)
+
+
+def test_insert_event_passes_the_note():
+    conn = FakeConn([[{"id": 7}]])
+    outreach.insert_event(
+        conn, pipeline="referrer", person_id=1, stage="skipped", at=TS, source="cli", note="why"
+    )
+    sql, params = conn.calls[0]
+    assert "note" in sql and params[-1] == "why"
+
+
+def test_referrer_event_with_message():
+    conn = FakeConn([[{"found": True}]])
+    assert outreach.referrer_event_with_message(conn, 1, "g1") is True
+    sql, params = conn.calls[0]
+    assert "pipeline = 'referrer'" in sql and params == (1, "g1")
+
+
+def test_update_contact_accepts_the_working_queue_columns():
+    conn = FakeConn([[{"person_id": 1}]])
+    outreach.update_contact(conn, 1, {"nudge_count": 1, "last_nudged_at": TS, "rank": None})
+    assert conn.calls[0][1] == (1, TS, None, 1)

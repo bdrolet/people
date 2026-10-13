@@ -39,7 +39,7 @@ This overrides the default "commit or push only when asked" behavior for code ch
 | **Google Contacts** | People API v1 via `clients/google_contacts.py` — OAuth refresh-token creds, scope `https://www.googleapis.com/auth/contacts`; reuses schedule's OAuth client (`google-calendar-client-id`/`-secret`, data sources), a people-owned refresh token (`google-contacts-refresh-token`) |
 | **HubSpot** | `clients/hubspot.py` (ported from inbox) — contacts search/create/update/archive, email engagement create; bounded mirror, see §HubSpot below |
 | **Local Graph import** | `clients/graph_local.py` — device-code MSAL auth for `scripts/import_contacts.py` only; people's Cloud Functions never call Graph |
-| **Referral outreach** | `services/outreach.py` stage machine over `outreach_*`; `email_sent` from `OUTREACH_FROM_ADDRESSES` proves *briefed*, `email_classified` proves *replied*; one completed Asana task per countable stage event via `clients/tasks_api.py` (Cloud Run IAM, `TASKS_API_URL`); CLI `scripts/outreach.py`, seed `scripts/outreach_seed.py` |
+| **Referral outreach** | `services/outreach.py` stage machine over `outreach_*`; `email_sent` from `OUTREACH_FROM_ADDRESSES` proves *briefed*, `email_classified` proves *replied*; one completed Asana task per countable stage event via `clients/tasks_api.py` (Cloud Run IAM, `TASKS_API_URL`); CLI `scripts/outreach.py`, seed `scripts/outreach_seed.py`; follow-ups are `nudge` events on a `briefed` contact (+7/+14 days from the brief, propose close at +21); `outreach today` checks pace against `OUTREACH_TARGETS` (private TOML); skill `working-outreach-queue` |
 | **Observability** | OTel → Grafana Cloud OTLP; metrics prefixed `people_` (outreach instruments are `people.outreach_*`) |
 | **Infra** | `terraform/` — GCS backend `bens-project-462804-tf-state`, state prefix `people` |
 
@@ -83,8 +83,9 @@ repo/
   outreach.py               every SQL statement on outreach_*: writes, queue, follow-ups, report counts,
                              population, Asana-sync and seed sources — decides nothing
 services/
-  outreach.py               the only stage writer: transition / advance / advance_from_event, opportunities,
-                             merge_person, queue, follow_ups, counts, is_outreach_sender
+  outreach.py               the only stage writer: transition / advance / advance_from_event / advance_from_sent, nudge, ranks, opportunities, merge_person, queue, follow_ups, today_counts, counts, is_outreach_sender
+  outreach_targets.py       pure: targets TOML → Targets (per_day, per_week, plan window, workdays)
+  outreach_today.py         pure: TodayCounts + Targets → pace verdicts and the daily screen
   outreach_sync.py          Asana task payloads, sync_events / sync_pending (durable first, retried nightly)
   outreach_report.py        pure: floors TOML, stage_verdicts, render
   outreach_seed.py          pure: warm-pool bars over raw rows → SeedPlan
@@ -134,12 +135,11 @@ scripts/
                              run does a full pass (one-time, after adoption shipped)
   fetch-env.sh               populate .env from Secret Manager + terraform.tfvars
   test-api-local.py          smoke test people-api
-  link-skills.sh             symlink searching-people/fetching-person/editing-person into ~/.claude/skills/
+  link-skills.sh             symlink searching-people/fetching-person/editing-person/creating-person/working-outreach-queue into ~/.claude/skills/
   import_linkedin.py        load a LinkedIn export snapshot — --dry-run, --me
   import_imessage.py        import chat.db into the imessage_* tables — --full, --dry-run, --db
   import_whatsapp.py        import ChatStorage.sqlite into the whatsapp_* tables — --full, --dry-run, --db
-  outreach.py               referral outreach CLI: queue, decide, mark, intro, conversation, lost, lead,
-                             draft, followups, report, sync-asana
+  outreach.py               referral outreach CLI: today, queue, decide, rank, mark, nudge, intro, conversation, lost, lead, draft, followups, report, sync-asana
   outreach_seed.py          propose outreach candidates from the warm-pool bars — --dry-run
 terraform/                  main, variables, secrets, cloudsql, pubsub, cloud_functions, iam, api, scheduler
 tests/                      one test module per unit
@@ -148,7 +148,8 @@ tests/                      one test module per unit
                              adding-people-secret, adding-observability, querying-grafana-metrics,
                              testing-people-handlers, verifying-pr-locally, importing-contacts,
                              searching-people, fetching-person, editing-person, creating-person,
-                             importing-linkedin, importing-imessage, importing-whatsapp
+                             importing-linkedin, importing-imessage, importing-whatsapp,
+                             working-outreach-queue
 ```
 
 ## Event schema
@@ -421,9 +422,12 @@ personal, so it lives in `terraform.tfvars` / a GitHub variable like
 
 ```bash
 .venv/bin/python scripts/outreach_seed.py --dry-run          # then without --dry-run
-.venv/bin/python scripts/outreach.py queue                    # to_contact, warmest channel visible
-.venv/bin/python scripts/outreach.py report --floors ~/src/consulting/docs/client_funnel_floors.toml
+.venv/bin/python scripts/outreach.py today                    # pace verdict + what to do (OUTREACH_TARGETS)
+.venv/bin/python scripts/outreach.py queue                    # to_contact in rank order
+.venv/bin/python scripts/outreach.py report                   # floors from OUTREACH_FLOORS
 ```
+
+`OUTREACH_TARGETS` and `OUTREACH_FLOORS` point at files in the private `~/src/consulting/docs/`; `scripts/fetch-env.sh` writes them when the files exist.
 
 ## Deployment
 

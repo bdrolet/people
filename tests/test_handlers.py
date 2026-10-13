@@ -42,6 +42,7 @@ def calls(monkeypatch):
     )
     monkeypatch.setattr(mirror, "log_email", lambda r, e: log.append(("log", r["email"])))
     monkeypatch.setattr(outreach, "advance_from_event", lambda c, pid, stage, **kw: None)
+    monkeypatch.setattr(outreach, "advance_from_sent", lambda c, pid, **kw: None)
     monkeypatch.setattr(
         outreach_sync, "sync_events", lambda c, ids, **kw: log.append(("sync", list(ids)))
     )
@@ -169,34 +170,47 @@ def _outbound_rows(monkeypatch):
     monkeypatch.setattr(ingest, "record_outbound", lambda conn, **kw: rows)
 
 
-def test_sent_advances_only_to_recipients(monkeypatch, calls):
+def test_sent_records_outreach_only_for_to_recipients(monkeypatch, calls):
     log, _ = calls
     monkeypatch.setenv("OUTREACH_FROM_ADDRESSES", "ben@consulting.example.com")
     _outbound_rows(monkeypatch)
-    advanced = []
+    seen = []
 
-    def adv(c, pid, stage, *, at, graph_message_id):
-        advanced.append((pid, stage, at, graph_message_id))
+    def adv(c, pid, *, at, graph_message_id):
+        seen.append((pid, at, graph_message_id))
         log.append("advance")
-        return 11
+        return ("briefed", 11)
 
-    monkeypatch.setattr(outreach, "advance_from_event", adv)
+    monkeypatch.setattr(outreach, "advance_from_sent", adv)
     email_sent.handle(_sent())
-    assert advanced == [(1, "briefed", datetime(2026, 10, 13, 15, 0, tzinfo=UTC), "g1")]
-    # Durable first: the advance is inside the first commit; the Asana sync comes after it.
+    assert seen == [(1, datetime(2026, 10, 13, 15, 0, tzinfo=UTC), "g1")]  # carol is Cc
+    # Durable first: the write is inside the first commit; the Asana sync comes after it.
     assert log.index("advance") < log.index("commit") < log.index(("sync", [11]))
 
 
-def test_sent_from_another_identity_does_not_brief(monkeypatch, calls):
+def test_one_email_briefs_one_recipient_and_nudges_another(monkeypatch, calls):
+    log, _ = calls
+    monkeypatch.setenv("OUTREACH_FROM_ADDRESSES", "ben@consulting.example.com")
+    rows = [
+        IngestResult(row={"id": 1, "email": "bob@x.com", "eligible": False}, newly_eligible=False),
+        IngestResult(row={"id": 3, "email": "dan@x.com", "eligible": False}, newly_eligible=False),
+    ]
+    monkeypatch.setattr(ingest, "record_outbound", lambda conn, **kw: rows)
+    outcome = {1: ("briefed", 11), 3: ("nudge", 12)}
+    monkeypatch.setattr(outreach, "advance_from_sent", lambda c, pid, **kw: outcome[pid])
+    email_sent.handle(_sent() | {"to": ["bob@x.com", "dan@x.com"]})
+    # Only briefs produce Asana tasks; the nudge is recorded but never synced.
+    assert [e for e in log if isinstance(e, tuple) and e[0] == "sync"] == [("sync", [11])]
+
+
+def test_sent_from_another_identity_records_no_outreach(monkeypatch, calls):
     log, _ = calls
     monkeypatch.setenv("OUTREACH_FROM_ADDRESSES", "ben@consulting.example.com")
     _outbound_rows(monkeypatch)
-    advanced = []
-    monkeypatch.setattr(
-        outreach, "advance_from_event", lambda c, pid, stage, **kw: advanced.append(pid)
-    )
+    seen = []
+    monkeypatch.setattr(outreach, "advance_from_sent", lambda c, pid, **kw: seen.append(pid))
     email_sent.handle(_sent(frm="ben@alias.example.com"))
-    assert advanced == [] and not any(isinstance(e, tuple) and e[0] == "sync" for e in log)
+    assert seen == [] and not any(isinstance(e, tuple) and e[0] == "sync" for e in log)
 
 
 def test_sent_no_event_means_no_sync(monkeypatch, calls):

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Symlink the people consumer skills into ~/.claude/skills/ (per-skill
+# Symlink the people consumer skills (and the outreach working skill) into ~/.claude/skills/ (per-skill
 # symlinks — NEVER symlink the parent directory: a v2.1.69 Claude Code
 # security fix skips user-level skills entirely when ~/.claude/skills itself
 # is a symlink).
@@ -10,7 +10,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="$HOME/.claude/skills"
 mkdir -p "$DEST"
 
-for skill in searching-people fetching-person editing-person creating-person; do
+for skill in searching-people fetching-person editing-person creating-person working-outreach-queue; do
   # ln -sfn onto a real (non-symlink) directory fails and set -e aborts the
   # loop half-linked; guard so a pre-existing real copy fails loudly instead.
   if [[ -e "$DEST/$skill" && ! -L "$DEST/$skill" ]]; then

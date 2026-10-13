@@ -13,6 +13,9 @@ REFERRER_STAGES = (
     "skipped",
 )
 BUYER_STAGES = ("intro", "conversation", "proposal", "signed", "lost")
+# Event kinds that are not stages (working-queue spec §3.2): appended to outreach_events,
+# never stored in outreach_contacts.stage, never a CLI stage choice, never an Asana task.
+ACTIVITY_KINDS = ("nudge",)
 CHANNELS = ("email", "imessage", "whatsapp", "linkedin", "call", "in_person")
 SOURCES = ("event", "cli", "hubspot", "seed")
 LOST_REASONS = ("no_budget", "no_fit", "price", "scope", "timing", "no_response", "other")
@@ -43,3 +46,17 @@ class FunnelCounts:
     cohorts: list[CohortCounts]
     lost_reasons: dict[str, int] = field(default_factory=dict)
     follow_ups_due: int = 0
+
+
+@dataclass
+class TodayCounts:
+    """What `outreach today` reads from the DB (working-queue spec §5). The verdicts are
+    computed from these by services/outreach_today.py, which does no I/O."""
+
+    briefs_today: int
+    briefs_week: int
+    briefs_plan: int
+    nudges_week: int
+    queue_depth: int
+    follow_ups: list[dict]  # services.outreach.follow_up_item dicts
+    next_up: list[dict]  # services.outreach.queue_item dicts, rank order

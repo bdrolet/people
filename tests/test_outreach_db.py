@@ -2,7 +2,7 @@
 TEST_DATABASE_URL is set; see the plan's Global Constraints for a throwaway container."""
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import psycopg
@@ -341,3 +341,172 @@ def test_seed_source_queries_return_the_columns_the_bars_read(conn):
     assert outreach_repo.imessage_seed_rows(conn) == []
     outreach_repo.insert_contact_if_missing(conn, pid)
     assert outreach_repo.pipeline_person_ids(conn) == {pid}
+
+
+def test_nudge_is_an_event_kind_but_not_a_contact_stage(conn):
+    pid = _person(conn)
+    conn.execute(
+        "INSERT INTO outreach_events (pipeline, person_id, stage, at, source) "
+        "VALUES ('referrer', %s, 'nudge', %s, 'cli')",
+        (pid, TS),
+    )
+    with pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute(
+            "INSERT INTO outreach_contacts (person_id, stage) VALUES (%s, 'nudge')", (pid,)
+        )
+
+
+def test_working_queue_columns_have_their_defaults(conn):
+    pid = _person(conn)
+    row = conn.execute(
+        "INSERT INTO outreach_contacts (person_id, stage) VALUES (%s, 'to_contact') "
+        "RETURNING nudge_count, last_nudged_at, rank",
+        (pid,),
+    ).fetchone()
+    assert row == {"nudge_count": 0, "last_nudged_at": None, "rank": None}
+
+
+def test_the_stage_check_upgrade_runs_on_a_phase1_database(conn):
+    # A phase-1 database has the old inline CHECK, which lacks 'nudge'.
+    conn.execute("ALTER TABLE outreach_events DROP CONSTRAINT outreach_events_stage_check")
+    conn.execute(
+        "ALTER TABLE outreach_events ADD CONSTRAINT outreach_events_stage_check "
+        "CHECK (stage IN ('candidate','briefed'))"
+    )
+    conn.execute(SCHEMA.read_text())
+    conn.execute(SCHEMA.read_text())
+    pid = _person(conn)
+    conn.execute(
+        "INSERT INTO outreach_events (pipeline, person_id, stage, at, source) "
+        "VALUES ('referrer', %s, 'nudge', %s, 'cli')",
+        (pid, TS),
+    )
+    names = conn.execute(
+        "SELECT conname FROM pg_constraint "
+        "WHERE conrelid = 'outreach_events'::regclass AND conname = 'outreach_events_stage_check'"
+    ).fetchall()
+    assert len(names) == 1
+
+
+def test_nudge_columns_and_message_lookup_round_trip(conn):
+    pid = _person(conn)
+    outreach_repo.insert_contact_if_missing(conn, pid)
+    row = outreach_repo.update_contact(
+        conn, pid, {"stage": "briefed", "nudge_count": 1, "last_nudged_at": TS, "rank": None}
+    )
+    assert row["nudge_count"] == 1 and row["last_nudged_at"] == TS and row["rank"] is None
+    outreach_repo.insert_event(
+        conn,
+        pipeline="referrer",
+        person_id=pid,
+        stage="nudge",
+        at=TS,
+        source="event",
+        channel="email",
+        graph_message_id="g9",
+        note="hi",
+    )
+    assert outreach_repo.referrer_event_with_message(conn, pid, "g9")
+    assert not outreach_repo.referrer_event_with_message(conn, pid, "g10")
+    assert conn.execute("SELECT note FROM outreach_events").fetchone() == {"note": "hi"}
+
+
+def test_queue_puts_ranked_rows_first_in_rank_order(conn):
+    a = _person(conn)
+    b = _person(conn, email="b@example.com")
+    c = _person(conn, email="c@example.com")
+    for pid in (a, b, c):
+        outreach_repo.insert_contact_if_missing(conn, pid)
+        outreach_repo.update_contact(conn, pid, {"stage": "to_contact"})
+    outreach_repo.update_contact(conn, c, {"rank": 1})
+    outreach_repo.update_contact(conn, b, {"rank": 2})
+    rows = outreach_repo.queue(conn, stage="to_contact", limit=10)
+    assert [r["id"] for r in rows] == [c, b, a]
+    assert [r["rank"] for r in rows] == [1, 2, None]
+    assert outreach_repo.clear_ranks(conn) == 2
+    assert [r["rank"] for r in outreach_repo.queue(conn, stage="to_contact", limit=10)] == [
+        None,
+        None,
+        None,
+    ]
+
+
+def test_follow_ups_carry_the_brief_thread_and_the_last_nudge(conn):
+    pid = _person(conn)
+    outreach_repo.insert_contact_if_missing(conn, pid)
+    outreach_repo.update_contact(
+        conn,
+        pid,
+        {
+            "stage": "briefed",
+            "briefed_at": TS,
+            "channel": "email",
+            "nudge_count": 1,
+            "follow_up_on": date(2026, 10, 27),
+        },
+    )
+    outreach_repo.insert_event(
+        conn,
+        pipeline="referrer",
+        person_id=pid,
+        stage="briefed",
+        at=TS,
+        source="event",
+        channel="email",
+        graph_message_id="g-brief",
+    )
+    outreach_repo.insert_event(
+        conn,
+        pipeline="referrer",
+        person_id=pid,
+        stage="nudge",
+        at=TS + timedelta(days=7),
+        source="cli",
+        channel="imessage",
+    )
+    [row] = outreach_repo.follow_ups(conn, today=date(2026, 10, 27))
+    assert row["brief_message_id"] == "g-brief" and row["brief_channel"] == "email"
+    assert row["brief_at"] == TS and row["last_nudge_channel"] == "imessage"
+    assert row["nudge_count"] == 1 and row["email"] == "alice@example.com"
+    assert row["has_imessage"] is False
+    assert outreach_repo.follow_ups(conn, today=date(2026, 10, 26)) == []
+
+
+def test_today_counts_use_new_york_dates(conn):
+    early = _person(conn)
+    late = _person(conn, email="b@example.com")
+    # October is EDT (UTC-4): 03:30 UTC on 10-14 is 23:30 on 10-13 in New York;
+    # 04:30 UTC is 00:30 on 10-14.
+    for pid, at in (
+        (early, datetime(2026, 10, 14, 3, 30, tzinfo=UTC)),
+        (late, datetime(2026, 10, 14, 4, 30, tzinfo=UTC)),
+    ):
+        outreach_repo.insert_contact_if_missing(conn, pid)
+        outreach_repo.insert_event(
+            conn, pipeline="referrer", person_id=pid, stage="briefed", at=at, source="event"
+        )
+    # A re-brief after a reopen is not a first brief.
+    outreach_repo.insert_event(
+        conn,
+        pipeline="referrer",
+        person_id=early,
+        stage="briefed",
+        at=datetime(2026, 10, 15, 15, tzinfo=UTC),
+        source="cli",
+    )
+    outreach_repo.insert_event(
+        conn,
+        pipeline="referrer",
+        person_id=late,
+        stage="nudge",
+        at=datetime(2026, 10, 14, 3, 59, tzinfo=UTC),
+        source="cli",
+    )
+    d13, d14, d15 = date(2026, 10, 13), date(2026, 10, 14), date(2026, 10, 15)
+    assert outreach_repo.first_briefs_between(conn, since=d13, until=d13) == 1
+    assert outreach_repo.first_briefs_between(conn, since=d14, until=d15) == 1
+    assert outreach_repo.first_briefs_between(conn, since=d13, until=d15) == 2
+    assert outreach_repo.nudges_between(conn, since=d13, until=d13) == 1
+    assert outreach_repo.nudges_between(conn, since=d14, until=d15) == 0
+    assert outreach_repo.stage_count(conn, "candidate") == 2
+    assert outreach_repo.stage_count(conn, "to_contact") == 0
