@@ -5,8 +5,8 @@
 - the timing (the seed creates all of them);
 - §3 (the identity and data model), which he approved as presented.
 
-Ben asked for the spec to be written after §3. §4–§8 are drafted and not yet
-reviewed, so confirm them at spec review.
+Ben asked for the spec to be written after §3. §4–§8 were drafted after that
+and are being reviewed section by section; each reviewed section is marked.
 
 **Builds on:**
 - `2026-09-24-person-identity-design.md`: id/email/phone identity and the
@@ -70,26 +70,51 @@ strongest referrers in Ben's network.
   `("linkedin", url)`. Then come phone and id, as today.
   - `GET/PATCH /people/{ident}`, `POST /people/{ident}/sync` and every
     `outreach <person>` argument accept the URL.
-  - In a path, the URL is percent-encoded.
+  - In a path, the URL may be percent-encoded or raw. Starlette matches routes
+    on the decoded path, so a `%2F` becomes a `/` before routing and a plain
+    `{ident}` parameter 404s. The three routes declare `{ident:path}` instead
+    (verified: `GET /people/linkedin.com%2Fin%2Fjane` and
+    `POST /people/linkedin.com%2Fin%2Fjane/sync` both resolve).
 
-## 4. Sync edge cases (drafted)
+## 4. Sync edge cases (reviewed 2026-10-13)
 
-`apply_person`'s already-linked branch writes `linkedin_url` like
-`phone_numbers`, with two guards that mirror the email-promotion guards.
+Once `derive()` returns `linkedin_url`, every `apply_person` write path
+carries it: the linked update (`update_from_google`), linking by email
+(`_link` → `set_google`, which `ensure_contact` also uses on the event path),
+email-less adoption and email create (both `create_from_google`). Each of
+them needs the guards below, not just the linked branch.
 
 - **The URL is claimed by another row.** Two Google contacts carry the same
   profile URL. Writing it to the second one would violate the UNIQUE
   constraint and abort the entire nightly sync.
-  - The second contact keeps `linkedin_url = NULL`.
-  - If that leaves it with no identifier, it is not adopted, and `run_sync`
-    counts it under a new `linkedin_conflict` kind (a count only, never
-    names).
-  - `repo/people.py::linkedin_owner(conn, url)` makes the check, as
-    `email_owner` does for email.
-- **The only identifier disappears.** If someone deletes the LinkedIn URL in
-  Google from a row whose only identifier it was, the update is skipped and
-  the row keeps its URL. This is the same guard that protects a phone-only
-  row from losing its last phone.
+  - One check runs right after `derive()`, before any branch: if
+    `repo/people.py::linkedin_owner(conn, url)` returns an id other than the
+    row being written (the linked row's own id, or none for a new row), the
+    derived `linkedin_url` is replaced with `None`. The owner check must
+    exclude the row itself, since a linked row normally already holds its
+    own URL. A check written like `email_owner` ("anyone owns it") would
+    strip every LinkedIn-only row's URL on its next sync.
+  - The contact is then written as usual without the URL. If that leaves it
+    with no identifier, it is not adopted, and `run_sync` counts it under a
+    new `linkedin_conflict` kind (a count only, never names).
+- **The only identifier disappears.** The existing linked-branch guard
+  (`email is None and not phone_numbers`) is rewritten as: no email, no
+  derived phone, and no `linkedin_url` left after the conflict check. If it
+  holds, the update is skipped and the row keeps what it has, as a phone-only
+  row keeps its last phone today. Extending the old condition instead would
+  wrongly skip a phone-only row whose contact swapped its phone for a URL.
+- **PATCH keeps an identifier too.** `PATCH contact.urls` could otherwise
+  delete a LinkedIn-only person's URL in Google. `sync_one` would then skip
+  the refresh without saying so, and the row would no longer match Google.
+  `contact_fields.check_phone_removal` becomes
+  `check_identifier_kept(row, fields)`. It covers `phoneNumbers` and `urls`
+  and raises `IdentifierRuleError` (409) when the submission would leave the
+  person with no email, no usable phone and no normalizable profile URL. It
+  also stops wrongly refusing an empty `phoneNumbers` from a person who still
+  has a LinkedIn URL.
+- **Deleted contacts are unchanged.** A `google_deleted_at` row keeps its
+  URL, so a re-created contact with the same URL conflicts, just as a
+  re-created contact with a tombstoned email is left alone today.
 
 ## 5. The seed creates LinkedIn-only contacts (drafted)
 
@@ -100,7 +125,7 @@ each unlinked LinkedIn row, a classification.
 - **`create`.** Nothing in `people` could be this person.
 - **`possible duplicate of <ids>`.** A `people` row whose `display_name`
   shares the normalized last name and first initial. Examples are
-  "Anshu Sinha" for "Anshuman Sinha", and the two rows for BiL Castine.
+  "Jon Smith" for "Jonathan Smith" (placeholder names; the repo is public).
   These are listed, never created.
 
 `scripts/outreach_seed.py` then works through the `create` entries.
@@ -207,6 +232,6 @@ whatsapp" is 26, so it runs into `last`. The fix adds a separating space in
 - Fetching emails for LinkedIn contacts (PDL or similar enrichment).
 - Creating Google Contacts for LinkedIn connections the seed doesn't consider
   warm.
-- Merging the existing duplicate `people` rows (BiL Castine 128/532; Renee
-  Drolet 152/170/329). Those use `scripts/merge_duplicate_contacts.py`, as
-  today.
+- Merging the existing duplicate `people` rows (measured 2026-10-13: one
+  person with two rows, another with three). Those use
+  `scripts/merge_duplicate_contacts.py`, as today.
