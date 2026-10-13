@@ -13,6 +13,9 @@ REFERRER_STAGES = (
     "skipped",
 )
 BUYER_STAGES = ("intro", "conversation", "proposal", "signed", "lost")
+# Event kinds that are not stages (working-queue spec §3.2): appended to outreach_events,
+# never stored in outreach_contacts.stage, never a CLI stage choice, never an Asana task.
+ACTIVITY_KINDS = ("nudge",)
 CHANNELS = ("email", "imessage", "whatsapp", "linkedin", "call", "in_person")
 SOURCES = ("event", "cli", "hubspot", "seed")
 LOST_REASONS = ("no_budget", "no_fit", "price", "scope", "timing", "no_response", "other")

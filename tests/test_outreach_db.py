@@ -341,3 +341,48 @@ def test_seed_source_queries_return_the_columns_the_bars_read(conn):
     assert outreach_repo.imessage_seed_rows(conn) == []
     outreach_repo.insert_contact_if_missing(conn, pid)
     assert outreach_repo.pipeline_person_ids(conn) == {pid}
+
+
+def test_nudge_is_an_event_kind_but_not_a_contact_stage(conn):
+    pid = _person(conn)
+    conn.execute(
+        "INSERT INTO outreach_events (pipeline, person_id, stage, at, source) "
+        "VALUES ('referrer', %s, 'nudge', %s, 'cli')",
+        (pid, TS),
+    )
+    with pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute(
+            "INSERT INTO outreach_contacts (person_id, stage) VALUES (%s, 'nudge')", (pid,)
+        )
+
+
+def test_working_queue_columns_have_their_defaults(conn):
+    pid = _person(conn)
+    row = conn.execute(
+        "INSERT INTO outreach_contacts (person_id, stage) VALUES (%s, 'to_contact') "
+        "RETURNING nudge_count, last_nudged_at, rank",
+        (pid,),
+    ).fetchone()
+    assert row == {"nudge_count": 0, "last_nudged_at": None, "rank": None}
+
+
+def test_the_stage_check_upgrade_runs_on_a_phase1_database(conn):
+    # A phase-1 database has the old inline CHECK, which lacks 'nudge'.
+    conn.execute("ALTER TABLE outreach_events DROP CONSTRAINT outreach_events_stage_check")
+    conn.execute(
+        "ALTER TABLE outreach_events ADD CONSTRAINT outreach_events_stage_check "
+        "CHECK (stage IN ('candidate','briefed'))"
+    )
+    conn.execute(SCHEMA.read_text())
+    conn.execute(SCHEMA.read_text())
+    pid = _person(conn)
+    conn.execute(
+        "INSERT INTO outreach_events (pipeline, person_id, stage, at, source) "
+        "VALUES ('referrer', %s, 'nudge', %s, 'cli')",
+        (pid, TS),
+    )
+    names = conn.execute(
+        "SELECT conname FROM pg_constraint "
+        "WHERE conrelid = 'outreach_events'::regclass AND conname = 'outreach_events_stage_check'"
+    ).fetchall()
+    assert len(names) == 1
