@@ -1,9 +1,9 @@
 # Outreach working queue: follow-ups, targets, ranking and a skill
 
 **Status:** design. §1–§6 were approved section by section in conversation on
-2026-10-13. Ben approved writing the spec without reviewing §7–§8 section by
-section, so treat them as drafted and confirm them at spec review. See §12 for
-handoff.
+2026-10-13. §7–§8 were reviewed the same day and revised: `adding-referral-contact`
+is folded into `working-outreach-queue`, nudge items carry the brief's thread,
+and the outcome commands match the CLI. See §12 for handoff.
 **Builds on:** `2026-10-12-referral-outreach-tooling-design.md` (phase 1, shipped as PR #23).
 Section references of the form "phase-1 §6.2" point there.
 
@@ -21,7 +21,7 @@ does not compete with the rest of his task list:
   is on track (§5).
 - **A saved queue order**, plus an on-demand reassessment (§6).
 - **A `working-outreach-queue` skill**, the working surface over the CLI (§7).
-- **`adding-referral-contact`** rewritten to feed this pipeline (§8).
+- **`adding-referral-contact`** retired, and its job folded into that skill (§8).
 
 The plan this serves is in `~/src/consulting/docs/client_funnel.md`: 150
 briefed in six weeks, 25 a week, 2026-10-13 to 2026-11-21.
@@ -127,7 +127,11 @@ the handler cannot see. Reuse `mark`'s `--from` check.
 
 `repo/outreach.py::follow_ups` returns, besides the current columns,
 `nudge_count`, `last_nudged_at`, and the channels available (the same
-columns `queue` derives). `services/outreach.py::follow_ups` classifies each
+columns `queue` derives). It also returns the brief itself, from the
+person's first `briefed` event: `briefed_at`, its `channel` and its
+`graph_message_id` (null for a non-email brief), plus the `channel` of the
+latest `nudge` event. Without these, nudge 1 cannot reply in the brief's
+thread (§7.3). `services/outreach.py::follow_ups` classifies each
 row:
 - `nudge 1` when `nudge_count = 0`;
 - `nudge 2` when `= 1`, suggesting a channel other than the brief's channel
@@ -240,7 +244,11 @@ Propose close
   Kim Wu            briefed 09-22 · 2 nudges, no reply → outreach mark 41 declined
 ```
 
-`--json` emits the same data for the skill.
+`--json` emits the same data for the skill. Each nudge and propose-close
+item carries `brief: {channel, at, graph_message_id}`,
+`last_nudge_channel`, `nudge_count`, `kind` (`nudge 1` / `nudge 2` /
+`close`) and `suggested_channel`, all from §3.4. Each brief-next item is a
+`queue_item` (§8a).
 
 ## 6. Queue order and reassessment
 
@@ -277,82 +285,125 @@ Reassessment is a skill procedure (§7.4), not a command. It uses `queue
 
 ### 7.1 Placement
 
-`.claude/skills/working-outreach-queue/SKILL.md` in this repo, linked into
-`~/.claude/skills/` by adding it to `scripts/link-skills.sh`'s list. It runs
-commands from `~/src/people` with `.venv/bin/python scripts/outreach.py`.
-Its metadata depends on `email-builder` (agent), `sending-inbox-email`,
-`searching-people`, `creating-person` and `adding-referral-contact`.
+`.claude/skills/working-outreach-queue/SKILL.md` lives in this repo and is
+linked into `~/.claude/skills/` by adding it to the list in
+`scripts/link-skills.sh`. It runs commands from `~/src/people` with
+`.venv/bin/python scripts/outreach.py`. Its `depends-on` metadata lists the
+skills `sending-inbox-email`, `searching-people`, `fetching-person` and
+`creating-person`. The body names the `email-builder` agent it dispatches,
+since `depends-on` lists skills, not agents.
+
+It is the only outreach skill. `adding-referral-contact` is retired into it
+(§8).
 
 ### 7.2 Triggers
 
-The skill triggers on requests like "work my outreach", "what's my outreach
-today", "am I on track", "brief the next person", "who do I need to nudge",
-"reassess the queue", "set my outreach targets", "record that X replied" or
-"X introduced me to Y".
+The description scopes every trigger to **referral outreach**, so it does
+not compete with `logging-job-search` ("heard back from Acme") or
+`prioritizing-tasks` ("what should I work on"). Examples:
+- "work my outreach", "what's my outreach today", "am I on track with
+  outreach";
+- "brief the next person", "who do I need to nudge";
+- "reassess the outreach queue", "set my outreach targets";
+- "add X to my outreach list", "X could refer me";
+- "record that X replied to my outreach", "X introduced me to Y".
 
 ### 7.3 Procedures
 
-- **Today:** run `outreach today --json` and present the screen, leading
-  with the verdict and the one thing to do next.
+- **Today:** run `outreach today --json` and present the screen. Lead with
+  the verdict and the one next action.
 - **Brief:**
-  1. Take the top ranked person.
-  2. Read their context: `queue` row, last messages, notes, and
-     `fetching-person` when needed.
+  1. Take the top person in `today`'s brief-next list (rank order, §6.1).
+  2. Read their context: the `queue_item` (channels, last messages,
+     notes, `outreach_notes`), plus `fetching-person` when it's needed.
   3. If the best channel is email, dispatch `email-builder` with the brief
-     and the explicit identity `ben@drolet.ai`. It leaves an Outlook draft;
-     Ben sends it, and the `email_sent` event records the brief.
+     and the explicit identity `ben@drolet.ai`. It leaves an Outlook draft
+     and Ben sends it. The `email_sent` event records the brief, so the
+     skill records nothing.
   4. Otherwise, write the text for Ben to send from his phone. After he
-     confirms it went, run `mark <person> briefed --channel <c>`.
-- **Nudge:** same split. Nudge 1 replies in the brief's thread or channel.
-  Nudge 2 uses another channel when one exists, worded as a graceful exit.
-  A non-email nudge is recorded with `outreach nudge`.
-- **Close:** for each proposed close, show the history and ask. On yes, run
-  `mark <person> declined --note no_response`.
+     confirms it went out, run `mark <person> briefed --channel <c>`.
+  5. **Verify:** once Ben says an email brief is sent, re-run `today
+     --json`. The brief count should rise and the person should leave
+     brief-next. If neither happens, the mail most likely went from
+     `ben@drolet.cloud` and does not count. Say so, and do not record it by
+     hand unless Ben confirms it went from `drolet.ai`
+     (`mark ... --from ben@drolet.ai`).
+- **Nudge:** the same email/other split, driven by the nudge items in
+  `today --json`.
+  - **Nudge 1:** stays in the brief's channel. For an email brief,
+    dispatch `email-builder` as a reply to `brief.graph_message_id` from
+    `ben@drolet.ai`, so it lands in the same thread.
+  - **Nudge 2:** uses `suggested_channel` when one is set. It is worded as
+    a graceful exit.
+  - A non-email nudge is recorded with `outreach nudge <person> --channel
+    <c>` after Ben confirms it went out. Email nudges record themselves
+    (§3.3). Verify them the same way as briefs, against the nudges-sent
+    count.
+- **Close:** for each propose-close item, show the brief and nudge history
+  and ask. On yes, run `mark <person> declined --note "no reply after 2
+  nudges"`. The note is free text, not a `LOST_REASONS` value. The skill
+  never closes anyone without asking (D9).
+- **Add a person** (from §8):
+  1. Find them with `searching-people`. If they are missing, create them
+     with `creating-person`, which needs an email or an E.164 phone.
+  2. Run `outreach decide <person>`. This moves them to `to_contact` and
+     adds the outreach label.
+  3. If Ben gives a position ("put her near the top"), run `outreach rank
+     <person> <n>`.
+  4. For many people at once, point to `scripts/import_contacts.py` and
+     then `scripts/outreach_seed.py --dry-run`, which Ben runs.
 - **Record outcomes:**
-  - `mark replied --channel` for non-email replies;
-  - `intro`, `buyer`, `conversation`, `proposal`, `signed`, `lost`;
-  - `lead` for a lead with no introduction.
+  - Email replies are recorded automatically by `email_classified`, so the
+    skill records nothing for them. Use `mark <person> replied --channel
+    <c>` only for replies outside email. For a late reply after a decline,
+    add `--force`.
+  - `lead <person> "<name, company>"`: a lead with no introduction yet.
+  - `intro <referrer> "<buyer name, company>" [--buyer <person>]`: an
+    introduction. It opens an opportunity and prints its id.
+  - `conversation|proposal|signed <opportunity-id>`: buyer stages.
+  - `lost <opportunity-id> --reason
+    no_budget|no_fit|price|scope|timing|no_response|other`.
 - **Reassess (§6.4):**
   1. Run `queue --json --limit 500` and `queue --stage candidate --json`.
-  2. Propose an order with a one-line reason each, ranking on likelihood of
-     knowing buyers (role, company, industry), warmth (recency, two-way
-     threads) and channel strength.
-  3. Propose skips with reasons.
+  2. Propose an order with a one-line reason for each person. Rank on how
+     likely they are to know buyers (role, company, industry), on warmth
+     (recency, two-way threads) and on channel strength. Show the current
+     `rank` beside each one.
+  3. Propose skips, with reasons.
   4. If the queue is still below the low-water mark, propose candidates to
      promote.
-  5. Ask Ben to confirm, then apply with `decide --skip --note`, `decide` and
-     `rank --file`, writing the file to a temp path.
-- **Targets:** edit `outreach_targets.toml` on request ("4 briefs a day
-  from next week"), echoing the diff. A change of plan (dates, total) also
-  needs `client_funnel.md` updated first, per that file's header. The skill
-  says so and does not edit the funnel document itself.
-- **Report:** run `outreach report`, using `OUTREACH_FLOORS`.
+  5. Ask Ben to confirm. Then apply with `decide --skip --note`, `decide`
+     and `rank --file`, writing the file to a temp path.
+- **Targets:** on request ("4 briefs a day from next week"), edit
+  `~/src/consulting/docs/outreach_targets.toml`, echo the diff, and commit
+  it in the consulting repo with a one-line message. Do not push. A change
+  of plan (dates or total) needs `client_funnel.md` updated first, per
+  that file's header. The skill says so and does not edit the funnel
+  document itself.
+- **Report:** run `outreach report`, which reads `OUTREACH_FLOORS`.
 
 ### 7.4 Rules the skill states
 
-- Briefs and email nudges go from `ben@drolet.ai`; the default sender
-  `ben@drolet.cloud` never counts.
-- The skill never sends. Email is left as a draft; other channels are
-  Ben's to send.
-- Recording a non-email brief or nudge happens only after Ben confirms it
-  went out.
+- Briefs and email nudges go from `ben@drolet.ai`. Mail from the default
+  sender, `ben@drolet.cloud`, never counts.
+- The skill never sends. Email is left as a draft, and Ben sends other
+  channels himself.
+- A non-email brief, nudge or reply is recorded only after Ben confirms it
+  happened. Anything email proves is never recorded by hand.
+- Closing is always Ben's call.
 
-## 8. `adding-referral-contact`
+## 8. `adding-referral-contact` (retired)
 
-The skill moves from `~/.claude/skills/adding-referral-contact` (unversioned)
-into this repo's `.claude/skills/` and is linked the same way. The
-unversioned copy is removed after the link replaces it. It is rewritten
-around the pipeline:
+The unversioned `~/.claude/skills/adding-referral-contact` describes a
+HubSpot pipeline stage that was never built, plus PDL/Apify enrichment that
+was not built either. Adding someone to the pipeline is now three CLI steps,
+so it becomes the **Add a person** procedure in `working-outreach-queue`
+(§7.3), and its triggers move to that skill's description (§7.2).
 
-1. Find the person (`searching-people`). If missing, create them
-   (`creating-person`).
-2. Optionally enrich: the PDL and Apify notes stay as phase-2 placeholders.
-3. Run `outreach decide <person>`, and optionally `outreach rank <person>
-   <n>`.
-
-The bulk-import entry point keeps pointing at `scripts/import_contacts.py`,
-followed by `outreach_seed.py`. The "HubSpot pipeline stage" section is
-replaced by a pointer to phase 2's HubSpot mirror.
+- Delete `~/.claude/skills/adding-referral-contact` (§11). It is
+  unversioned, so the delete is local, and nothing in this repo links it.
+- PDL role/company enrichment and Apify LinkedIn-post lookup move to §10
+  Out of scope.
 
 ## 8a. CLI changes at a glance
 
@@ -361,7 +412,7 @@ replaced by a pointer to phase 2's HubSpot mirror.
 | `outreach today [--targets PATH] [--json]` | **New** (§5) |
 | `outreach nudge <person> --channel C [--at] [--from] [--note]` | **New** (§3.3) |
 | `outreach rank <person> <n>` / `--file PATH` / `--clear` | **New** (§6.2) |
-| `outreach queue` | **Adds `--json`**: emits `services/outreach.py::queue_item` dicts, already JSON-shaped. `--stage candidate` already works. The skill needs both (§7.3). |
+| `outreach queue` | **Adds `--json`**: emits `services/outreach.py::queue_item` dicts, already JSON-shaped. `queue_item` gains `rank` (§6.1). `--stage candidate` already works. The skill needs both (§7.3). |
 | `outreach followups` | Prints the nudge 1 / nudge 2 / close classification and the suggested channel (§3.4) |
 | `outreach decide --skip` | **Adds `--note`** (§6.3) |
 | `outreach mark <person> declined` | **Adds `--note`** (§6.3). `declined` is already in `MARK_STAGES`. |
@@ -387,7 +438,9 @@ replaced by a pointer to phase 2's HubSpot mirror.
 - `tests/test_outreach_cli.py`:
   - `nudge`, `rank` (single, `--file` with a bad line refusing the whole
     file, `--clear`), `today` (text and `--json`), `decide --skip --note`;
-  - `OUTREACH_TARGETS` / `OUTREACH_FLOORS` resolution.
+  - `OUTREACH_TARGETS` / `OUTREACH_FLOORS` resolution;
+  - `today --json` nudge items carry `brief.graph_message_id` and
+    `brief.channel`; `queue --json` carries `rank`.
 - Real-Postgres tests (CI):
   - the migration runs twice cleanly;
   - the `nudge` CHECK value;
@@ -404,14 +457,20 @@ replaced by a pointer to phase 2's HubSpot mirror.
   CLI.
 - Re-looking at `skipped` and `declined` people beyond what `--force`
   already allows. The stored notes make it possible later.
+- Contact enrichment: People Data Labs role/company lookup and Apify
+  recent-LinkedIn-post lookup, carried over unbuilt from the retired
+  `adding-referral-contact` (§8).
+- A `--note` on `decide` (to_contact). Context on why someone was added
+  goes in `outreach_notes` or the Google notes, not on the event.
 
 ## 11. Rollout
 
 1. Run `scripts/migrate_db.py` against production before merging. The
    handler writes `nudge` rows as soon as it deploys.
 2. Create `outreach_targets.toml` in the consulting repo and commit it there.
-3. Re-run `scripts/fetch-env.sh`, then `scripts/link-skills.sh`.
-4. Check `outreach today` against production.
+3. Delete the unversioned `~/.claude/skills/adding-referral-contact` (§8).
+4. Re-run `scripts/fetch-env.sh`, then `scripts/link-skills.sh`.
+5. Check `outreach today` against production.
 
 ## 12. Handoff
 
@@ -419,9 +478,16 @@ replaced by a pointer to phase 2's HubSpot mirror.
 
 - This spec is the only artifact. It is committed on branch
   `outreach-working-queue` in `~/src/people`, pushed to origin, with no PR yet.
+- §7–§8 were reviewed on 2026-10-13 and revised:
+  - `adding-referral-contact` is retired into `working-outreach-queue`;
+  - nudge items carry the brief's thread id;
+  - the outcome commands match the CLI;
+  - email-proven events are never recorded by hand;
+  - target edits are committed in the consulting repo, not pushed;
+  - PDL and Apify enrichment are out of scope.
 - No implementation plan exists yet.
-- **Next step:** Ben reviews this spec, confirming §7–§8 in particular. Then
-  write the plan with `superpowers:writing-plans` and save it to
+- **Next step:** Ben approves this spec as a whole. Then write the plan with
+  `superpowers:writing-plans` and save it to
   `docs/superpowers/plans/2026-10-13-outreach-working-queue.md`. Phase 1 was
   executed subagent-driven; ask Ben which execution method to use for this
   one.
