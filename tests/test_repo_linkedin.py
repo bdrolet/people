@@ -217,3 +217,12 @@ def test_latest_import():
     assert linkedin.latest_import(conn) == {"source": "Basic_Export"}
     sql, _ = conn.calls[0]
     assert "FROM linkedin_imports ORDER BY id DESC LIMIT 1" in sql
+
+
+def test_link_connection_sets_person_and_method():
+    conn = FakeConn()
+    linkedin.link_connection(conn, "linkedin.com/in/jane-example", 9)
+    assert conn.calls[0] == (
+        "UPDATE linkedin_connections SET person_id = %s, match_method = 'url' WHERE profile_url = %s",
+        (9, "linkedin.com/in/jane-example"),
+    )

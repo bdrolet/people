@@ -101,15 +101,109 @@ def test_sources_merge_per_person_and_by_source_counts():
 def test_rows_without_a_person_are_listed_not_inserted():
     p = _plan(linkedin_rows=[linkedin(None)], whatsapp_rows=[handle(None)])
     assert p.candidates == {}
-    assert [(u.source, u.detail) for u in p.unlinked] == [
-        ("linkedin", "https://www.linkedin.com/in/lNone"),
-        ("whatsapp", "+15550100009"),
-    ]
+    assert [(u.source, u.detail) for u in p.unlinked] == [("whatsapp", "+15550100009")]
+    assert [o.kind for o in p.linkedin] == ["create"]
 
 
 def test_people_already_in_the_pipeline_are_never_proposed_again():
     p = _plan(email_rows=[email(1), email(2)], existing={1})
     assert p.candidates == {2: {"email"}} and p.already_in == {1}
+
+
+def li(slug, pid=None, first="Jane", last="Example", **kw):
+    return (
+        linkedin(
+            pid,
+            profile_url=f"linkedin.com/in/{slug}",
+            first_name=first,
+            last_name=last,
+            full_name=f"{first} {last}",
+        )
+        | kw
+    )
+
+
+def person_row(pid, name, url=None, rn=None):
+    return {"id": pid, "display_name": name, "linkedin_url": url, "google_resource_name": rn}
+
+
+def test_unlinked_linkedin_rows_get_one_outcome_each():
+    p = _plan(
+        linkedin_rows=[
+            li("a", first="Ann", last="Alpha"),
+            li("b", first="Bea", last="Google"),
+            li("c", first="Jonathan", last="Smith"),
+            li("d", first="Kimberly", last="Lee"),
+            li("e", first="Dee", last="New"),
+        ],
+        people_rows=[
+            person_row(5, "Pat Linked", url="linkedin.com/in/a", rn="people/c5"),
+            person_row(6, "Jon Smith", rn="people/c6"),
+        ],
+        google_urls={"linkedin.com/in/b": [{"resource_name": "people/c9", "display_name": "B G"}]},
+        google_contacts=[
+            {"resource_name": "people/c9", "display_name": "B G"},
+            {"resource_name": "people/c10", "display_name": "Kim Lee"},
+            {
+                "resource_name": "people/c6",
+                "display_name": "Jon Smith",
+            },  # has a row: not Google-only
+        ],
+    )
+    got = {
+        o.row["profile_url"]: (o.kind, o.person_id, o.candidates, o.google_names)
+        for o in p.linkedin
+    }
+    assert got == {
+        "linkedin.com/in/a": ("link", 5, [], []),
+        "linkedin.com/in/b": ("in_google", None, [], []),
+        "linkedin.com/in/c": ("possible_duplicate", None, [6], []),
+        "linkedin.com/in/d": ("possible_duplicate", None, [], ["Kim Lee"]),
+        "linkedin.com/in/e": ("create", None, [], []),
+    }
+    assert [o.row["profile_url"] for o in p.linkedin_of("create")] == ["linkedin.com/in/e"]
+    assert p.candidates == {}
+
+
+def test_a_url_link_wins_over_a_name_match():
+    p = _plan(
+        linkedin_rows=[li("a", first="Jon", last="Smith")],
+        people_rows=[
+            person_row(5, "Someone", url="linkedin.com/in/a"),
+            person_row(6, "Jon Smith"),
+        ],
+    )
+    assert [(o.kind, o.person_id) for o in p.linkedin] == [("link", 5)]
+
+
+def test_cold_unlinked_rows_get_no_outcome():
+    p = _plan(linkedin_rows=[li("a", last_message_at=OLD), li("b", position="Recruiter")])
+    assert p.linkedin == []
+
+
+def test_name_key_is_last_name_and_first_initial():
+    assert seed.name_key("Jon Smith") == ("smith", "j")
+    assert seed.name_key("Jonathan  Smith") == ("smith", "j")
+    assert seed.name_key("Jane Q. Example") == ("example", "j")
+    assert seed.name_key("Élodie Accent") == ("accent", "e")
+    assert seed.name_key("Cher") is None
+    assert seed.name_key(None) is None
+
+
+def test_contact_for_builds_the_google_contact():
+    assert seed.contact_for(li("jane-example", company="Example Health", position="CTO")) == {
+        "names": [{"givenName": "Jane", "familyName": "Example"}],
+        "organizations": [{"name": "Example Health", "title": "CTO"}],
+        "urls": [{"value": "https://www.linkedin.com/in/jane-example", "type": "profile"}],
+    }
+
+
+def test_contact_for_without_names_or_company():
+    row = li("x", first=None, last=None, company=None, position=None) | {"full_name": "X Example"}
+    assert seed.contact_for(row) == {
+        "names": [{"givenName": "X Example"}],
+        "urls": [{"value": "https://www.linkedin.com/in/x", "type": "profile"}],
+    }
 
 
 class Conn:
