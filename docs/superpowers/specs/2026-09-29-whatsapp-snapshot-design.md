@@ -3,6 +3,7 @@
 **Date:** 2026-09-29
 **Status:** Draft, awaiting review
 **Repo:** `bdrolet/people`
+**Amended by:** `2026-10-14-whatsapp-display-names-design.md` (§5.5, §6.5, §6.6)
 
 ## 1. Summary
 
@@ -595,6 +596,9 @@ for every 1:1 session). Fall back to `ZWAMESSAGE.ZPUSHNAME` (present on all
 group members, and to `ZWAGROUPMEMBER.ZCONTACTNAME`. These are the *other
 party's* chosen names, not Google Contacts data, and they never overwrite
 anything in `people`.
+
+**Superseded:** `ZWAMESSAGE.ZPUSHNAME` is a protobuf blob, not a name. See the
+2026-10-14 design for the name sources that replace it.
 
 ### 6.7 Write
 

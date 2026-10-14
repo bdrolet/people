@@ -53,7 +53,8 @@ nothing to reconcile; only a real `--full` run reconciles deletions.
 ```
 chats 199 (direct 100, group 99, skipped 7, duplicate jid 1)
 messages 10,225 upserted, 0 deleted, 83 senderless dropped, 1 duplicate id
-handles 623 (phone-matched 69, name-matched 2, unmatched 552, unnormalized 1)
+handles 623 (phone-matched 69, name-matched 2, lid-phone-matched 0, unmatched 552, unnormalized 1)
+names: partner 98, address book 40, profile 110, member 0, none 375
 members 9,213 rows / 5,991 identities across 99 groups (matched 26)
 watermark 10,836   mode full
 ```
@@ -61,8 +62,31 @@ watermark 10,836   mode full
 (Measured 2026-09-29 against the real store on Ben's Mac — spec §12 holds the
 full baseline and its 2026-09-29 re-measurement.) The members line reports
 `matched`, not `phone-matched` — a member row carries no `match_method`, so that
-count folds in name matches too. The handles line does split `phone-matched`
-from `name-matched`, because a handle row does carry a `match_method`.
+count folds in name and LID-phone matches too. The handles line does split
+`phone-matched`, `name-matched` and `lid-phone-matched`, because a handle row does
+carry a `match_method`. (The sample figures above predate the 2026-10-14 change;
+the `names:` and `lid-phone-matched` numbers are illustrative.)
+
+The `names:` line says where each handle's `display_name` came from, in
+precedence order (spec `2026-10-14-whatsapp-display-names-design.md` §5.2): the
+1:1 chat's partner name, Ben's own address-book name (WhatsApp's copy, in
+`ContactsV2.sqlite` beside the store), the contact's self-chosen profile name,
+then the group roster name. `none` is an honest blank: no name for that handle
+exists anywhere on this Mac. `ZWAMESSAGE.ZPUSHNAME` is never used: on this store
+it is a base64 protobuf, not a name, and reading it is what used to fill
+`display_name` with strings like `IAA=`.
+
+`ContactsV2.sqlite` is optional. Without it the import logs one warning and
+names fall back to profile names, and LID handles can't be phone-matched.
+
+**After upgrading to the 2026-10-14 change, run one `--full`.** A full run
+overwrites `display_name` and `phone` verbatim, `NULL` included, which is what
+clears the old garbled names. An incremental run only fills gaps. Check:
+
+```sql
+SELECT count(*) FROM whatsapp_handles
+WHERE display_name ~ '^[A-Za-z0-9+/]{4,}={1,2}$';   -- expect 0
+```
 
 Counts only, never names or numbers — the repo is public. The oddities are all
 expected and documented:
@@ -79,11 +103,14 @@ expected and documented:
 
 ## Three things to know before trusting the numbers
 
-1. **LID chats can never be phone-matched.** WhatsApp is migrating to Linked IDs,
-   which deliberately contain no phone number. Four such chats hold 1,125
-   messages — 11% of the store, including its single largest conversation.
-   Their handle is stored as `lid:<id>` and they can only be linked by an exact,
-   unique display-name match (`match_method = 'name'`) — the one link type
+1. **LID handles carry no phone number of their own.** WhatsApp is migrating to
+   Linked IDs, which deliberately contain no phone number. Four such chats hold
+   1,125 messages — 11% of the store, including its single largest conversation.
+   Their handle is stored as `lid:<id>`. When WhatsApp's address book
+   (`ContactsV2.sqlite`) maps the LID to a phone, the handle's `phone` column
+   holds it and the link is a normal phone match (`match_method = 'lid_phone'`,
+   as trustworthy as `'phone'`). Otherwise the only link is an exact, unique
+   display-name match (`match_method = 'name'`), which is the one link type
    worth distrusting. Expect LID's share to keep growing: as of the 2026-09-29
    measurement, roughly 57% of distinct group-member identities are already
    `lid:` rather than a phone number.

@@ -25,15 +25,18 @@ _CHAT_SET_OVERRIDES = {
     )
 }
 
-_HANDLE_COLUMNS = ("handle", "jid", "display_name", "person_id", "match_method")
-_HANDLE_UPDATE = ("jid", "display_name", "person_id", "match_method")
+_HANDLE_COLUMNS = ("handle", "jid", "display_name", "person_id", "match_method", "phone")
+_HANDLE_UPDATE = ("jid", "display_name", "person_id", "match_method", "phone")
 # person_id/match_method are rewritten verbatim, including to NULL — the match is
-# redone from scratch every run (§6.5). display_name is coalesced: a handle seen this
-# run only as a group sender may carry no name, which must not erase a known one.
-_HANDLE_SET_OVERRIDES = {
+# redone from scratch every run (§6.5). display_name and phone depend on the mode
+# (spec 2026-10-14 §5.4): a full batch is authoritative and overwrites, NULL
+# included, which is what cleans stored protobuf-blob names; an incremental batch
+# may simply not have seen a handle's session or address-book row, so it coalesces.
+_HANDLE_INCREMENTAL_OVERRIDES = {
     "display_name": (
         "display_name = COALESCE(EXCLUDED.display_name, whatsapp_handles.display_name)"
-    )
+    ),
+    "phone": "phone = COALESCE(EXCLUDED.phone, whatsapp_handles.phone)",
 }
 
 _MESSAGE_COLUMNS = (
@@ -97,7 +100,9 @@ def upsert_chats(conn: Any, chats: list[WhatsAppChat], chunk: int = 500) -> int:
     )
 
 
-def upsert_handles(conn: Any, handles: list[WhatsAppHandle], chunk: int = 500) -> int:
+def upsert_handles(
+    conn: Any, handles: list[WhatsAppHandle], chunk: int = 500, *, full: bool = False
+) -> int:
     """Link fields only (§6.7 step 2) — the stats columns belong exclusively to
     recompute_handle_stats and must never be touched here, or an ON CONFLICT would
     reset a counter to its insert default."""
@@ -107,13 +112,13 @@ def upsert_handles(conn: Any, handles: list[WhatsAppHandle], chunk: int = 500) -
         _HANDLE_COLUMNS,
         "handle",
         _HANDLE_UPDATE,
-        [(h.handle, h.jid, h.display_name, h.person_id, h.match_method) for h in handles],
+        [(h.handle, h.jid, h.display_name, h.person_id, h.match_method, h.phone) for h in handles],
         chunk,
-        set_overrides=_HANDLE_SET_OVERRIDES,
+        set_overrides=None if full else _HANDLE_INCREMENTAL_OVERRIDES,
     )
 
 
-def rematch_stored_handles(conn: Any) -> None:
+def rematch_stored_handles(conn: Any, skip: list[str] | None = None) -> None:
     """Re-derive person_id/match_method for every stored non-LID handle from the
     current `people.phone_numbers` (§6.5 final-review Finding A).
 
@@ -127,31 +132,43 @@ def rematch_stored_handles(conn: Any) -> None:
     covers the whole roster (§6.2), so match_handles already re-evaluates every
     member's person_id from scratch on every run.
 
-    A `lid:` handle is never touched — its only possible link is the name match
-    §6.5 describes, which this SQL cannot recompute (it has no ZPARTNERNAME to
-    work from), and clobbering it would destroy the only link a LID chat can
-    ever have. An ambiguous phone (more than one `people` row) links to nothing,
+    `skip` is this run's batch handles: match_handles already matched those in
+    Python from fresh evidence, and is their only authority — re-matching them
+    here from a possibly stale stored phone would overwrite a fresh link (final
+    review, Important #2). `%%` doubles the LIKE wildcard because the statement
+    now carries a parameter.
+
+    A `lid:` handle is re-matched only when it has a stored `phone` (spec
+    2026-10-14 §5.3), labelled 'lid_phone'. A LID without one is never touched —
+    its only possible link is the name match §6.5 describes, which this SQL cannot
+    recompute (it has no ZPARTNERNAME to work from). An ambiguous phone (more than one `people` row) links to nothing,
     the same rule match_handles applies in Python.
     """
     conn.execute(
         """
-        WITH candidates AS (
-            SELECT h.handle, p.id AS person_id
-            FROM whatsapp_handles h
-            JOIN people p ON h.handle = ANY(p.phone_numbers)
-            WHERE h.handle NOT LIKE 'lid:%'
+        WITH keyed AS (
+            SELECT handle, COALESCE(phone, handle) AS phone, handle LIKE 'lid:%%' AS is_lid
+            FROM whatsapp_handles
+            WHERE (handle NOT LIKE 'lid:%%' OR phone IS NOT NULL)
+              AND NOT (handle = ANY(%s))
+        ), candidates AS (
+            SELECT k.handle, p.id AS person_id
+            FROM keyed k
+            JOIN people p ON k.phone = ANY(p.phone_numbers)
         ), counts AS (
             SELECT handle, COUNT(DISTINCT person_id) AS n, MIN(person_id) AS only_id
             FROM candidates GROUP BY handle
         )
         UPDATE whatsapp_handles h SET
             person_id = CASE WHEN counts.n = 1 THEN counts.only_id ELSE NULL END,
-            match_method = CASE WHEN counts.n = 1 THEN 'phone' ELSE NULL END,
+            match_method = CASE WHEN counts.n = 1 AND k.is_lid THEN 'lid_phone'
+                                WHEN counts.n = 1 THEN 'phone' ELSE NULL END,
             updated_at = now()
-        FROM (SELECT handle FROM whatsapp_handles WHERE handle NOT LIKE 'lid:%') k
+        FROM keyed k
         LEFT JOIN counts ON counts.handle = k.handle
         WHERE h.handle = k.handle
-        """
+        """,
+        (list(skip or []),),
     )
 
 
@@ -428,7 +445,7 @@ def recent_direct_messages(conn: Any, person_id: int, limit: int) -> list[dict]:
 # person_id is the stored FK to people(id); person_email is served by joining people
 # rather than being stored, so reading skills are unchanged (§4, §8).
 _HANDLE_OUT = """
-    h.handle, h.jid, h.display_name, h.person_id, p.email AS person_email, h.match_method,
+    h.handle, h.jid, h.phone, h.display_name, h.person_id, p.email AS person_email, h.match_method,
     h.message_count, h.my_message_count, h.last_message_at, h.last_my_message_at,
     h.group_message_count, h.last_group_message_at, h.group_count, h.updated_at
 """
@@ -517,6 +534,7 @@ def summary_for_person(conn: Any, person_id: int) -> dict | None:
                    COALESCE(SUM(group_count), 0) AS group_count,
                    CASE
                        WHEN bool_or(match_method = 'phone') THEN 'phone'
+                       WHEN bool_or(match_method = 'lid_phone') THEN 'lid_phone'
                        WHEN bool_or(match_method = 'name') THEN 'name'
                    END AS match_method,
                    MAX(updated_at) AS imported_at,
