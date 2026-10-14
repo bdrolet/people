@@ -372,3 +372,18 @@ def test_state_is_saved_when_a_later_person_raises(run, monkeypatch):
         run("jonah@example.com", "ana@example.com", "--spawn")
     saved = json.loads(run.state_path.read_text())
     assert list(saved) == ["388"] and saved["388"]["session_id"].startswith("id000001")
+
+
+def test_write_doc_reads_the_sections_from_stdin(run, monkeypatch):
+    """`--sections -`: a session pipes its sections in, so it changes no file (a file it
+    writes shows up in Claude Code's diff panel)."""
+    seen = {}
+
+    def write(conn, pid, sections, *, today):
+        seen.update(pid=pid, step=sections.next_step)
+        return "updated https://docs.google.com/document/d/doc388/edit"
+
+    monkeypatch.setattr(cli.outreach_doc_write, "write", write)
+    monkeypatch.setattr("sys.stdin", io.StringIO(SECTIONS))
+    code, out, _ = run("--write-doc", "388", "--sections", "-")
+    assert code == 0 and seen == {"pid": 388, "step": "brief"} and "→ updated" in out
