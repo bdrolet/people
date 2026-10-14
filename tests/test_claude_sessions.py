@@ -166,3 +166,14 @@ def test_state_records_and_legacy_entries(tmp_path):
     assert cs.load_state(path) == {"3": record}
     path.write_text("[1, 2]")
     assert cs.load_state(path) == {}
+
+
+def test_a_model_is_passed_and_the_prompt_stays_last():
+    for argv in (
+        cs.spawn_argv("n", "ctx", "go", model="opus"),
+        cs.resume_argv(SID, "n", "go", model="opus"),
+    ):
+        i = argv.index("--model")
+        assert argv[i + 1] == "opus" and argv[-1] == "go"
+    assert "--model" not in cs.spawn_argv("n", "ctx", "go")
+    assert "--model" not in cs.resume_argv(SID, "n")

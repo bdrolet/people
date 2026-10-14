@@ -24,6 +24,7 @@ never dropped when a session exits. The doc link lives in outreach_contacts.doc_
 """
 
 import argparse
+import os
 import sys
 from collections.abc import Callable
 from datetime import UTC, date, datetime
@@ -51,6 +52,7 @@ from services import (
 
 STATE_PATH = Path.home() / ".claude" / "outreach-sessions.json"
 DEFAULT_MESSAGES = 60
+DEFAULT_MODEL = "opus"  # research, judgment and writing; OUTREACH_SESSION_MODEL overrides
 MAX_PEOPLE = 10
 
 
@@ -132,6 +134,11 @@ def _targets(conn: Any, args: argparse.Namespace, state: dict[str, dict]) -> lis
     return _unique(resolved)
 
 
+def _session_model() -> str:
+    """Pinned so sessions don't follow Ben's interactive default model."""
+    return os.environ.get("OUTREACH_SESSION_MODEL", "").strip() or DEFAULT_MODEL
+
+
 def _doc(url: str | None) -> tuple[str | None, str]:
     """The contact doc's markdown, and a note for the row when it couldn't be fetched (the
     session starts anyway; RELOAD_PROMPT has it fetch the doc itself)."""
@@ -166,7 +173,9 @@ def _one(
         if not args.spawn:
             return "resume", None
         prompt = None if args.idle else outreach_session.RELOAD_PROMPT
-        short = claude_sessions.resume(transcript.stem, name, cwd=Path(cwd), prompt=prompt)
+        short = claude_sessions.resume(
+            transcript.stem, name, cwd=Path(cwd), prompt=prompt, model=_session_model()
+        )
         if not short:
             return "resume failed", None
         # Resuming a stopped session forks a new id; record the one that's now running.
@@ -187,7 +196,11 @@ def _one(
     else:
         prompt = outreach_session.RELOAD_PROMPT if url else outreach_session.PREP_PROMPT
     short = claude_sessions.spawn(
-        name, outreach_session.context_block(snap, today=today, doc=doc), cwd=REPO, prompt=prompt
+        name,
+        outreach_session.context_block(snap, today=today, doc=doc),
+        cwd=REPO,
+        prompt=prompt,
+        model=_session_model(),
     )
     if not short:
         return "spawn failed", None

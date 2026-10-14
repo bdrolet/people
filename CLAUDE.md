@@ -147,6 +147,7 @@ scripts/
   outreach_sessions.py      one background Claude session per outreach person: resume an exited one, or spawn
                              preloaded with the snapshot and contact doc; --write-doc creates or merges the doc
                              (`outreach-sessions` wrapper runs it under the venv) — --next N, --spawn, --idle
+                             Sessions run on `OUTREACH_SESSION_MODEL` (default `opus`), not the user's default model
   import_linkedin.py        load a LinkedIn export snapshot — --dry-run, --me
   import_imessage.py        import chat.db into the imessage_* tables — --full, --dry-run, --db
   import_whatsapp.py        import ChatStorage.sqlite into the whatsapp_* tables — --full, --dry-run, --db
