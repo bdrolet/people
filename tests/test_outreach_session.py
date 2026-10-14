@@ -16,6 +16,7 @@ ROW = {
     "follow_up_on": None,
     "has_lead": False,
     "outreach_notes": None,
+    "doc_url": None,
     "briefed_at": None,
     "nudge_count": 0,
     "email_last": None,

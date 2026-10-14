@@ -478,6 +478,7 @@ def test_queue_item_matches_the_spec_shape():
         "last_interaction": datetime(2026, 7, 19, 12, tzinfo=UTC),
         "labels": ["former-colleague"],
         "outreach_notes": None,
+        "doc_url": "https://docs.google.com/document/d/doc42/edit",
     }
     assert svc.queue_item(row) == {
         "person": {
@@ -506,6 +507,7 @@ def test_queue_item_matches_the_spec_shape():
         "outreach_notes": None,
         "has_lead": False,
         "follow_up_on": None,
+        "doc_url": "https://docs.google.com/document/d/doc42/edit",
     }
 
 
@@ -919,3 +921,49 @@ def test_today_counts_before_the_plan_counts_no_plan_briefs(monkeypatch):
         plan_end=date(2026, 11, 21),
     )
     assert counts.briefs_plan == 0
+
+
+def test_set_doc_stores_and_clears_the_link(repo):
+    _at(repo, 1, "to_contact")
+    url = "https://docs.google.com/document/d/1AbC_d-9/edit"
+    assert svc.set_doc(None, 1, url)["doc_url"] == url
+    assert svc.set_doc(None, 1, None)["doc_url"] is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://drive.google.com/file/d/x/view",
+        "http://docs.google.com/document/d/x",
+        "https://docs.google.com/spreadsheets/d/x/edit",
+        "https://docs.google.com/document/d/",
+        "not a url",
+    ],
+)
+def test_set_doc_refuses_anything_but_a_docs_link(repo, url):
+    _at(repo, 1, "to_contact")
+    with pytest.raises(svc.InvalidDocUrl):
+        svc.set_doc(None, 1, url)
+    assert repo.contacts[1].get("doc_url") is None
+
+
+def test_set_doc_refuses_someone_outside_the_pipeline(repo):
+    with pytest.raises(svc.NotInPipeline):
+        svc.set_doc(None, 9, "https://docs.google.com/document/d/doc9")
+
+
+def test_doc_id_parses_the_link():
+    assert svc.doc_id("https://docs.google.com/document/d/1AbC_d-9/edit?tab=t.0") == "1AbC_d-9"
+    assert svc.doc_id(" https://docs.google.com/document/d/doc7 ") == "doc7"
+
+
+def test_people_named_trims_and_skips_a_blank_name(repo):
+    seen = []
+
+    def named(conn, text):
+        seen.append(text)
+        return [{"id": 1, "display_name": "Jo Example"}]
+
+    repo.pipeline_people_named = named
+    assert svc.people_named(None, "  jo ") == [{"id": 1, "display_name": "Jo Example"}]
+    assert svc.people_named(None, "   ") == [] and seen == ["jo"]

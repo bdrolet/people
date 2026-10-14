@@ -4,6 +4,7 @@ directly. Every write function takes an open connection and leaves committing to
 caller, so the event handlers keep it inside their durable transaction (spec §6)."""
 
 import os
+import re
 from datetime import date, datetime, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -96,6 +97,13 @@ class NotInPipeline(LookupError):
 
 class NotQueued(ValueError):
     """Only a `to_contact` referrer has a queue position (working-queue spec §6)."""
+
+
+class InvalidDocUrl(ValueError):
+    """Only a Google Docs document link can be a contact doc (contact-docs spec D8)."""
+
+
+DOC_URL = re.compile(r"^https://docs\.google\.com/document/d/([A-Za-z0-9_-]+)(?:[/?#]\S*)?$")
 
 
 class OpportunityNotFound(LookupError):
@@ -343,6 +351,31 @@ def set_lead(conn: Any, person_id: int, lead: str, *, today: date) -> dict:
     return outreach_repo.update_contact(conn, person_id, {"has_lead": True, "notes": notes})
 
 
+def doc_id(url: str) -> str:
+    """The Drive file id inside a Google Docs link."""
+    match = DOC_URL.match(url.strip())
+    if match is None:
+        raise InvalidDocUrl(f"not a Google Docs link: {url}")
+    return match.group(1)
+
+
+def set_doc(conn: Any, person_id: int, url: str | None) -> dict:
+    """Record the person's contact doc, or clear it with None (contact-docs spec D8). The
+    link is the only record of which doc belongs to whom."""
+    if url is not None:
+        doc_id(url)
+        url = url.strip()
+    if outreach_repo.lock_contact(conn, person_id) is None:
+        raise NotInPipeline(str(person_id))
+    return outreach_repo.update_contact(conn, person_id, {"doc_url": url})
+
+
+def people_named(conn: Any, text: str) -> list[dict]:
+    """Pipeline people whose display name contains `text` (contact-docs spec §4)."""
+    text = text.strip()
+    return outreach_repo.pipeline_people_named(conn, text) if text else []
+
+
 def merge_person(conn: Any, from_id: int, to_id: int) -> int:
     """Fold one person's pipeline into another's before the `from_id` people row is
     deleted (the outreach tables cascade). Events and opportunities all move. When both
@@ -407,6 +440,7 @@ def queue_item(r: dict) -> dict:
         "outreach_notes": r["outreach_notes"],
         "has_lead": bool(r["has_lead"]),
         "follow_up_on": r["follow_up_on"].isoformat() if r["follow_up_on"] else None,
+        "doc_url": r["doc_url"],
     }
 
 
