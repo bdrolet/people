@@ -54,7 +54,10 @@ def _enter(conn: Any, profile_url: str, person_id: int, now: datetime) -> None:
 def _reason(e: Exception) -> str:
     if isinstance(e, person_create.Duplicate):
         return f"already exists (candidates {e.candidates or 'in Google only'})"
-    return f"{type(e).__name__}: {e}"
+    return (
+        f"{type(e).__name__}: {e}; a Google contact may now exist "
+        "— the nightly sync adopts it and the next run links it"
+    )
 
 
 def run(

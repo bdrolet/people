@@ -27,6 +27,7 @@ from tests.test_repo_linkedin import connection, snapshot
         ),
         ("https://www.linkedin.com/company/acme/", None),
         ("linkedin.com", None),
+        ("https://www.linkedin.com/in/jane%20example", None),
         ("https://www.linkedin.com/in/", None),
         ("https://example.com/in/jane-example", None),
         ("jane@example.com", None),

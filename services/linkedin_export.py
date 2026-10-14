@@ -37,7 +37,7 @@ class ExportError(Exception):
 
 
 _URL_PREFIX = re.compile(r"^(https?://)?([a-z]{2,3}\.)?", re.IGNORECASE)  # www., uk., …
-_PROFILE = re.compile(r"^linkedin\.com/in/([^/\s]+)")
+_PROFILE = re.compile(r"^linkedin\.com/in/([^/\s]+)(?:/|$)")
 _DATE_FORMATS = ("%d %b %Y", "%m/%d/%y %I:%M %p", "%m/%d/%y, %I:%M %p", "%m/%d/%Y", "%Y-%m-%d")
 _APOSTROPHE_MAP = str.maketrans(
     {

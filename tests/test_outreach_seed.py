@@ -325,7 +325,8 @@ def test_one_failure_does_not_stop_the_run(monkeypatch):
     assert r.created == 1 and [name for name, _ in r.failures] == ["Dee New"]
     assert conn.rolled_back == 1
     assert log["linked"] == [("linkedin.com/in/e", 102)]
-    assert "Failed:" in script.summary(r, dry_run=False)
+    out = script.summary(r, dry_run=False)
+    assert "Failed:" in out and "a Google contact may now exist" in out
 
 
 def test_a_rerun_links_instead_of_creating(monkeypatch):

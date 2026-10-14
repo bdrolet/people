@@ -197,6 +197,27 @@ def test_update_fields_sends_one_call_with_a_joined_mask(monkeypatch):
     assert calls[0]["personFields"] == gc.PERSON_FIELDS
 
 
+def test_update_fields_does_not_retry_5xx(monkeypatch):
+    seen = []
+
+    class FakeReq:
+        def execute(self, *args, **kwargs):
+            seen.append((args, kwargs))
+            return {}
+
+    class FakePeople:
+        def updateContact(self, **kw):
+            return FakeReq()
+
+    class FakeService:
+        def people(self):
+            return FakePeople()
+
+    monkeypatch.setattr(gc, "_svc", lambda: FakeService())
+    gc.update_fields("people/c1", "etag-1", {"names": [{"givenName": "Alice"}]})
+    assert seen == [((), {})]  # no num_retries: a 5xx after an applied write would 409
+
+
 def test_update_fields_with_no_fields_does_not_call_google(monkeypatch):
     def boom():
         raise AssertionError("must not call Google")

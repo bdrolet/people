@@ -143,7 +143,8 @@ def update_fields(resource_name: str, etag: str, fields: dict) -> dict:
             updatePersonFields=",".join(sorted(fields)),
             personFields=PERSON_FIELDS,
             body=body,
-        )
+        ),
+        idempotent=False,
     )
 
 
@@ -205,7 +206,8 @@ def modify_group_members(group_resource_name: str, add: list[str], remove: list[
         body["resourceNamesToRemove"] = remove
     if body:
         _execute(
-            _svc().contactGroups().members().modify(resourceName=group_resource_name, body=body)
+            _svc().contactGroups().members().modify(resourceName=group_resource_name, body=body),
+            idempotent=False,
         )
 
 
