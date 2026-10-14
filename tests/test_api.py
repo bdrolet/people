@@ -1159,3 +1159,29 @@ def test_sync_by_encoded_linkedin_url(monkeypatch):
 
 def test_an_unknown_linkedin_url_is_404():
     assert client.get("/people/linkedin.com%2Fin%2Fnobody-example").status_code == 404
+
+
+def test_post_partially_created_commits_the_row_and_is_502(monkeypatch):
+    commits = []
+
+    class TrackingConn(Conn):
+        def commit(self):
+            commits.append(1)
+
+    monkeypatch.setattr(db, "get_conn", lambda: TrackingConn())
+
+    def partial(conn, **kw):
+        raise person_create.PartiallyCreated(row(id=7, email=None), "The operation was aborted.")
+
+    monkeypatch.setattr("api.routers.people.person_create.create", partial)
+    r = client.post(
+        "/people",
+        json={"contact": {"phoneNumbers": [{"value": "+15550100001"}]}, "labels": ["x"]},
+    )
+    assert r.status_code == 502
+    assert r.json()["detail"] == {
+        "error": "person created, but notes/labels were not applied",
+        "id": 7,
+        "reason": "The operation was aborted.",
+    }
+    assert commits == [1]

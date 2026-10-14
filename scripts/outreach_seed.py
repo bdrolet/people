@@ -44,6 +44,7 @@ class SeedRun:
     linked: int = 0
     created: int = 0
     failures: list[tuple[str, str]] = field(default_factory=list)  # (name, reason)
+    unlabelled: list[str] = field(default_factory=list)  # created, but the label failed
 
 
 def _enter(conn: Any, profile_url: str, person_id: int, now: datetime) -> None:
@@ -99,11 +100,15 @@ def run(
             result.linked += 1
         for o in result.plan.linkedin_of("create"):
             try:
-                row = person_create.create(
-                    conn,
-                    contact=outreach_seed.contact_for(o.row),
-                    labels=[FROM_LINKEDIN_LABEL],
-                )
+                try:
+                    row = person_create.create(
+                        conn,
+                        contact=outreach_seed.contact_for(o.row),
+                        labels=[FROM_LINKEDIN_LABEL],
+                    )
+                except person_create.PartiallyCreated as e:
+                    row = e.row  # the contact and row exist; only the label is missing
+                    result.unlabelled.append(o.row["full_name"])
                 _enter(conn, o.row["profile_url"], row["id"], now)
                 conn.commit()
                 result.created += 1
@@ -154,6 +159,11 @@ def summary(r: SeedRun, *, dry_run: bool) -> str:
         if li[kind]:
             lines.append(f"{_TITLES[kind]}:")
             lines += [_linkedin_line(o) for o in li[kind]]
+    if r.unlabelled:
+        lines.append(
+            f"Created without the {FROM_LINKEDIN_LABEL} label (add it with editing-person):"
+        )
+        lines += [f"  {name}" for name in r.unlabelled]
     if r.failures:
         lines.append("Failed:")
         lines += [f"  {name}  {reason}" for name, reason in r.failures]

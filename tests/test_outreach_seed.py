@@ -388,3 +388,16 @@ def test_main_exits_1_when_a_create_failed(monkeypatch):
 
 def _raise(contact):
     raise RuntimeError("quota")
+
+
+def test_a_create_whose_label_failed_still_counts_and_links(monkeypatch):
+    def create(contact):
+        raise script.person_create.PartiallyCreated({"id": 150}, "The operation was aborted.")
+
+    log = _wire(monkeypatch, linkedin_rows=[li("d", first="Dee", last="New")], create=create)
+    conn = Conn()
+    r = _run(conn)
+    assert r.created == 1 and r.failures == [] and r.unlabelled == ["Dee New"]
+    assert log["linked"] == [("linkedin.com/in/d", 150)] and (150, "seed") in log["inserted"]
+    assert conn.rolled_back == 0
+    assert "without the from-linkedin label" in script.summary(r, dry_run=False)

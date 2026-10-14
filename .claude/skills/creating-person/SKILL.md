@@ -127,6 +127,11 @@ that.
 - `400` — an allowlist/shape violation in `contact` (same rules as
   **editing-person**'s PATCH), or no usable identifier.
 - `409` — person exists (either side) — see "Duplicates" above.
+- `502` with `{"error": "person created, but notes/labels were not applied",
+  "id": <id>, "reason": "..."}` — the Google contact and the `people` row were
+  made, but applying `notes`/`labels` afterwards failed. Don't retry the
+  `POST` (it would be refused as a duplicate); `PATCH` the returned `id` with
+  **editing-person** to add the notes or labels.
 - Anything Google itself rejects (a genuine 4xx from the People API) also
   comes back as `400`, carrying Google's message.
 

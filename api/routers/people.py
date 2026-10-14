@@ -116,12 +116,25 @@ def list_recent(
 def create_person(body: PersonCreate) -> PersonOut:
     try:
         with db.get_conn() as conn:
-            row = person_create.create(
-                conn,
-                contact=body.contact,
-                notes=body.notes,
-                labels=body.labels,
-            )
+            try:
+                row = person_create.create(
+                    conn,
+                    contact=body.contact,
+                    notes=body.notes,
+                    labels=body.labels,
+                )
+            except person_create.PartiallyCreated as e:
+                # The contact exists in Google; keep its row so a retry isn't refused
+                # as a duplicate, and say what is missing.
+                conn.commit()
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "error": "person created, but notes/labels were not applied",
+                        "id": e.row["id"],
+                        "reason": e.reason,
+                    },
+                ) from e
             conn.commit()
     except person_create.Invalid as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
