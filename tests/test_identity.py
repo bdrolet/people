@@ -30,3 +30,28 @@ def test_unparseable_values_return_none():
 
 def test_email_wins_over_digits_when_both_present():
     assert identity.classify("12345@example.com") == ("email", "12345@example.com")
+
+
+def test_profile_urls_are_linkedin():
+    # Review Focus 4: whatever Ben pastes from a browser resolves.
+    for raw in (
+        "linkedin.com/in/jane-example",
+        "https://www.linkedin.com/in/Jane-Example/?trk=x",
+        "https://uk.linkedin.com/in/jane-example",
+    ):
+        assert identity.classify(raw) == ("linkedin", "linkedin.com/in/jane-example")
+
+
+def test_a_numeric_slug_is_linkedin_not_an_id_or_a_phone():
+    assert identity.classify("linkedin.com/in/5550100001") == (
+        "linkedin",
+        "linkedin.com/in/5550100001",
+    )
+
+
+def test_an_email_mentioning_linkedin_is_an_email():
+    assert identity.classify("jane@linkedin.com") == ("email", "jane@linkedin.com")
+
+
+def test_a_company_page_identifies_no_one():
+    assert identity.classify("https://www.linkedin.com/company/acme") is None

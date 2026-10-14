@@ -255,6 +255,7 @@ def _wire(monkeypatch):
     )
     monkeypatch.setattr(people_repo, "get_by_id", lambda conn, person_id: None)
     monkeypatch.setattr(people_repo, "get_by_phone", lambda conn, e164: [])
+    monkeypatch.setattr(people_repo, "get_by_linkedin_url", lambda conn, url: None)
     monkeypatch.setattr(people_repo, "search", lambda conn, q, limit: [row()] if "ali" in q else [])
     monkeypatch.setattr(
         people_repo, "recent", lambda conn, limit, eligible_only=True: [row()][:limit]
@@ -1116,3 +1117,44 @@ def test_people_with_ambiguous_label_is_409(monkeypatch):
     )
     r = client.get("/labels/Vip")
     assert r.status_code == 409 and "exact spelling" in r.text
+
+
+JANE_KEY = "linkedin.com/in/jane-example"
+
+
+def _jane(monkeypatch):
+    monkeypatch.setattr(
+        people_repo,
+        "get_by_linkedin_url",
+        lambda conn, url: row(id=9, email=None, linkedin_url=url) if url == JANE_KEY else None,
+    )
+
+
+def test_get_by_encoded_linkedin_url(monkeypatch):
+    # Review Focus 4. Starlette routes on the decoded path, so %2F arrives as "/".
+    _jane(monkeypatch)
+    for path in (
+        "/people/linkedin.com%2Fin%2Fjane-example",
+        "/people/linkedin.com/in/jane-example",
+    ):
+        r = client.get(path)
+        assert r.status_code == 200, path
+        assert r.json()["id"] == 9 and r.json()["linkedin_url"] == JANE_KEY
+
+
+def test_patch_by_encoded_linkedin_url(monkeypatch):
+    _jane(monkeypatch)
+    monkeypatch.setattr(person_edit, "update", lambda conn, pid, **kw: row(id=pid, email=None))
+    r = client.patch("/people/linkedin.com%2Fin%2Fjane-example", json={"notes": "hi"})
+    assert r.status_code == 200 and r.json()["id"] == 9
+
+
+def test_sync_by_encoded_linkedin_url(monkeypatch):
+    _jane(monkeypatch)
+    monkeypatch.setattr(gsync, "sync_one", lambda conn, r: r)
+    r = client.post("/people/linkedin.com%2Fin%2Fjane-example/sync")
+    assert r.status_code == 200 and r.json()["id"] == 9
+
+
+def test_an_unknown_linkedin_url_is_404():
+    assert client.get("/people/linkedin.com%2Fin%2Fnobody-example").status_code == 404

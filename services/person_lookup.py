@@ -1,4 +1,4 @@
-"""Resolve an email, E.164 phone, or numeric id to one people row, for scripts
+"""Resolve an email, LinkedIn profile URL, E.164 phone, or numeric id to one people row, for scripts
 (outreach spec §7.4: `<person>` resolves the way people-api does). The rule is
 services/identity.py's; ambiguity is an error with the candidate ids, never a guess."""
 
@@ -25,6 +25,8 @@ def resolve(conn: Any, ident: str) -> dict:
     kind, value = classified
     if kind == "email":
         row = people.get(conn, str(value))
+    elif kind == "linkedin":
+        row = people.get_by_linkedin_url(conn, str(value))
     elif kind == "id":
         row = people.get_by_id(conn, int(value))
     else:
