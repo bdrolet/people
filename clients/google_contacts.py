@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import threading
+import time
 from typing import Any
 
 from google.oauth2.credentials import Credentials
@@ -20,6 +21,27 @@ logger = logging.getLogger(__name__)
 
 PERSON_FIELDS = ",".join(sorted(WRITABLE_FIELDS | {"memberships", "biographies", "metadata"}))
 _READ_MASK = PERSON_FIELDS
+
+_RETRIES = 5
+_sleep = time.sleep  # patched in tests
+
+
+def _execute(request: Any, *, idempotent: bool = True) -> Any:
+    """Run one People API request, retrying rate limits (linkedin-identity design §5).
+    Idempotent requests use googleapiclient's own retry (HTTP 429 and 5xx, with
+    backoff). A create or delete retries only HTTP 429, which Google returns before
+    doing anything: after a 5xx the contact may already exist, and a retry would
+    make a second one."""
+    if idempotent:
+        return request.execute(num_retries=_RETRIES)
+    for attempt in range(_RETRIES + 1):
+        try:
+            return request.execute()
+        except HttpError as e:
+            if e.resp.status != 429 or attempt == _RETRIES:
+                raise
+            _sleep(2**attempt)
+    raise AssertionError("unreachable")
 
 
 class SyncTokenExpired(Exception):
@@ -57,13 +79,13 @@ def _warmup() -> None:
     the first real search in a session, else results may be stale/empty."""
     global _warmed
     if not _warmed:
-        _svc().people().searchContacts(query="", readMask=_READ_MASK).execute()
+        _execute(_svc().people().searchContacts(query="", readMask=_READ_MASK))
         _warmed = True
 
 
 def search_by_email(email: str) -> dict | None:
     _warmup()
-    resp = _svc().people().searchContacts(query=email, readMask=_READ_MASK, pageSize=5).execute()
+    resp = _execute(_svc().people().searchContacts(query=email, readMask=_READ_MASK, pageSize=5))
     for r in resp.get("results", []):
         person = r.get("person", {})
         for e in person.get("emailAddresses", []):
@@ -84,7 +106,9 @@ def create_contact(display_name: str | None, email: str, group_resource_name: st
         body["memberships"] = [
             {"contactGroupMembership": {"contactGroupResourceName": group_resource_name}}
         ]
-    return _svc().people().createContact(body=body, personFields=PERSON_FIELDS).execute()
+    return _execute(
+        _svc().people().createContact(body=body, personFields=PERSON_FIELDS), idempotent=False
+    )
 
 
 def create_person(body: dict, group_resource_name: str | None) -> dict:
@@ -96,11 +120,13 @@ def create_person(body: dict, group_resource_name: str | None) -> dict:
         full_body["memberships"] = [
             {"contactGroupMembership": {"contactGroupResourceName": group_resource_name}}
         ]
-    return _svc().people().createContact(body=full_body, personFields=PERSON_FIELDS).execute()
+    return _execute(
+        _svc().people().createContact(body=full_body, personFields=PERSON_FIELDS), idempotent=False
+    )
 
 
 def get_person(resource_name: str) -> dict:
-    return _svc().people().get(resourceName=resource_name, personFields=PERSON_FIELDS).execute()
+    return _execute(_svc().people().get(resourceName=resource_name, personFields=PERSON_FIELDS))
 
 
 def update_fields(resource_name: str, etag: str, fields: dict) -> dict:
@@ -109,7 +135,7 @@ def update_fields(resource_name: str, etag: str, fields: dict) -> dict:
     if not fields:
         return {}
     body: dict[str, Any] = {"etag": etag, **fields}
-    return (
+    return _execute(
         _svc()
         .people()
         .updateContact(
@@ -118,21 +144,20 @@ def update_fields(resource_name: str, etag: str, fields: dict) -> dict:
             personFields=PERSON_FIELDS,
             body=body,
         )
-        .execute()
     )
 
 
 def delete_person(resource_name: str) -> None:
     """Delete a contact outright. Only scripts/merge_duplicate_contacts.py calls
     this — nothing in the nightly sync or the API ever deletes a Google contact."""
-    _svc().people().deleteContact(resourceName=resource_name).execute()
+    _execute(_svc().people().deleteContact(resourceName=resource_name), idempotent=False)
 
 
 def list_groups() -> dict[str, dict]:
     out: dict[str, dict] = {}
     token = None
     while True:
-        resp = _svc().contactGroups().list(pageSize=200, pageToken=token).execute()
+        resp = _execute(_svc().contactGroups().list(pageSize=200, pageToken=token))
         for g in resp.get("contactGroups", []):
             out[g.get("formattedName") or g.get("name")] = {
                 "resourceName": g["resourceName"],
@@ -150,7 +175,7 @@ def list_groups_by_rn() -> dict[str, dict]:
     out: dict[str, dict] = {}
     token = None
     while True:
-        resp = _svc().contactGroups().list(pageSize=200, pageToken=token).execute()
+        resp = _execute(_svc().contactGroups().list(pageSize=200, pageToken=token))
         for g in resp.get("contactGroups", []):
             out[g["resourceName"]] = {
                 "name": g.get("name"),
@@ -166,7 +191,9 @@ def ensure_group(name: str) -> str:
     groups = list_groups()
     if name in groups:
         return groups[name]["resourceName"]
-    created = _svc().contactGroups().create(body={"contactGroup": {"name": name}}).execute()
+    created = _execute(
+        _svc().contactGroups().create(body={"contactGroup": {"name": name}}), idempotent=False
+    )
     return created["resourceName"]
 
 
@@ -177,9 +204,9 @@ def modify_group_members(group_resource_name: str, add: list[str], remove: list[
     if remove:
         body["resourceNamesToRemove"] = remove
     if body:
-        _svc().contactGroups().members().modify(
-            resourceName=group_resource_name, body=body
-        ).execute()
+        _execute(
+            _svc().contactGroups().members().modify(resourceName=group_resource_name, body=body)
+        )
 
 
 def _is_expired_sync_token(e: HttpError) -> bool:
@@ -214,7 +241,7 @@ def list_phone_index(region: str = "US") -> dict[str, list[dict]]:
     index: dict[str, list[dict]] = {}
     page_token = None
     while True:
-        resp = (
+        resp = _execute(
             _svc()
             .people()
             .connections()
@@ -224,7 +251,6 @@ def list_phone_index(region: str = "US") -> dict[str, list[dict]]:
                 pageSize=1000,
                 pageToken=page_token,
             )
-            .execute()
         )
         for person in resp.get("connections", []):
             entry = {
@@ -238,6 +264,48 @@ def list_phone_index(region: str = "US") -> dict[str, list[dict]]:
         page_token = resp.get("nextPageToken")
         if not page_token:
             return index
+
+
+_URL_FIELDS = "names,urls,metadata"
+
+
+def list_url_index() -> tuple[dict[str, list[dict]], list[dict]]:
+    """(normalized LinkedIn profile URL -> the contacts carrying it, every contact),
+    for the seed's and POST /people's duplicate checks (linkedin-identity design §5).
+    A full listing like list_phone_index, because searchContacts does not index
+    urls. Entries are {"resource_name", "display_name"}. No sync token: the nightly
+    sync owns it."""
+    # Layer-rule exception, as in list_phone_index: one normalizer, not two.
+    from services.linkedin_export import normalize_profile_url
+
+    by_url: dict[str, list[dict]] = {}
+    contacts: list[dict] = []
+    page_token = None
+    while True:
+        resp = _execute(
+            _svc()
+            .people()
+            .connections()
+            .list(
+                resourceName="people/me",
+                personFields=_URL_FIELDS,
+                pageSize=1000,
+                pageToken=page_token,
+            )
+        )
+        for person in resp.get("connections", []):
+            entry = {
+                "resource_name": person["resourceName"],
+                "display_name": (person.get("names") or [{}])[0].get("displayName"),
+            }
+            contacts.append(entry)
+            for u in person.get("urls", []):
+                url = normalize_profile_url(str(u.get("value") or ""))
+                if url and entry not in by_url.setdefault(url, []):
+                    by_url[url].append(entry)
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            return by_url, contacts
 
 
 def list_connections(sync_token: str | None) -> tuple[list[dict], str]:
@@ -258,7 +326,7 @@ def list_connections(sync_token: str | None) -> tuple[list[dict], str]:
         if page_token:
             kwargs["pageToken"] = page_token
         try:
-            resp = _svc().people().connections().list(**kwargs).execute()
+            resp = _execute(_svc().people().connections().list(**kwargs))
         except HttpError as e:
             if _is_expired_sync_token(e):
                 raise SyncTokenExpired() from e
