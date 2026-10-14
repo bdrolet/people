@@ -1,6 +1,6 @@
 # Outreach contact docs and reloadable sessions
 
-**Status:** design, written 2026-10-14 after Ben made these decisions in
+**Status:** implemented on branch `outreach-contact-docs`; design written 2026-10-14 after Ben made these decisions in
 conversation:
 - doc plus session resume;
 - the docs are machine-maintained;

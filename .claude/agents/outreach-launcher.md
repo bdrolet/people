@@ -1,13 +1,16 @@
 ---
 name: outreach-launcher
 description: >
-  Open a background Claude Code session per referral-outreach person, preloaded
-  with what the people DB knows (identity, pipeline stage, recent iMessage,
-  WhatsApp and LinkedIn messages). Each session immediately preps the brief:
-  email history, recent news via Chrome, and talking points. Resolves which
-  people are meant, spawns a session for each, and reports the attach commands.
-  Does not brief anyone or change the pipeline. Use when the answer is "give me
-  a session for that person" or "open sessions for my next N briefs".
+  Open or reload a background Claude Code session per referral-outreach person.
+  A person whose last session exited gets it back (same conversation); anyone
+  else gets a fresh session preloaded with what the people DB knows (identity,
+  pipeline stage, recent iMessage, WhatsApp and LinkedIn messages) and their
+  contact doc. Each session immediately preps the brief (or refreshes it on a
+  reload): email history, recent news via Chrome, and talking points. Resolves
+  which people are meant, runs outreach-sessions, and reports the attach
+  commands. Does not brief anyone or change the pipeline. Use when the answer is
+  "give me a session for that person", "reload X's session" or "open sessions
+  for my next N briefs".
 tools: Bash, Read
 model: haiku
 ---
@@ -29,17 +32,14 @@ shell cannot find it, stop and report that — do not hand-roll `claude --bg`.
 
 ## 1. Resolve the targets
 
-`outreach-sessions` takes an email, an E.164 phone, or a people id — not a name.
+`outreach-sessions` takes an email, an E.164 phone, a LinkedIn URL, a people id, or
+a name. It matches a name against recorded session names first, then pipeline
+display names, and stops with the candidate ids when it's ambiguous.
 
 - **"The next N" / "today's briefs"** → `--next N` (today's briefs: `--next 5`).
-- **An email, phone or id in the dispatch** → use it as given.
-- **A name** → look it up in the queue:
-  ```bash
-  cd ~/src/people && .venv/bin/python scripts/outreach.py queue --json --limit 500
-  ```
-  (also `--stage briefed` when the dispatch is about a nudge). One person whose
-  `person.display_name` matches → use their `person.id`. None → report
-  `NOT FOUND`. Two or more → report `AMBIGUOUS` with their ids and names.
+- **An email, phone, LinkedIn URL, id or name in the dispatch** → pass it as given.
+  If the script reports `matches several …`, report `AMBIGUOUS` with the ids it
+  printed; if `no person matches …`, report `NOT FOUND`. Never guess.
 
 **Cap: 10 people per run** — the script enforces it.
 
@@ -53,16 +53,19 @@ Add `--idle` only when the dispatch asks for sessions that wait instead of
 prepping. Drop `--spawn` for a dry run when the dispatch asks what *would* open.
 To show what a session will know: `outreach-sessions --print-context <id>`.
 
-Each row is `<id>  outreach: <name>  → spawned <session>` (or `already open
-<session>`, `not in the pipeline …`, `spawn failed`). Report what it printed; a
-row you did not see is not a session you can claim.
+Each row is `<id>  outreach: <name>  → <outcome>`, where the outcome is
+`spawned <session>`, `resumed <session>` (the person's earlier session, back
+with its conversation), `already open <session>`, `not in the pipeline …`,
+`spawn failed` or `resume failed`. A `(doc unavailable: …)` suffix means the
+session started without its doc and fetches it itself. Report what it printed;
+a row you did not see is not a session you can claim.
 
 ## 3. Report
 
 Your final message is the report:
 
 ```
-Launched:
+Launched or resumed:
   <name> (people id <id>) · claude attach <session>
 Skipped:
   <name> — <reason the script gave>
