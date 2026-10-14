@@ -67,7 +67,7 @@ def run(
             conn.rollback()
         else:
             whatsapp_repo.upsert_chats(conn, batch.chats)
-            whatsapp_repo.upsert_handles(conn, batch.handles)
+            whatsapp_repo.upsert_handles(conn, batch.handles, full=full)
             # §6.5 Finding A: batch.handles only covers this run's direct sessions
             # plus in-window group senders, so a stored handle outside that set
             # (a group-only sender the incremental window missed) never gets

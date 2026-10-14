@@ -75,7 +75,7 @@ def test_a_real_run_writes_in_the_documented_order(tmp_path):
         for marker in (
             "INSERT INTO whatsapp_chats",
             "INSERT INTO whatsapp_handles",
-            "FROM whatsapp_handles WHERE handle NOT LIKE",  # rematch_stored_handles
+            "WHERE handle NOT LIKE 'lid:%' OR phone IS NOT NULL",  # rematch_stored_handles
             "INSERT INTO whatsapp_chat_members",
             "INSERT INTO whatsapp_messages",
             "DELETE FROM whatsapp_messages",  # delete_missing, must precede the recomputes

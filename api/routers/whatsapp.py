@@ -38,6 +38,8 @@ class WhatsAppSummary(BaseModel):
 class WhatsAppHandleOut(BaseModel):
     handle: str
     jid: str | None
+    # E.164: the handle itself, or a LID's phone from WhatsApp's address book.
+    phone: str | None = None
     display_name: str | None
     person_id: int | None
     person_email: str | None
