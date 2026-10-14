@@ -9,6 +9,7 @@ from typing import Any
 
 from services.eligibility import normalize
 from services.imessage_export import normalize_handle
+from services.linkedin_export import normalize_profile_url
 
 # The 24 keys `updateContact` accepts in `updatePersonFields`, verified
 # against the live People API (design §5.1). `metadata` and `photos` are
@@ -59,8 +60,8 @@ class EmailRuleError(Exception):
 
 
 class IdentifierRuleError(Exception):
-    """A submitted `phoneNumbers` list would leave a person with neither an
-    email address nor a phone number. -> 409."""
+    """A submitted `phoneNumbers` or `urls` list would leave a person with no
+    email address, no phone number and no LinkedIn profile URL. -> 409."""
 
 
 def validate(contact: dict) -> dict:
@@ -105,20 +106,21 @@ def check_email_addition(live: dict, submitted: list[dict], keyed_email: str | N
         )
 
 
-def check_phone_removal(email: str | None, submitted: list[dict]) -> None:
-    """Raises IdentifierRuleError if `email` is None (the person has no email
-    address — e.g. adopted by phone only) and the submitted `phoneNumbers`
-    list normalizes to zero usable numbers (people_has_an_identifier requires
-    at least one). A person with an email address is unaffected — they keep
-    an identifier either way."""
+def check_identifier_kept(email: str | None, live: dict, fields: dict) -> None:
+    """Raises IdentifierRuleError when applying `fields` to the live Google contact
+    would leave a person with no email, no usable phone and no LinkedIn profile URL
+    (people_has_an_identifier; linkedin-identity design §4). A field not being
+    submitted keeps its live value. A person with an email address is unaffected."""
     if email:
         return
-    raw_numbers = [p.get("value", "") for p in submitted]
-    if any(normalize_handle(n) is not None for n in raw_numbers):
+    phones = fields["phoneNumbers"] if "phoneNumbers" in fields else live.get("phoneNumbers", [])
+    if any(normalize_handle(str(p.get("value") or "")) is not None for p in phones):
+        return
+    if profile_urls({"urls": fields["urls"] if "urls" in fields else live.get("urls", [])}):
         return
     raise IdentifierRuleError(
-        "a person must keep an email address or a phone number; "
-        "removing the last phone number goes through the Google UI"
+        "a person must keep an email address, a phone number or a LinkedIn profile URL; "
+        "removing the last one goes through the Google UI"
     )
 
 
@@ -137,6 +139,13 @@ def identifiers(contact: dict) -> tuple[list[str], list[str]]:
     return emails, phones
 
 
+def profile_urls(contact: dict) -> list[str]:
+    """The normalized LinkedIn profile URLs a contact map carries, in order, without
+    repeats. Company pages and other URLs are not identifiers and are left out."""
+    raw = (normalize_profile_url(str(u.get("value") or "")) for u in contact.get("urls", []))
+    return list(dict.fromkeys(u for u in raw if u))
+
+
 def _primary_organization(organizations: list[dict]) -> dict | None:
     if not organizations:
         return None
@@ -148,7 +157,8 @@ def _primary_organization(organizations: list[dict]) -> dict | None:
 
 def derive(person: dict) -> dict:
     """Google person payload -> {"phone_numbers": list[str], "company": str | None,
-    "job_title": str | None, "google_fields": dict}."""
+    "job_title": str | None, "google_fields": dict,
+    "linkedin_url": str | None}."""
     raw_numbers = [p.get("value", "") for p in person.get("phoneNumbers", [])]
     normalized_numbers = (normalize_handle(n) for n in raw_numbers)
     phone_numbers = list(dict.fromkeys(n for n in normalized_numbers if n is not None))
@@ -163,9 +173,12 @@ def derive(person: dict) -> dict:
         if key in WRITABLE_FIELDS and key not in OWNED_ELSEWHERE
     }
 
+    urls = profile_urls(person)
+
     return {
         "phone_numbers": phone_numbers,
         "company": company,
         "job_title": job_title,
         "google_fields": google_fields,
+        "linkedin_url": urls[0] if urls else None,
     }

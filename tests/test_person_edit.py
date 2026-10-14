@@ -446,3 +446,31 @@ def test_replacing_the_phone_number_on_a_phone_only_person_is_allowed(contact_gc
     )
     person_edit.update(None, 7, contact={"phoneNumbers": [{"value": "+15550100009"}]})
     assert contact_gc.updates and "phoneNumbers" in contact_gc.updates[0][2]
+
+
+def _linkedin_only(monkeypatch, contact_gc, *, phones=()):
+    monkeypatch.setattr(
+        person_edit.people,
+        "get_by_id",
+        lambda conn, pid: {"id": 7, "email": None, "google_resource_name": "people/c1"},
+    )
+    contact_gc.live = {
+        "etag": "etag-1",
+        "urls": [{"value": "https://www.linkedin.com/in/jane-example"}],
+        "phoneNumbers": [{"value": p} for p in phones],
+        "memberships": [],
+    }
+
+
+def test_removing_the_last_linkedin_url_is_a_conflict(contact_gc, monkeypatch):
+    # Review Focus 5.
+    _linkedin_only(monkeypatch, contact_gc)
+    with pytest.raises(person_edit.Conflict):
+        person_edit.update(None, 7, contact={"urls": [{"value": "https://example.com"}]})
+    assert contact_gc.updates == []
+
+
+def test_clearing_phones_on_a_person_with_a_linkedin_url_is_allowed(contact_gc, monkeypatch):
+    _linkedin_only(monkeypatch, contact_gc, phones=["+15550100001"])
+    person_edit.update(None, 7, contact={"phoneNumbers": []})
+    assert contact_gc.updates and contact_gc.updates[0][2] == {"phoneNumbers": []}
