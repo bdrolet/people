@@ -1025,7 +1025,7 @@ def test_today_counts_carries_fresh_messages(monkeypatch):
         "person": {"id": 7, "display_name": "Jamie Example"},
         "stage": "briefed",
         "channel": "imessage",
-        "at": "2026-10-14T09:00:00-04:00",  # New York time
+        "at": "2026-10-14T06:00:00-07:00",  # Pacific: Ben reads Fresh in his own time
         "text": "are you around?",  # whitespace flattened
         "answered": False,
     }

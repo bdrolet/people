@@ -237,7 +237,7 @@ def test_fresh_messages_lead_the_screen():
     )
     t = build(_counts(fresh=[_fresh(), email]), TARGETS, now=_at(date(2026, 10, 14), 10))
     lines = render(t).splitlines()
-    assert lines[2] == "Fresh: messaged you in the last 48h"
+    assert lines[2] == "Fresh: messaged you in the last 48h (Pacific time)"
     assert lines[3].startswith("  Jamie Example")
     assert lines[3].endswith('imessage · 10-14 09:00 · briefed · unanswered · "are you around?"')
     assert lines[4].startswith("  person 8")

@@ -210,7 +210,7 @@ def render(t: Today) -> str:
     if t.fresh:
         # First thing on the screen: someone on the list just wrote, and a reply while
         # it's fresh beats any brief still owed today.
-        lines += [f"Fresh: messaged you in the last {FRESH_HOURS}h"]
+        lines += [f"Fresh: messaged you in the last {FRESH_HOURS}h (Pacific time)"]
         lines += [_fresh_line(i) for i in t.fresh] + [""]
     if t.today_target is not None:
         parts = [f"today {t.briefs_today}/{t.today_target}"]

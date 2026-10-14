@@ -512,10 +512,13 @@ def follow_ups(conn: Any, *, today: date) -> list[dict]:
 
 
 FRESH_TEXT_MAX = 120
+# Fresh is read as "when did they write?", so it's shown in Ben's own (Pacific) time.
+# Every date boundary in outreach (today, the week, cohorts) stays New York (TZ).
+FRESH_TZ = ZoneInfo("America/Los_Angeles")
 
 
 def fresh_item(r: dict) -> dict:
-    """One `repo/outreach.py::fresh_inbound` row as JSON-shaped data: when, in New York
+    """One `repo/outreach.py::fresh_inbound` row as JSON-shaped data: when, in Pacific
     time, and the message flattened to one line. Email has no text (people keeps only
     timestamps)."""
     text = " ".join((r["text"] or "").split()) or None
@@ -525,7 +528,7 @@ def fresh_item(r: dict) -> dict:
         "person": {"id": r["person_id"], "display_name": r["display_name"]},
         "stage": r["stage"],
         "channel": r["channel"],
-        "at": r["at"].astimezone(TZ).isoformat(),
+        "at": r["at"].astimezone(FRESH_TZ).isoformat(),
         "text": text,
         "answered": bool(r["answered"]),
     }
