@@ -400,6 +400,13 @@ stage log), all keyed to `people.id` and CASCADE-deleted with the person.
 - **`outreach today`.** `services/outreach_today.py` turns `today_counts` and the
   private targets TOML into `ON TRACK` / `ON PACE` / `BEHIND`. Marks count only
   workdays inside the plan window.
+- **Contact docs (contact-docs spec).** One Google Doc per pipeline person
+  (`Outreach — <name>`, My Drive `Consulting/Outreach`), linked from
+  `outreach_contacts.doc_url`. `outreach-sessions --write-doc` is the only writer:
+  `services/outreach_doc.py` merges (Ben's notes and the log survive, Messages is
+  regenerated), `services/outreach_doc_write.py` guards the PUT with a second GET.
+  `outreach-sessions` resumes a person's exited session from the cwd its transcript
+  records, or spawns a fresh one from the doc.
 
 ## Layer rules
 

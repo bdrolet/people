@@ -12,6 +12,7 @@
                                   [--channel C] [--at T] [--from ADDR] [--force] [--note TEXT]
   python scripts/outreach.py nudge <person> --channel C [--at T] [--from ADDR] [--note TEXT]
   python scripts/outreach.py lead <person> "<name, company>"
+  python scripts/outreach.py doc <person> <google-docs-url> | --clear
   python scripts/outreach.py intro <referrer> "<buyer name, company>" [--buyer <person>] [--at T]
   python scripts/outreach.py conversation|proposal|signed <opportunity-id> [--at T]
   python scripts/outreach.py lost <opportunity-id> --reason R [--at T]
@@ -76,6 +77,7 @@ USER_ERRORS = (
     outreach.NotInPipeline,
     outreach.OpportunityNotFound,
     outreach.NotQueued,
+    outreach.InvalidDocUrl,
     outreach_targets.TargetsError,
     outreach_report.FloorsError,
     inbox_api.InboxApiUnavailable,
@@ -135,13 +137,15 @@ def cmd_queue(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -
                 i["last_interaction"] or "never",
                 " ".join(k for k, v in i["channels"].items() if v),
                 i["follow_up_on"] or "",
+                "✓" if i["doc_url"] else "",
                 "lead" if i["has_lead"] else "",
             ]
             for i in items
         ]
         print(
             outreach_report.table(
-                ["id", "rank", "name", "company", "last", "channels", "follow-up", ""], rows
+                ["id", "rank", "name", "company", "last", "channels", "follow-up", "doc", ""],
+                rows,
             ),
             file=out,
         )
@@ -224,6 +228,18 @@ def cmd_lead(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) ->
     outreach.set_lead(conn, person["id"], args.lead, today=now.astimezone(outreach.TZ).date())
     conn.commit()
     print(f"{_label(person)}: lead noted ({args.lead})", file=out)
+
+
+def cmd_doc(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:
+    """Record or clear a contact doc by hand (contact-docs spec §4). `outreach-sessions
+    --write-doc` records the link itself; this is for a fix, or after Ben deletes a doc."""
+    if bool(args.url) == args.clear:
+        raise CliError("give a Google Docs link or --clear, not both or neither")
+    person = _resolve(conn, args.person)
+    outreach.set_doc(conn, person["id"], None if args.clear else args.url)
+    conn.commit()
+    done = "doc link cleared" if args.clear else f"doc recorded ({args.url})"
+    print(f"{_label(person)}: {done}", file=out)
 
 
 def cmd_intro(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:
@@ -439,6 +455,7 @@ COMMANDS: dict[str, Callable[[Any, argparse.Namespace, TextIO, datetime], None]]
     "nudge": cmd_nudge,
     "rank": cmd_rank,
     "lead": cmd_lead,
+    "doc": cmd_doc,
     "intro": cmd_intro,
     "conversation": cmd_buyer,
     "proposal": cmd_buyer,
@@ -489,6 +506,10 @@ def build_parser() -> argparse.ArgumentParser:
     le = sub.add_parser("lead")
     le.add_argument("person")
     le.add_argument("lead")
+    dc = sub.add_parser("doc")
+    dc.add_argument("person")
+    dc.add_argument("url", nargs="?")
+    dc.add_argument("--clear", action="store_true")
     i = sub.add_parser("intro")
     i.add_argument("referrer")
     i.add_argument("buyer_label")

@@ -24,6 +24,7 @@ OWN_ADDRESSES=$(tfvar own_addresses)
 OUTREACH_FROM_ADDRESSES=$(tfvar outreach_from_addresses)
 TASKS_API_URL=$(tfvar tasks_api_url || true)
 INBOX_API_URL=https://inbox-api.drolet.cloud
+DOCS_API_URL=$(gcloud run services describe docs-api --region us-central1 --project "$PROJECT" --format='value(status.url)' 2>/dev/null || true)
 GRAFANA_OTLP_ENDPOINT=$(secret grafana-otlp-endpoint)
 GRAFANA_OTLP_TOKEN=$(secret grafana-otlp-token)
 CLOUD_SQL_CONNECTION_NAME=bens-project-462804:us-central1:inbox

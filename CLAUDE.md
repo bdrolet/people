@@ -39,7 +39,7 @@ This overrides the default "commit or push only when asked" behavior for code ch
 | **Google Contacts** | People API v1 via `clients/google_contacts.py` — OAuth refresh-token creds, scope `https://www.googleapis.com/auth/contacts`; reuses schedule's OAuth client (`google-calendar-client-id`/`-secret`, data sources), a people-owned refresh token (`google-contacts-refresh-token`) |
 | **HubSpot** | `clients/hubspot.py` (ported from inbox) — contacts search/create/update/archive, email engagement create; bounded mirror, see §HubSpot below |
 | **Local Graph import** | `clients/graph_local.py` — device-code MSAL auth for `scripts/import_contacts.py` only; people's Cloud Functions never call Graph |
-| **Referral outreach** | `services/outreach.py` stage machine over `outreach_*`; `email_sent` from `OUTREACH_FROM_ADDRESSES` proves *briefed*, `email_classified` proves *replied*; one completed Asana task per countable stage event via `clients/tasks_api.py` (Cloud Run IAM, `TASKS_API_URL`); CLI `scripts/outreach.py`, seed `scripts/outreach_seed.py`; follow-ups are `nudge` events on a `briefed` contact (+7/+14 days from the brief, propose close at +21); `outreach today` checks pace against `OUTREACH_TARGETS` (private TOML); skill `working-outreach-queue` |
+| **Referral outreach** | `services/outreach.py` stage machine over `outreach_*`; `email_sent` from `OUTREACH_FROM_ADDRESSES` proves *briefed*, `email_classified` proves *replied*; one completed Asana task per countable stage event via `clients/tasks_api.py` (Cloud Run IAM, `TASKS_API_URL`); CLI `scripts/outreach.py`, seed `scripts/outreach_seed.py`; follow-ups are `nudge` events on a `briefed` contact (+7/+14 days from the brief, propose close at +21); `outreach today` checks pace against `OUTREACH_TARGETS` (private TOML); skill `working-outreach-queue`; one machine-maintained Google Doc per pipeline person (`Outreach — <name>`, My Drive `Consulting/Outreach`, link in `outreach_contacts.doc_url`) written only by `outreach-sessions --write-doc` via docs-api (`clients/docs_api.py`, `DOCS_API_URL`); `outreach-sessions` resumes a person's exited session (`claude --bg --resume`) or spawns a fresh one from the doc |
 | **Observability** | OTel → Grafana Cloud OTLP; metrics prefixed `people_` (outreach instruments are `people.outreach_*`) |
 | **Infra** | `terraform/` — GCS backend `bens-project-462804-tf-state`, state prefix `people` |
 
@@ -70,7 +70,8 @@ clients/
   tasks_api.py              create_task / complete_task / configured — Asana tasks via tasks-api
   inbox_api.py              create_draft (empty body) — CLI-only (scripts/outreach.py draft), so the
                              Graph rule still holds: Cloud Functions never use it
-  claude_sessions.py        `claude --bg` spawn / live ids / state file — CLI-only (outreach-sessions)
+  claude_sessions.py        `claude --bg` spawn / resume, running sessions, transcript lookup, per-person records — CLI-only (outreach-sessions)
+  docs_api.py               docs-api: get / create / replace a doc, filing-catalog folder lookup — CLI-only (outreach-sessions)
   otel.py                   OTel setup + counters (people.* instruments)
 repo/
   schema.sql                people (incl. contact-field columns), sync_state tables
@@ -89,6 +90,9 @@ services/
   outreach_today.py         pure: TodayCounts + Targets → pace verdicts and the daily screen
   outreach_session.py       one person's DB snapshot (incl. recent 1:1 message text) → the
                              context block a per-person Claude session boots with
+  outreach_doc.py           pure: contact-doc title, Messages render, a session's sections file, merge
+                             (keeps Ben's notes and the log)
+  outreach_doc_write.py     contact-doc write protocol: create, or GET → merge → GET → PUT if_version, one retry
   outreach_sync.py          Asana task payloads, sync_events / sync_pending (durable first, retried nightly)
   outreach_report.py        pure: floors TOML, stage_verdicts, render
   outreach_seed.py          pure: warm-pool bars over raw rows → SeedPlan; unlinked LinkedIn rows → link / in_google / possible_duplicate / create
@@ -140,12 +144,13 @@ scripts/
   test-api-local.py          smoke test people-api
   link-skills.sh             symlink searching-people/fetching-person/editing-person/creating-person/working-outreach-queue into ~/.claude/skills/,
                              the outreach-launcher agent into ~/.claude/agents/, outreach-sessions into ~/.local/bin/
-  outreach_sessions.py      one background Claude session per outreach person, preloaded and prepping
+  outreach_sessions.py      one background Claude session per outreach person: resume an exited one, or spawn
+                             preloaded with the snapshot and contact doc; --write-doc creates or merges the doc
                              (`outreach-sessions` wrapper runs it under the venv) — --next N, --spawn, --idle
   import_linkedin.py        load a LinkedIn export snapshot — --dry-run, --me
   import_imessage.py        import chat.db into the imessage_* tables — --full, --dry-run, --db
   import_whatsapp.py        import ChatStorage.sqlite into the whatsapp_* tables — --full, --dry-run, --db
-  outreach.py               referral outreach CLI: today, queue, decide, rank, mark, nudge, intro, conversation, lost, lead, draft, followups, report, sync-asana
+  outreach.py               referral outreach CLI: today, queue, decide, rank, mark, nudge, intro, conversation, lost, lead, doc, draft, followups, report, sync-asana
   outreach_seed.py          propose outreach candidates, link or create LinkedIn-only people — --dry-run
 terraform/                  main, variables, secrets, cloudsql, pubsub, cloud_functions, iam, api, scheduler
 tests/                      one test module per unit
@@ -198,6 +203,7 @@ exactly as tasks and schedule do.
 | `imessage_*` tables | `chat.db` on Ben's Mac | chat.db → DB on local import (`scripts/import_imessage.py`). Never written back anywhere; iMessage is not a source for any `people` field. |
 | `whatsapp_*` tables | WhatsApp's local store on Ben's Mac | Store → DB on local import (`scripts/import_whatsapp.py`). Never written back anywhere; WhatsApp is not a source for any `people` field. |
 | `outreach_*` tables | DB (`services/outreach.py` is the only stage writer) | Never derived from Google; the Asana tasks are derived from `outreach_events` and retried nightly. Pipeline rows CASCADE with their person. |
+| `outreach_contacts.doc_url` and the contact doc | DB holds the link (`services/outreach.py::set_doc`); the doc lives in Drive | `outreach-sessions --write-doc` creates or merges it: Ben's notes and the log are kept, Messages is regenerated from the DB. Never read back into the DB. The doc is the one place message text leaves the machine — Ben's private My Drive, indexed by docs-api (contact-docs spec D6). |
 | `phone_numbers`, `company`, `job_title`, `google_fields` | Google Contacts | Google → DB on link, nightly sync, and after every `PATCH`. Event data never writes them; never pushed to HubSpot (contact-field-edits design §4.1). |
 
 If the DB is lost, everything except the counters rebuilds from Google

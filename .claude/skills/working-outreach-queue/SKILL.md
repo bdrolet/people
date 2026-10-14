@@ -6,7 +6,8 @@ description: >
   person", "who do I need to nudge", "reassess the outreach queue", "set my
   outreach targets", "add X to my outreach list", "X could refer me",
   "record that X replied to my outreach", "X introduced me to Y", "prep my
-  brief for X", "start a session for X", "open sessions for my next briefs".
+  brief for X", "start a session for X", "open sessions for my next briefs", "reload the session for X",
+  "reopen X's session", "update X's outreach doc".
   Runs the outreach CLI in ~/src/people and supplies the judgment: who to
   brief, what to write, which channel. Not for job-search activity
   (logging-job-search) or the general task list (prioritizing-tasks).
@@ -48,6 +49,18 @@ O=".venv/bin/python scripts/outreach.py"
   nudges, email replies): the `email_sent` / `email_classified` events do it.
 - **Closing is always Ben's call.** Propose; never run `mark … declined`
   without a yes.
+- **Contact docs are machine-maintained — an explicit exception to `editing-doc`.**
+  Each pipeline person has one Google Doc, `Outreach — <name>` in My Drive
+  `Consulting/Outreach`, linked from `outreach_contacts.doc_url`. Write it
+  without asking first, and **only** with
+  `outreach-sessions --write-doc <id> --sections <file>` — never with
+  `editing-doc` or `creating-doc`. The script keeps Ben's notes and the log,
+  rewrites the rest, regenerates Messages from the DB, and refuses rather than
+  overwrite a concurrent edit it detects. It deletes Google comments on every
+  write; the doc tells Ben to write in `Ben's notes` instead. Never put a drafted
+  message in it.
+- **Write the sections file with the Write tool** (to your scratchpad), never a
+  heredoc or `$(…)`: background sessions block shell substitution.
 
 ## Today
 
@@ -77,10 +90,17 @@ If `low_queue` is true, say so and offer a reassessment.
 ## Start sessions
 
 To work a person in their own session ("start a session for Jonah", "open
-sessions for my next 5"), dispatch the `outreach-launcher` agent with who is
-meant. It runs `outreach-sessions`, which spawns one background session per
-person preloaded with their DB snapshot and already prepping (below), and
-returns `claude attach <id>` lines. Attaching needs a real terminal.
+sessions for my next 5", "reload the session for Jonah"), dispatch the
+`outreach-launcher` agent with who is meant — a name is fine. It runs
+`outreach-sessions`, which:
+- leaves a running session alone (`already open`);
+- resumes the person's exited session, same id and conversation (`resumed`);
+- or spawns a fresh one preloaded with their DB snapshot and contact doc
+  (`spawned`), already prepping or reloading.
+
+It returns `claude attach <id>` lines. Attaching needs a real terminal. To close a
+session without losing it: `claude stop <id>`. Never `claude rm` one — that
+deletes its transcript (and a worktree it ran in).
 
 ## Prep a brief
 
@@ -126,8 +146,50 @@ Ben attaches; then present it and wait.
    - **Mechanics** — the best channel; for email, send from the consulting
      identity; how the brief gets recorded (email proves itself; any other
      channel is `outreach mark <id> briefed --channel <c>` after Ben confirms).
-5. **Stop.** Present the briefing and wait. Don't offer to write the message.
-   Record nothing until Ben says he sent it.
+5. **Write the doc.** With the Write tool, write `<scratchpad>/doc-<id>.md`
+   holding exactly these sections (nothing else — the script refuses other
+   headings):
+   ```markdown
+   ## Who they are
+   <role, company, life outside work, how Ben knows them>
+
+   ## History
+   <past threads, favors both ways, open loops — summarize; quote only what's needed>
+
+   ## Log
+   - <YYYY-MM-DD> · prepped brief (<best channel>)
+
+   ## Talking points (next step: brief)
+   <the talking points from step 4: fragments and questions, never a drafted message>
+   ```
+   Then run `outreach-sessions --write-doc <id> --sections <scratchpad>/doc-<id>.md`.
+   It prints `created <url>` or `updated <url>`. If it prints an error that starts
+   `error: the doc changed while it was being written`, Ben is editing it: tell him,
+   and stop; writing again later is safe. If it prints
+   `error: created <url> but could not record it (...)`, run the `outreach doc`
+   command it names (`outreach doc <id> <url>`) before writing again.
+6. **Stop.** Present the briefing with the doc link and wait. Don't offer to write
+   the message. Record nothing until Ben says he sent it.
+
+## Reload
+
+A session started or resumed with the reload prompt, or Ben saying "reload" /
+"refresh" inside a person's session.
+
+1. **Context.** `outreach-sessions --print-context <id>` — the DB snapshot with
+   the contact doc inside it. The doc's last `## Log` date is where you pick up.
+2. **Email.** `searching-inbox-emails` (graph mode) for the person since that date.
+3. **What changed.** Tell Ben in a few lines: stage moves, replies, new messages
+   on any channel, news. Say "nothing new" when nothing is.
+4. **Next step.** `briefed` → `$O followups` says `nudge 1`, `nudge 2` or
+   `close`; `to_contact` → `brief`; `replied` → `reply`; `introduced` → `intro`;
+   `declined`/`skipped` → `none`.
+5. **Update the doc.** Same sections file as Prep a brief step 5: Who they are and
+   History rewritten as facts changed, a Log line per thing that happened since
+   (`- <YYYY-MM-DD> · replied by iMessage`), Talking points for the next step.
+   `outreach-sessions --write-doc <id> --sections <file>`.
+6. **Stop.** Present what changed and the talking points, with the doc link. Never
+   draft the message.
 
 ## Nudge
 
@@ -179,6 +241,12 @@ The note is free text. A late reply later is `$O mark <person> replied --channel
   It prints the opportunity id.
 - Buyer stages: `$O conversation|proposal|signed <opportunity-id>`.
 - Lost: `$O lost <opportunity-id> --reason no_budget|no_fit|price|scope|timing|no_response|other`.
+- After any recorded outcome — `mark`, `nudge`, `intro`, `lead`,
+  `decide --skip` — update the contact doc: a Log line for what happened
+  (`- <YYYY-MM-DD> · nudged by WhatsApp`) and talking points for the new next step,
+  through `--write-doc` as in Prep a brief step 5.
+- A doc Ben deleted in Drive: `$O doc <person> --clear`; the next `--write-doc`
+  creates a fresh one.
 
 ## Reassess the queue
 

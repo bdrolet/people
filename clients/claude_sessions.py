@@ -1,13 +1,17 @@
 """Background Claude Code sessions for local scripts: spawn one with `claude --bg`,
-read back the id it prints, list the live ones, and remember which key owns which
-session. I/O only. Mirrors ~/src/tasks/scripts/task_sessions.py's spawn half."""
+resume an exited one with `claude --bg --resume`, list the running ones, find a
+session's transcript, and keep the per-key session records. I/O only. Mirrors
+~/src/tasks/scripts/task_sessions.py's spawn half."""
 
 import json
+import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
 SHORT_ID = 8
+PROJECTS_DIR = Path.home() / ".claude" / "projects"
+_SESSION_ID = re.compile(r"[0-9a-f-]{8,36}")
 
 Runner = Callable[[list[str], Path], subprocess.CompletedProcess]
 
@@ -42,33 +46,103 @@ def spawn(
     return parse_session_id(result.stdout) if result.returncode == 0 else None
 
 
-def live_session_ids(*, cwd: Path, runner: Runner = _run) -> set[str]:
-    """Short ids of every session `claude agents` currently lists."""
+def resume_argv(session_id: str, prompt: str | None = None) -> list[str]:
+    argv = ["claude", "--bg", "--resume", session_id]
+    return [*argv, prompt] if prompt else argv
+
+
+def resume(
+    session_id: str, *, cwd: Path, prompt: str | None = None, runner: Runner = _run
+) -> str | None:
+    """Bring an exited session back under its own id. `cwd` must be the directory it last
+    ran in (transcript_cwd): the transcript is looked up under that directory's project.
+    A resume keeps its id, so the short id stands even if no `backgrounded` line prints."""
+    result = runner(resume_argv(session_id, prompt), cwd)
+    if result.returncode != 0:
+        return None
+    return parse_session_id(result.stdout) or session_id[:SHORT_ID]
+
+
+def live_sessions(*, cwd: Path, runner: Runner = _run) -> dict[str, str] | None:
+    """Session id (full when listed, else short) → cwd for every running session, or
+    None when the listing can't be trusted (the command failed, or its output isn't a
+    list): an empty dict means "nothing is running", None means "don't know".
+    `claude agents --json` without --all: with it, exited sessions are listed too."""
     try:
-        listing = json.loads(runner(["claude", "agents", "--json", "--all"], cwd).stdout or "[]")
+        result = runner(["claude", "agents", "--json"], cwd)
+        if result.returncode != 0:
+            return None
+        listing = json.loads(result.stdout or "[]")
     except (OSError, json.JSONDecodeError):
-        return set()
-    ids = set()
+        return None
+    if not isinstance(listing, list):
+        return None
+    live = {}
     for session in listing:
-        short = session.get("id") or (session.get("sessionId") or "")[:SHORT_ID]
-        if short:
-            ids.add(short)
-    return ids
+        if not isinstance(session, dict):
+            continue
+        sid = session.get("sessionId") or session.get("id")
+        if sid:
+            live[sid] = session.get("cwd") or ""
+    return live
 
 
-def load_state(path: Path) -> dict[str, str]:
+def find_live(session_id: str, live: dict[str, str]) -> str | None:
+    """The running session `session_id` (full or short) names, by prefix either way."""
+    if not session_id:
+        return None
+    for sid in live:
+        if sid.startswith(session_id) or session_id.startswith(sid):
+            return sid
+    return None
+
+
+def find_transcript(session_id: str, projects_dir: Path | None = None) -> Path | None:
+    """The session's transcript in any project directory: a session that entered a
+    worktree writes under that worktree's directory from then on. None when missing,
+    ambiguous, or `session_id` doesn't look like an id."""
+    if not _SESSION_ID.fullmatch(session_id):
+        return None
+    hits = sorted((projects_dir or PROJECTS_DIR).glob(f"*/{session_id}*.jsonl"))
+    return hits[0] if len(hits) == 1 else None
+
+
+def transcript_cwd(path: Path) -> str | None:
+    """The last working directory the transcript records. The project-directory name
+    can't be decoded instead: it writes `/` and `.` both as `-`."""
+    cwd = None
     try:
-        state = json.loads(path.read_text())
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                try:
+                    value = json.loads(line).get("cwd")
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+                if isinstance(value, str) and value:
+                    cwd = value
+    except (OSError, UnicodeDecodeError):
+        return None
+    return cwd
+
+
+def load_state(path: Path) -> dict[str, dict]:
+    """Key → {"session_id", "cwd", "name"}. A PR #26 entry (a bare short id) reads as
+    {"session_id": <short id>}; every lookup matches ids by prefix, so it still works."""
+    try:
+        raw = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return {}
-    return state if isinstance(state, dict) else {}
+    if not isinstance(raw, dict):
+        return {}
+    state: dict[str, dict] = {}
+    for key, value in raw.items():
+        if isinstance(value, str) and value:
+            state[key] = {"session_id": value}
+        elif isinstance(value, dict) and value.get("session_id"):
+            state[key] = dict(value)
+    return state
 
 
-def save_state(path: Path, state: dict[str, str]) -> None:
+def save_state(path: Path, state: dict[str, dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=1, sort_keys=True))
-
-
-def reconcile(state: dict[str, str], live: set[str]) -> dict[str, str]:
-    """Forget keys whose session is gone, so they can get a new one."""
-    return {key: sid for key, sid in state.items() if sid in live}

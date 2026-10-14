@@ -483,6 +483,7 @@ CREATE INDEX IF NOT EXISTS outreach_events_unsynced_idx ON outreach_events (id)
 ALTER TABLE outreach_contacts ADD COLUMN IF NOT EXISTS nudge_count    SMALLINT NOT NULL DEFAULT 0;
 ALTER TABLE outreach_contacts ADD COLUMN IF NOT EXISTS last_nudged_at TIMESTAMPTZ;
 ALTER TABLE outreach_contacts ADD COLUMN IF NOT EXISTS rank           INTEGER;  -- queue order, to_contact only
+ALTER TABLE outreach_contacts ADD COLUMN IF NOT EXISTS doc_url        TEXT;     -- the contact's living Google Doc (contact-docs spec D8)
 ALTER TABLE outreach_events   ADD COLUMN IF NOT EXISTS note           TEXT;     -- free text, never sent anywhere
 
 -- A phase-1 database has the inline stage CHECK without 'nudge' (Postgres names it

@@ -1,10 +1,12 @@
 """What a per-person outreach session boots with (scripts/outreach_sessions.py).
 `snapshot` reads everything the DB knows about one pipeline person, including
-their recent 1:1 messages on every channel; `context_block` renders it as the
-markdown appended to the spawned session's system prompt. Email, web news and
-talking points are the session's own job ("Prep a brief" in the
-working-outreach-queue skill). Message text is private and never leaves the
-machine: it goes only into a local session's prompt."""
+their recent 1:1 messages on every channel; `context_block` renders it, plus the
+person's contact doc when there is one, as the markdown appended to the spawned
+session's system prompt. Email, web news and talking points are the session's own
+job ("Prep a brief" and "Reload" in the working-outreach-queue skill). Message text
+is private: it goes into a local session's prompt and into the contact doc's
+Messages section in Ben's own My Drive (contact-docs spec D6), never into
+people-api."""
 
 from datetime import date, datetime
 from typing import Any
@@ -23,6 +25,15 @@ PREP_PROMPT = (
     "Prep this outreach brief now: follow the working-outreach-queue skill's \"Prep a "
     'brief" procedure for the person in your system prompt and give Ben talking '
     "points — never draft the message; Ben writes it himself. Then wait for Ben."
+)
+RELOAD_PROMPT = (
+    'Reload this outreach session: follow the working-outreach-queue skill\'s "Reload" '
+    "procedure for the person in your system prompt. In order: re-pull "
+    "`outreach-sessions --print-context <people id>` (the snapshot and the contact doc); "
+    "search email since the doc's last log date; tell Ben what changed; update the doc "
+    "with `outreach-sessions --write-doc`; rewrite the talking points for the next step. "
+    "Give Ben talking points — never draft the message; Ben writes it himself. Then wait "
+    "for Ben."
 )
 
 
@@ -98,7 +109,7 @@ def _message_line(m: dict, them: str) -> str:
     return f"{_day(m['sent_at'])} {'Ben' if m['from_me'] else them}: {text}"
 
 
-def context_block(snap: dict, *, today: date) -> str:
+def context_block(snap: dict, *, today: date, doc: str | None = None) -> str:
     item, person = snap["item"], snap["item"]["person"]
     name = _label(person)
     them = (person.get("display_name") or "").split(" ")[0] or "Them"
@@ -136,6 +147,12 @@ def context_block(snap: dict, *, today: date) -> str:
         lines.append(f"- Notes (Google): {' '.join(item['notes'].split())}")
     if item["outreach_notes"]:
         lines.append(f"- Outreach notes: {' '.join(item['outreach_notes'].split())}")
+    doc_url = item["doc_url"]
+    lines.append(
+        f"- Contact doc: {doc_url}"
+        if doc_url
+        else "- Contact doc: none yet (Prep a brief creates it)"
+    )
 
     channels = ", ".join(k for k, v in item["channels"].items() if v) or "none"
     last = ", ".join(f"{k} {v}" for k, v in item["last_messages"].items()) or "none"
@@ -146,9 +163,10 @@ def context_block(snap: dict, *, today: date) -> str:
         f"- Stage: {_stage_line(item, snap['pipeline'])}",
         f"- Channels: {channels}",
         f"- Last message by channel: {last}",
-        "",
-        "## Message history (1:1, oldest first)",
     ]
+    if doc is not None:
+        lines += ["", f"## Contact doc (fetched {today.isoformat()})", "", doc.strip() or "(empty)"]
+    lines += ["", "## Message history (1:1, oldest first)"]
     any_messages = False
     for channel, messages in snap["messages"].items():
         if not messages:
@@ -162,6 +180,7 @@ def context_block(snap: dict, *, today: date) -> str:
         "",
         "Never draft the message. Ben writes every brief, nudge and reply himself; "
         "give him research and talking points, and record nothing until he says he "
-        "sent it. Work only this person.",
+        "sent it. Change the contact doc only with `outreach-sessions --write-doc` "
+        "(working-outreach-queue skill). Work only this person.",
     ]
     return "\n".join(lines)
