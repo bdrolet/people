@@ -346,9 +346,9 @@ def build_batch(raw: RawStore, *, mode: str) -> WhatsAppBatch:
         lid_jid = entry.get("ZLID")
         phone_jid = entry.get("ZWHATSAPPID")
         full_name = entry.get("ZFULLNAME")
-        for key in (lid_jid, phone_jid):
-            if key and full_name:
-                book_name_by_jid.setdefault(key, full_name)
+        for book_jid in (lid_jid, phone_jid):
+            if book_jid and full_name:
+                book_name_by_jid.setdefault(book_jid, full_name)
         if lid_jid and phone_jid:
             phone_jid_by_lid.setdefault(lid_jid, phone_jid)
 

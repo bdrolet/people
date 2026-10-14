@@ -7,7 +7,7 @@ import logging
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -146,7 +146,7 @@ def _copied(path: Path) -> Iterator[Path]:
 
 def _check_schema(
     conn: sqlite3.Connection,
-    required: dict[str, tuple[str, ...]] = REQUIRED_COLUMNS,
+    required: Mapping[str, tuple[str, ...]] = REQUIRED_COLUMNS,
     label: str = "ChatStorage.sqlite",
 ) -> None:
     missing: list[str] = []
