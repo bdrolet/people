@@ -77,7 +77,7 @@ def test_a_real_run_writes_in_the_documented_order(tmp_path):
         for marker in (
             "INSERT INTO whatsapp_chats",
             "INSERT INTO whatsapp_handles",
-            "WHERE handle NOT LIKE 'lid:%' OR phone IS NOT NULL",  # rematch_stored_handles
+            "WHERE (handle NOT LIKE 'lid:%%' OR phone IS NOT NULL)",  # rematch_stored_handles
             "INSERT INTO whatsapp_chat_members",
             "INSERT INTO whatsapp_messages",
             "DELETE FROM whatsapp_messages",  # delete_missing, must precede the recomputes
@@ -212,3 +212,10 @@ def test_metrics_count_lid_phone_matches(monkeypatch):
     batch.matched_by_lid_phone = 3
     import_whatsapp._record_metrics(batch, deleted=0, started_at=datetime.now(UTC))
     assert (3, {"match_method": "lid_phone"}) in seen
+
+
+def test_a_real_run_tells_the_rematch_to_skip_the_batch_handles(tmp_path):
+    conn = FakeConn()
+    import_whatsapp.run(lambda: conn, build_store(tmp_path), full=False, dry_run=False)
+    rematch = next(c for c in conn.calls if "OR phone IS NOT NULL" in c)
+    assert "AND NOT (handle = ANY(%s))" in rematch

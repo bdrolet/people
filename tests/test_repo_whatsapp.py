@@ -156,9 +156,9 @@ def test_rematch_stored_handles_covers_phone_handles_and_lids_with_a_phone():
     conn = FakeConn()
     whatsapp.rematch_stored_handles(conn)
     sql, params = conn.calls[0]
-    assert "WHERE handle NOT LIKE 'lid:%' OR phone IS NOT NULL" in sql
+    assert "WHERE (handle NOT LIKE 'lid:%%' OR phone IS NOT NULL)" in sql
     assert "COALESCE(phone, handle) AS phone" in sql
-    assert params is None
+    assert params == ([],)
 
 
 def test_rematch_stored_handles_links_on_an_exact_unique_phone_match():
@@ -490,3 +490,15 @@ def test_latest_import_reads_the_newest_row():
     conn = FakeConn(results=[[{"mode": "full"}]])
     assert whatsapp.latest_import(conn)["mode"] == "full"
     assert "ORDER BY id DESC LIMIT 1" in conn.calls[0][0]
+
+
+def test_rematch_stored_handles_skips_the_batch_s_own_handles():
+    """match_handles in Python is the only authority for handles in this run's
+    batch; the SQL rematch exists for stored handles the batch did not carry
+    (§6.5 Finding A). Re-matching batch handles from a stale stored phone would
+    overwrite a fresh name link and split handle from member links."""
+    conn = FakeConn()
+    whatsapp.rematch_stored_handles(conn, skip=["lid:1", "+15550100001"])
+    sql, params = conn.calls[0]
+    assert "AND NOT (handle = ANY(%s))" in sql
+    assert params == (["lid:1", "+15550100001"],)

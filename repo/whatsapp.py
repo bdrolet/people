@@ -118,7 +118,7 @@ def upsert_handles(
     )
 
 
-def rematch_stored_handles(conn: Any) -> None:
+def rematch_stored_handles(conn: Any, skip: list[str] | None = None) -> None:
     """Re-derive person_id/match_method for every stored non-LID handle from the
     current `people.phone_numbers` (§6.5 final-review Finding A).
 
@@ -132,6 +132,12 @@ def rematch_stored_handles(conn: Any) -> None:
     covers the whole roster (§6.2), so match_handles already re-evaluates every
     member's person_id from scratch on every run.
 
+    `skip` is this run's batch handles: match_handles already matched those in
+    Python from fresh evidence, and is their only authority — re-matching them
+    here from a possibly stale stored phone would overwrite a fresh link (final
+    review, Important #2). `%%` doubles the LIKE wildcard because the statement
+    now carries a parameter.
+
     A `lid:` handle is re-matched only when it has a stored `phone` (spec
     2026-10-14 §5.3), labelled 'lid_phone'. A LID without one is never touched —
     its only possible link is the name match §6.5 describes, which this SQL cannot
@@ -141,9 +147,10 @@ def rematch_stored_handles(conn: Any) -> None:
     conn.execute(
         """
         WITH keyed AS (
-            SELECT handle, COALESCE(phone, handle) AS phone, handle LIKE 'lid:%' AS is_lid
+            SELECT handle, COALESCE(phone, handle) AS phone, handle LIKE 'lid:%%' AS is_lid
             FROM whatsapp_handles
-            WHERE handle NOT LIKE 'lid:%' OR phone IS NOT NULL
+            WHERE (handle NOT LIKE 'lid:%%' OR phone IS NOT NULL)
+              AND NOT (handle = ANY(%s))
         ), candidates AS (
             SELECT k.handle, p.id AS person_id
             FROM keyed k
@@ -160,7 +167,8 @@ def rematch_stored_handles(conn: Any) -> None:
         FROM keyed k
         LEFT JOIN counts ON counts.handle = k.handle
         WHERE h.handle = k.handle
-        """
+        """,
+        (list(skip or []),),
     )
 
 

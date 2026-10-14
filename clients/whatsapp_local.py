@@ -162,21 +162,26 @@ def _check_schema(
 
 def _read_address_book(path: Path) -> list[dict[str, Any]]:
     """Every ZWAADDRESSBOOKCONTACT row, from a temp copy (spec 2026-10-14 §5.1).
-    A missing file is an empty book, logged without the path (public repo)."""
+
+    A missing or unreadable file (failed copy, corrupt or locked database) is an
+    empty book, logged without the path (public repo): names are a nicety and must
+    not block the message import (§10). A missing table or column stays a
+    SchemaError, as for the message store."""
     if not path.exists():
         logger.warning("whatsapp address book not found; names and LID phones degrade")
         return []
-    with _copied(path) as copy:
-        try:
+    try:
+        with _copied(path) as copy:
             conn = sqlite3.connect(f"file:{copy}?mode=ro", uri=True)
-        except sqlite3.Error as e:
-            raise StoreUnreadableError(str(e)) from e
-        conn.row_factory = sqlite3.Row
-        try:
-            _check_schema(conn, CONTACTS_REQUIRED_COLUMNS, CONTACTS_FILENAME)
-            return [dict(r) for r in conn.execute(ADDRESS_BOOK_SQL)]
-        finally:
-            conn.close()
+            conn.row_factory = sqlite3.Row
+            try:
+                _check_schema(conn, CONTACTS_REQUIRED_COLUMNS, CONTACTS_FILENAME)
+                return [dict(r) for r in conn.execute(ADDRESS_BOOK_SQL)]
+            finally:
+                conn.close()
+    except (sqlite3.Error, StoreUnreadableError):
+        logger.warning("whatsapp address book unreadable; names and LID phones degrade")
+        return []
 
 
 def read(

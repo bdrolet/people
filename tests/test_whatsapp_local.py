@@ -208,3 +208,15 @@ def test_contacts_file_missing_a_column_raises_naming_it(tmp_path):
 def test_messages_no_longer_carry_zpushname(tmp_path):
     raw = whatsapp_local.read(build_store(tmp_path))
     assert all("ZPUSHNAME" not in m for m in raw.messages)
+
+
+def test_an_unreadable_contacts_file_degrades_to_an_empty_address_book(tmp_path, caplog):
+    """Spec 2026-10-14 §10: the address book is a nicety — a damaged one must not
+    block the message import. Only a missing column stays fatal."""
+    path = build_store(tmp_path)
+    (tmp_path / "ContactsV2.sqlite").write_bytes(b"not a database at all" * 100)
+    raw = whatsapp_local.read(path)
+    assert raw.address_book == []
+    assert raw.sessions  # the message store was still read
+    assert "address book" in caplog.text
+    assert str(tmp_path) not in caplog.text
