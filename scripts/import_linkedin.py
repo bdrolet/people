@@ -42,12 +42,12 @@ def run(get_conn: Callable, path: Path, *, me: str | None, dry_run: bool) -> Lin
 
 def summary(s: LinkedInSnapshot, *, dry_run: bool) -> str:
     n = len(s.connections)
-    unmatched = n - s.matched_by_email - s.matched_by_name
+    unmatched = n - s.matched_by_url - s.matched_by_email - s.matched_by_name
     given = [r for r in s.recommendations if r.direction == "given"]
     received = [r for r in s.recommendations if r.direction == "received"]
     lines = ["DRY RUN — nothing written"] if dry_run else []
     lines += [
-        f"connections {n:,} (email-matched {s.matched_by_email:,}, "
+        f"connections {n:,} (url-matched {s.matched_by_url:,}, email-matched {s.matched_by_email:,}, "
         f"name-matched {s.matched_by_name:,}, unmatched {unmatched:,})",
         f"messages {len(s.messages):,} in {s.conversations:,} conversations (me={s.me}; "
         f"by-url {s.messages_by_url:,}, by-name {s.messages_by_name:,}, "

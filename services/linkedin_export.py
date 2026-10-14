@@ -36,7 +36,8 @@ class ExportError(Exception):
     """The export is unusable: a required file or column is missing."""
 
 
-_URL_PREFIX = re.compile(r"^(https?://)?(www\.)?", re.IGNORECASE)
+_URL_PREFIX = re.compile(r"^(https?://)?([a-z]{2,3}\.)?", re.IGNORECASE)  # www., uk., …
+_PROFILE = re.compile(r"^linkedin\.com/in/([^/\s]+)")
 _DATE_FORMATS = ("%d %b %Y", "%m/%d/%y %I:%M %p", "%m/%d/%y, %I:%M %p", "%m/%d/%Y", "%Y-%m-%d")
 _APOSTROPHE_MAP = str.maketrans(
     {
@@ -48,10 +49,14 @@ _APOSTROPHE_MAP = str.maketrans(
 
 
 def normalize_profile_url(url: str | None) -> str | None:
+    """linkedin.com/in/<slug>, or None for anything that is not a member profile: a
+    company page, a bare domain, a blank (linkedin-identity design §3). The one
+    normalizer shared by the export parser, Google derivation and identity
+    classification. A sub-path after the slug (/details/…) is dropped."""
     u = (url or "").strip()
     u = _URL_PREFIX.sub("", u).split("?", 1)[0].split("#", 1)[0].rstrip("/")
-    u = unquote(u).lower()
-    return u or None
+    m = _PROFILE.match(unquote(u).lower())
+    return f"linkedin.com/in/{m.group(1)}" if m else None
 
 
 def normalize_name(name: str | None) -> str:
@@ -326,13 +331,16 @@ def _parse_recommendations(
 
 
 def match_people(snapshot: LinkedInSnapshot, people_rows: list[dict]) -> None:
-    """Soft-link connections to people rows (§5.4): exact email first, then a
-    normalized name unique among people and among connections. Wrong links are
-    worse than missing ones."""
+    """Soft-link connections to people rows (§5.4): exact profile URL first
+    (linkedin-identity design §3), then exact email, then a normalized name unique
+    among people and among connections. Wrong links are worse than missing ones."""
+    people_by_url = {r["linkedin_url"]: r["id"] for r in people_rows if r.get("linkedin_url")}
     people_by_email = {normalize_email(r["email"]): r["id"] for r in people_rows if r.get("email")}
     for c in snapshot.connections:
         c.person_id = c.match_method = None
-        if c.email and c.email in people_by_email:
+        if c.profile_url in people_by_url:
+            c.person_id, c.match_method = people_by_url[c.profile_url], "url"
+        elif c.email and c.email in people_by_email:
             c.person_id, c.match_method = people_by_email[c.email], "email"
     claimed = {c.person_id for c in snapshot.connections if c.person_id}
 
@@ -347,5 +355,6 @@ def match_people(snapshot: LinkedInSnapshot, people_rows: list[dict]) -> None:
             c.person_id, c.match_method = person_id, "name"
             claimed.add(person_id)
 
+    snapshot.matched_by_url = sum(c.match_method == "url" for c in snapshot.connections)
     snapshot.matched_by_email = sum(c.match_method == "email" for c in snapshot.connections)
     snapshot.matched_by_name = sum(c.match_method == "name" for c in snapshot.connections)

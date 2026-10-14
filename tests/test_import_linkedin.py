@@ -95,7 +95,7 @@ def test_summary_prints_counts_not_content(wired):
     out = mod.summary(s, dry_run=True)
     assert out.splitlines() == [
         "DRY RUN — nothing written",
-        "connections 6 (email-matched 1, name-matched 0, unmatched 5)",
+        "connections 6 (url-matched 0, email-matched 1, name-matched 0, unmatched 5)",
         "messages 7 in 4 conversations (me=linkedin.com/in/me-example; by-url 5, by-name 1, unmatched 1, skipped 1)",
         "recommendations given 2 (linked 1), received 1 (linked 1)",
         f"snapshot_at {s.snapshot_at:%Y-%m-%dT%H:%M:%SZ}",
