@@ -57,7 +57,9 @@ def resume(
 ) -> str | None:
     """Bring an exited session back under its own id. `cwd` must be the directory it last
     ran in (transcript_cwd): the transcript is looked up under that directory's project.
-    A resume keeps its id, so the short id stands even if no `backgrounded` line prints."""
+    An exited session comes back under its own id, so the short id stands even if no
+    `backgrounded` line prints; a session ended with `claude stop` comes back under a new
+    id, which the printed line carries — the caller records whichever id is running."""
     result = runner(resume_argv(session_id, name, prompt), cwd)
     if result.returncode != 0:
         return None
