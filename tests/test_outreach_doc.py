@@ -233,3 +233,31 @@ def test_merge_is_idempotent():
     once = _merge(EXPORTED)
     assert _merge(once) == once
     assert _merge(_merge(None)) == _merge(None)
+
+
+def test_merge_keeps_preamble_paragraphs_and_extra_heading_one():
+    existing = (
+        "# Outreach — Alex Example\n\npeople id: 7 · stage: to\\_contact · last updated: 2026-10-14\n\n"
+        "Para one.\n\nPara two.\n\n# Ben heading\n\n"
+        "## Who they are\n\nOld role.\n\n## History\n\nOld history.\n\n"
+        "## Talking points (next step: brief)\n\nOld points.\n\n"
+        "## Ben's notes\n\nmine\n"
+    )
+    out = _merge(existing)
+    assert "Para one.\n\nPara two.\n\n# Ben heading\n\n## Who they are" in out
+    assert out.count("# Ben heading") == 1
+    assert out.count("# Outreach — Alex Example") == 1
+    assert _merge(out) == out
+
+
+def test_merge_keeps_bold_notes_heading_body_and_adds_no_default_notes():
+    existing = (
+        "# Outreach — Alex Example\n\npeople id: 7 · stage: briefed · last updated: 2026-10-14\n\n"
+        "## Who they are\n\nOld role.\n\n## History\n\nOld history.\n\n"
+        "## Talking points (next step: brief)\n\nOld points.\n\n"
+        "## **Ben’s notes**\n\nCall on *Tuesday*\\. Kids: two\\.\n"
+    )
+    out = _merge(existing)
+    assert "## **Ben’s notes**\n\nCall on *Tuesday*\\. Kids: two\\.\n" in out
+    assert doc.NOTES_PREAMBLE not in out and "## Ben's notes" not in out
+    assert out.count("Ben’s notes") == 1

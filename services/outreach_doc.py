@@ -49,7 +49,8 @@ def _plain(text: str) -> str:
 
 def _key(heading: str) -> str:
     """`## Talking points (next step: brief)` → `talking points`."""
-    return _plain(heading[3:]).strip().lower().split(" (", 1)[0].strip()
+    text = _plain(heading[3:]).replace("*", "").replace("_", "")
+    return text.strip().lower().split(" (", 1)[0].strip()
 
 
 def _split(markdown: str) -> tuple[list[str], list[tuple[str, list[str]]]]:
@@ -152,6 +153,26 @@ def _same_log(line: str) -> str:
     return " ".join(_plain(line).lstrip("-* ").split())
 
 
+def _kept_preamble(preamble: list[str]) -> str:
+    """Text under the header that Ben wrote: every line except the title (the first `# `
+    line) and the `people id:` line, with blank lines at either end trimmed. Blank lines
+    between paragraphs and any further `# ` heading are kept exactly."""
+    lines: list[str] = []
+    title_dropped = False
+    for line in preamble:
+        if not title_dropped and line.startswith("# "):
+            title_dropped = True
+        elif _plain(line).startswith("people id:"):
+            continue
+        else:
+            lines.append(line)
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
+
+
 def merge(
     existing: str | None,
     update: Sections,
@@ -166,11 +187,7 @@ def merge(
     text under the header. Rewrites the title, the header line and the session's sections;
     `messages` (render_messages) replaces the Messages section."""
     preamble, sections = _split(existing or "")
-    extra = [
-        line
-        for line in preamble
-        if line.strip() and not line.startswith("# ") and not _plain(line).startswith("people id:")
-    ]
+    extra = _kept_preamble(preamble)
     log: list[str] = []
     replaced: set[str] = set()
     before_notes: list[str] = []
@@ -200,7 +217,7 @@ def merge(
     parts = [
         f"# {title(person)}",
         f"people id: {person['id']} · stage: {stage} · last updated: {today.isoformat()}",
-        *(["\n".join(extra)] if extra else []),
+        *([extra] if extra else []),
         f"## Who they are\n\n{update.who}",
         f"## History\n\n{update.history}",
         "## Log" + ("\n\n" + "\n".join(log) if log else ""),
