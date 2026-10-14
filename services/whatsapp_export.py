@@ -389,6 +389,10 @@ def match_handles(batch: WhatsAppBatch, people_rows: list[dict[str, Any]]) -> No
     `people` row links to nothing; nothing here requires the WhatsApp side's
     name to be unique.
 
+    By LID phone: a LID handle or member whose LID the address book maps to a
+    phone is matched by that phone, as 'lid_phone'; the name rule then never runs
+    for it (spec 2026-10-14 §5.3).
+
     A handle with a phone that does not match means "no match": falling back to
     the name there would manufacture false links. Mutates the batch in place, and
     always rewrites person_id/match_method so a stale link is cleared.
@@ -406,22 +410,33 @@ def match_handles(batch: WhatsAppBatch, people_rows: list[dict[str, Any]]) -> No
     targets = {h.handle for h in batch.handles} | {m.handle for m in batch.members}
     for handle in sorted(targets):
         if handle.startswith(LID_PREFIX):
-            name = normalize_name(batch.partner_names.get(handle))
-            candidates = ids_by_name.get(name, set()) if name else set()
-            method = "name"
+            resolved = batch.lid_phones.get(handle)
+            if resolved is not None:
+                # A known phone that does not resolve to one row is "no match";
+                # never fall back to the name (spec 2026-10-14 §5.3 step 3).
+                candidates = ids_by_phone.get(resolved, set())
+                method = "lid_phone"
+            else:
+                name = normalize_name(batch.partner_names.get(handle))
+                candidates = ids_by_name.get(name, set()) if name else set()
+                method = "name"
         else:
             candidates = ids_by_phone.get(handle, set())
             method = "phone"
         if len(candidates) == 1:
             links[handle] = (next(iter(candidates)), method)
 
-    batch.matched_by_phone = batch.matched_by_name = 0
+    batch.matched_by_phone = batch.matched_by_name = batch.matched_by_lid_phone = 0
     for handle_row in batch.handles:
         link = links.get(handle_row.handle)
         handle_row.person_id, handle_row.match_method = link if link else (None, None)
-        if link and link[1] == "phone":
+        if not link:
+            continue
+        if link[1] == "phone":
             batch.matched_by_phone += 1
-        elif link:
+        elif link[1] == "lid_phone":
+            batch.matched_by_lid_phone += 1
+        else:
             batch.matched_by_name += 1
     for member in batch.members:
         link = links.get(member.handle)

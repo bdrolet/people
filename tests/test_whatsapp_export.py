@@ -1,6 +1,7 @@
 import logging
 
 from clients import whatsapp_local
+from models.whatsapp import WhatsAppBatch, WhatsAppHandle
 from services import whatsapp_export as wa
 from tests.fixtures.whatsapp import (
     ALICE_JID,
@@ -617,3 +618,44 @@ def test_name_source_counters_add_up(tmp_path):
     total = b.names_partner + b.names_address_book + b.names_profile + b.names_member + b.names_none
     assert total == len(b.handles)
     assert b.names_address_book == 1  # Frank
+
+
+def test_a_lid_member_links_by_its_address_book_phone(tmp_path):
+    b = batch_with_contacts(tmp_path)
+    wa.match_handles(b, [{"id": 11, "display_name": "Someone", "phone_numbers": ["+15550100005"]}])
+    eve = next(m for m in b.members if m.handle == "lid:99900000000002")
+    assert eve.person_id == 11
+
+
+def test_a_lid_handle_links_as_lid_phone():
+    b = WhatsAppBatch(mode="full")
+    b.handles = [WhatsAppHandle(handle="lid:1", phone="+15550100005")]
+    b.lid_phones = {"lid:1": "+15550100005"}
+    wa.match_handles(b, [{"id": 11, "display_name": "X", "phone_numbers": ["+15550100005"]}])
+    assert (b.handles[0].person_id, b.handles[0].match_method) == (11, "lid_phone")
+    assert (b.matched_by_lid_phone, b.matched_by_phone, b.matched_by_name) == (1, 0, 0)
+
+
+def test_lid_phone_ambiguity_links_nothing_and_skips_the_name_match():
+    """§5.3 step 3: a known phone that does not resolve to one row is "no match" —
+    the unique partner name must not be tried."""
+    b = WhatsAppBatch(mode="full")
+    b.handles = [WhatsAppHandle(handle="lid:1", phone="+15550100005")]
+    b.lid_phones = {"lid:1": "+15550100005"}
+    b.partner_names = {"lid:1": "Zoe Example"}
+    rows = [
+        {"id": 11, "display_name": "A", "phone_numbers": ["+15550100005"]},
+        {"id": 12, "display_name": "B", "phone_numbers": ["+15550100005"]},
+        {"id": 13, "display_name": "Zoe Example", "phone_numbers": []},
+    ]
+    wa.match_handles(b, rows)
+    assert (b.handles[0].person_id, b.handles[0].match_method) == (None, None)
+    assert b.matched_by_name == 0
+
+
+def test_a_lid_handle_without_a_phone_still_name_matches():
+    b = WhatsAppBatch(mode="full")
+    b.handles = [WhatsAppHandle(handle="lid:1")]
+    b.partner_names = {"lid:1": "Zoe Example"}
+    wa.match_handles(b, [{"id": 13, "display_name": "Zoe Example", "phone_numbers": []}])
+    assert (b.handles[0].person_id, b.handles[0].match_method) == (13, "name")
