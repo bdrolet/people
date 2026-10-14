@@ -9,7 +9,9 @@ import psycopg
 import pytest
 from psycopg.rows import dict_row
 
+from repo import imessage as imessage_repo
 from repo import outreach as outreach_repo
+from repo import whatsapp as whatsapp_repo
 
 URL = os.environ.get("TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not URL, reason="TEST_DATABASE_URL not set")
@@ -510,3 +512,51 @@ def test_today_counts_use_new_york_dates(conn):
     assert outreach_repo.nudges_between(conn, since=d14, until=d15) == 0
     assert outreach_repo.stage_count(conn, "candidate") == 2
     assert outreach_repo.stage_count(conn, "to_contact") == 0
+
+
+def test_session_reads_direct_messages_and_the_pipeline_row(conn):
+    pid = _person(conn)
+    other = _person(conn, email="other@example.com")
+    conn.execute(
+        "INSERT INTO imessage_handles (handle, person_id) "
+        "VALUES ('+15550100001', %s), ('+15550100002', %s)",
+        (pid, other),
+    )
+    conn.execute(
+        "INSERT INTO imessage_chats (chat_guid, is_group, participant_handles) VALUES "
+        "('direct', FALSE, ARRAY['+15550100001']), "
+        "('group', TRUE, ARRAY['+15550100001', '+15550100002'])"
+    )
+    for i, (chat, from_me, text) in enumerate(
+        [("direct", False, "first"), ("group", False, "in a group"), ("direct", True, "second")]
+    ):
+        conn.execute(
+            "INSERT INTO imessage_messages (guid, chat_guid, from_me, sent_at, text) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (f"g{i}", chat, from_me, TS + timedelta(minutes=i), text),
+        )
+    rows = imessage_repo.recent_direct_messages(conn, pid, limit=10)
+    assert [r["text"] for r in rows] == ["first", "second"]  # group excluded, oldest first
+    newest = imessage_repo.recent_direct_messages(conn, pid, limit=1)
+    assert [r["text"] for r in newest] == ["second"]
+
+    conn.execute(
+        "INSERT INTO whatsapp_handles (handle, person_id) VALUES ('+15550100001', %s)", (pid,)
+    )
+    conn.execute(
+        "INSERT INTO whatsapp_chats (chat_jid, kind, handle) VALUES ('wa1', 'direct', '+15550100001')"
+    )
+    conn.execute(
+        "INSERT INTO whatsapp_messages (chat_jid, stanza_id, from_me, sent_at, text, source_pk) "
+        "VALUES ('wa1', 's1', TRUE, %s, 'hola', 1)",
+        (TS,),
+    )
+    wa = whatsapp_repo.recent_direct_messages(conn, pid, limit=10)
+    assert [(r["text"], r["from_me"]) for r in wa] == [("hola", True)]
+
+    assert outreach_repo.pipeline_row(conn, pid) is None
+    outreach_repo.insert_contact_if_missing(conn, pid)
+    outreach_repo.update_contact(conn, pid, {"stage": "to_contact", "rank": 2})
+    row = outreach_repo.pipeline_row(conn, pid)
+    assert row["id"] == pid and row["stage"] == "to_contact" and row["rank"] == 2
+    assert row["has_imessage"] and row["has_whatsapp"]

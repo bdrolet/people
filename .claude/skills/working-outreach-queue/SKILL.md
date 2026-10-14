@@ -5,12 +5,13 @@ description: >
   "what's my outreach today", "am I on track with outreach", "brief the next
   person", "who do I need to nudge", "reassess the outreach queue", "set my
   outreach targets", "add X to my outreach list", "X could refer me",
-  "record that X replied to my outreach", "X introduced me to Y". Runs the
-  outreach CLI in ~/src/people and supplies the judgment: who to brief, what
-  to write, which channel. Not for job-search activity (logging-job-search)
-  or the general task list (prioritizing-tasks).
+  "record that X replied to my outreach", "X introduced me to Y", "prep my
+  brief for X", "start a session for X", "open sessions for my next briefs".
+  Runs the outreach CLI in ~/src/people and supplies the judgment: who to
+  brief, what to write, which channel. Not for job-search activity
+  (logging-job-search) or the general task list (prioritizing-tasks).
 metadata:
-  depends-on: "sending-inbox-email, searching-people, fetching-person, creating-person"
+  depends-on: "searching-inbox-emails, searching-people, fetching-person, creating-person, anthropic-skills:chrome-browser"
 ---
 
 # Working the outreach queue
@@ -30,13 +31,18 @@ O=".venv/bin/python scripts/outreach.py"
 
 ## Rules
 
+- **Ben writes every message himself. Never draft one.** No brief, nudge or
+  reply text: no iMessage text, no email draft, no `email-builder`, no
+  `matching-writing-style`. The skill does the research and gives **talking
+  points**; Ben writes the note, decides whether to send it, and sends it. Why:
+  `~/src/consulting/docs/business_strategy.md` — AI-drafted warm messages are
+  detectable and get fewer replies than genuine hand-written notes, and
+  `client_funnel.md` defines a brief as "a hand-written note".
 - Briefs and email nudges go from **the consulting identity** (the first entry of
-  `OUTREACH_FROM_ADDRESSES` in `~/src/people/.env`; read it once with
+  `OUTREACH_FROM_ADDRESSES` in `~/src/people/.env`; read it with
   `grep '^OUTREACH_FROM_ADDRESSES=' ~/src/people/.env`, first comma-separated
-  entry, before dispatching `email-builder` or using `mark ... --from`). Mail
-  from the default sender (inbox-api's `DEFAULT_FROM_ADDRESS`) never counts.
-- **Never send.** Email is left as an Outlook draft; other channels are
-  Ben's to send.
+  entry). Remind Ben to send from it; mail from the default sender (inbox-api's
+  `DEFAULT_FROM_ADDRESS`) never counts.
 - Record a non-email brief, nudge or reply **only after Ben confirms it
   happened**. Never record by hand anything email proves (briefs, email
   nudges, email replies): the `email_sent` / `email_classified` events do it.
@@ -56,29 +62,84 @@ If `low_queue` is true, say so and offer a reassessment.
 ## Brief
 
 1. Take the first item in `next_up` (rank order).
-2. Read its context: `channels`, `last_messages`, `notes`, `outreach_notes`,
-   `labels`; use `fetching-person` when that's not enough.
-3. **Email is the best channel:** dispatch the `email-builder` agent with
-   the brief, the recipient's address and the explicit identity
-   the consulting identity. It leaves a draft; Ben sends it.
-4. **Another channel:** write the text for Ben to send from his phone.
-   After he confirms it went:
+2. Prep it (**Prep a brief**, below) — or start a session for it
+   (**Start sessions**) so it preps in the background.
+3. Ben writes and sends the note himself. **Email** goes from the consulting
+   identity and records itself. **Any other channel:** after he confirms it
+   went, run
    `$O mark <person> briefed --channel imessage|whatsapp|linkedin|call|in_person`.
-5. **Verify an email brief:** once Ben says it's sent, re-run
+4. **Verify an email brief:** once Ben says it's sent, re-run
    `$O today --json`. The week's briefs should rise and the person should
    leave `next_up`. If not, it most likely went from the default sender and
    does not count. Say so; record it by hand only if Ben confirms it went
    from the consulting identity: `$O mark <person> briefed --channel email --from <consulting identity>`.
 
+## Start sessions
+
+To work a person in their own session ("start a session for Jonah", "open
+sessions for my next 5"), dispatch the `outreach-launcher` agent with who is
+meant. It runs `outreach-sessions`, which spawns one background session per
+person preloaded with their DB snapshot and already prepping (below), and
+returns `claude attach <id>` lines. Attaching needs a real terminal.
+
+## Prep a brief
+
+Run this in a session opened by `outreach-sessions` (its system prompt carries
+the person's snapshot), or on request for one person here. Do it all before
+Ben attaches; then present it and wait.
+
+1. **Context.** Read the snapshot: identity, pipeline stage, notes, and the
+   message history on every channel. Re-pull with
+   `outreach-sessions --print-context <id>` if it looks stale.
+2. **Email.** Search with `searching-inbox-emails` (graph mode) for the
+   person's surname and each email address on file. Note threads that matter.
+3. **News.** With `anthropic-skills:chrome-browser`, in a new tab: a Google
+   search for `"<full name>"`, then Google News for the person (past year) and
+   for their company (past 3 months). Close the tabs you opened. If Chrome isn't
+   connected, use web search and say so. Only what's relevant to the
+   conversation.
+4. **Briefing.** Write it for Ben — research and talking points, **never a
+   drafted message** (see Rules):
+   - **Who they are now** — role, company, what they work on, what they care
+     about outside work.
+   - **History with Ben** — how they know each other, favors in both
+     directions, and **the last thread** (date, what it was about, anything left
+     open). Message text is private: summarize, quote only what's needed.
+   - **Recent news** — or "nothing on them personally".
+   - **Talking points** — notes Ben writes from, as short fragments and
+     questions, not sentences to paste:
+     - *Open with them:* the open thread or the thing left hanging, their life,
+       what to ask about first.
+     - *Connect:* a question about their work that leads toward Ben's.
+     - *Ben's news:* the one-line offer, from
+       `~/src/consulting/docs/offer_one_pager.md` — the specific problem
+       (healthcare AI stuck in pilot) and the specific buyer (healthcare startups).
+     - *The ask:* one name — who comes to mind at a healthcare or health-tech
+       startup with an AI pilot stuck short of production. Their own networks
+       that could jog their memory. The "say it back to me" check from
+       `client_funnel.md`. Ask for a three-way intro, not just a name.
+     - *Close:* a concrete next touch.
+   - **Worth checking** — anything that makes this a bad moment (bad news on
+     their side, an unanswered message from them, a long silence that wants a
+     re-warming exchange before any ask). Whether to reach out now is Ben's
+     call; surface what bears on it.
+   - **Mechanics** — the best channel; for email, send from the consulting
+     identity; how the brief gets recorded (email proves itself; any other
+     channel is `outreach mark <id> briefed --channel <c>` after Ben confirms).
+5. **Stop.** Present the briefing and wait. Don't offer to write the message.
+   Record nothing until Ben says he sent it.
+
 ## Nudge
 
 Work the `nudges` items in `today --json`.
 
-- **`nudge 1`:** short and light, same channel. For an email brief,
-  dispatch `email-builder` as a **reply to `brief.graph_message_id`** from
-  the consulting identity, so it lands in the same thread.
+Give Ben talking points for each nudge; he writes it (see Rules).
+
+- **`nudge 1`:** short and light, same channel. For an email brief, tell Ben
+  to reply in the brief's thread (`brief.graph_message_id`) from the
+  consulting identity.
 - **`nudge 2`:** use `suggested_channel` when it is set (otherwise the same
-  channel). Word it as a graceful exit: no pressure, door open.
+  channel). Points for a graceful exit: no pressure, door open.
 - A non-email nudge, after Ben confirms it went:
   `$O nudge <person> --channel <c> [--note "..."]`. Email nudges record
   themselves; verify them against `nudges_week` as for briefs.

@@ -403,6 +403,26 @@ def repoint_person(conn: Any, from_id: int, to_id: int) -> int:
     return moved
 
 
+def recent_direct_messages(conn: Any, person_id: int, limit: int) -> list[dict]:
+    """The newest `limit` messages from direct chats with any handle linked to this
+    person, returned oldest first. Local-only, and deliberately outside the reads
+    section below: message text goes into a local Claude session's prompt
+    (scripts/outreach_sessions.py) and is never served by people-api (§7)."""
+    rows = conn.execute(
+        """
+        SELECT m.sent_at, m.from_me, m.text, m.has_media AS has_attachments
+        FROM whatsapp_messages m
+        JOIN whatsapp_chats c ON c.chat_jid = m.chat_jid
+        WHERE c.kind = 'direct' AND m.sent_at IS NOT NULL
+          AND c.handle IN (SELECT handle FROM whatsapp_handles WHERE person_id = %s)
+        ORDER BY m.sent_at DESC
+        LIMIT %s
+        """,
+        (person_id, limit),
+    ).fetchall()
+    return list(reversed(rows))
+
+
 # --- reads (§8.3). No query here selects whatsapp_messages.text, ever (§7). ---
 
 # person_id is the stored FK to people(id); person_email is served by joining people
