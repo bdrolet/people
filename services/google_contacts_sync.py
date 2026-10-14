@@ -51,15 +51,32 @@ def _write_labels(conn: Any, person: dict) -> None:
     labels_repo.set_contact_labels(conn, person["resourceName"], labels.membership_rns(person))
 
 
-def _link(conn: Any, email: str, person: dict) -> None:
+def _claim_url(conn: Any, derived: dict, own_id: int | None) -> bool:
+    """Drop a profile URL that a different row already holds (linkedin-identity
+    design §4): writing it would violate people_linkedin_url_key and abort the whole
+    sync. `own_id` is the row being written, which may already hold its own URL.
+    Returns True when a URL was dropped."""
+    url = derived["linkedin_url"]
+    if url is None:
+        return False
+    owner = people.linkedin_owner(conn, url)
+    if owner is None or owner == own_id:
+        return False
+    derived["linkedin_url"] = None
+    return True
+
+
+def _link(conn: Any, row: dict, person: dict) -> None:
+    derived = contact_fields.derive(person)
+    _claim_url(conn, derived, row.get("id"))
     people.set_google(
         conn,
-        email,
+        row["email"],
         resource_name=person["resourceName"],
         etag=person.get("etag"),
         display_name=display_name(person),
         notes=notes(person),
-        **contact_fields.derive(person),
+        **derived,
     )
     _write_labels(conn, person)
 
@@ -80,7 +97,7 @@ def ensure_contact(conn: Any, row: dict) -> dict:
         otel.external_errors.add(1, {"system": "google"})
         logger.warning("Google ensure_contact failed for %s", row["email"], exc_info=True)
         return row
-    _link(conn, row["email"], person)  # DB write — a failure here propagates
+    _link(conn, row, person)  # DB write — a failure here propagates
     return people.get(conn, row["email"]) or row
 
 
@@ -97,9 +114,14 @@ def apply_person(conn: Any, person: dict) -> str | None:
         return None
     derived = contact_fields.derive(person)
     if linked:
-        if linked.get("email") is None and not derived["phone_numbers"]:
-            # An adopted (email-less) row's phone_numbers are its only
-            # identifier — never overwrite them with {} (people_has_an_identifier).
+        _claim_url(conn, derived, linked.get("id"))
+        if (
+            linked.get("email") is None
+            and not derived["phone_numbers"]
+            and not derived["linkedin_url"]
+        ):
+            # An email-less row's phones and LinkedIn URL are its only identifiers —
+            # never overwrite them with nothing (people_has_an_identifier).
             return "skipped"
         promote = None
         if linked.get("email") is None:
@@ -126,10 +148,12 @@ def apply_person(conn: Any, person: dict) -> str | None:
     email = primary_email(person)
     if not email:
         # Adopt a contact that has no email address, provided it has a phone we
-        # can normalize — people_has_an_identifier requires one or the other
-        # (spec §5.1). Contacts with neither are counted, never written.
-        if not derived["phone_numbers"]:
-            return "skipped"
+        # can normalize or a LinkedIn profile URL no other row holds —
+        # people_has_an_identifier requires one of the three (linkedin-identity
+        # design §3). Contacts with none are counted, never written.
+        dropped = _claim_url(conn, derived, None)
+        if not derived["phone_numbers"] and not derived["linkedin_url"]:
+            return "linkedin_conflict" if dropped else "skipped"
         people.create_from_google(
             conn,
             None,
@@ -143,9 +167,10 @@ def apply_person(conn: Any, person: dict) -> str | None:
         return "created"
     row = people.get(conn, email)
     if row and not row.get("google_resource_name") and not row.get("google_deleted_at"):
-        _link(conn, email, person)
+        _link(conn, row, person)
         return "linked"
     if row is None:
+        _claim_url(conn, derived, None)
         people.create_from_google(
             conn,
             email,
@@ -161,7 +186,15 @@ def apply_person(conn: Any, person: dict) -> str | None:
 
 
 def run_sync(conn: Any) -> dict[str, int]:
-    counts = {"updated": 0, "linked": 0, "created": 0, "deleted": 0, "skipped": 0, "promoted": 0}
+    counts = {
+        "updated": 0,
+        "linked": 0,
+        "created": 0,
+        "deleted": 0,
+        "skipped": 0,
+        "promoted": 0,
+        "linkedin_conflict": 0,
+    }
     token = sync_state.get_token(conn)
     try:
         try:
