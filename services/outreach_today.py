@@ -157,11 +157,16 @@ def _md(iso: str | None) -> str:
     return iso[5:] if iso else "?"
 
 
+# Wide enough for every channel at once, so `last` lines up whatever mix a person has
+# (linkedin-identity design §6). The order is services/outreach.py::_channels's.
+_CHANNELS_WIDTH = len(" · ".join(("email", "imessage", "linkedin", "whatsapp")))
+
+
 def _brief_line(n: int, item: dict) -> str:
     channels = " · ".join(k for k, v in item["channels"].items() if v)
     rank = f"   #rank {item['rank']}" if item.get("rank") else ""
     last = item["last_interaction"] or "never"
-    return f"  {n}. {_name(item['person']):<18}{channels:<24}last {last}{rank}"
+    return f"  {n}. {_name(item['person']):<18}{channels:<{_CHANNELS_WIDTH}} last {last}{rank}"
 
 
 def _nudge_line(item: dict) -> str:

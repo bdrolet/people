@@ -61,7 +61,11 @@ created.
 At least one of:
 
 - an email address in `emailAddresses`, or
-- a phone number in `phoneNumbers` that normalizes to E.164.
+- a phone number in `phoneNumbers` that normalizes to E.164, or
+- a LinkedIn profile URL in `urls`
+  (`urls: [{"value": "https://www.linkedin.com/in/<slug>", "type": "profile"}]`).
+
+A duplicate URL is refused like a duplicate email or phone (`409`).
 
 A short code (e.g. `"262966"`) does not count as a usable phone number —
 the same rule adoption uses. Neither present → `400`, checked before

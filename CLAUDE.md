@@ -33,9 +33,9 @@ This overrides the default "commit or push only when asked" behavior for code ch
 |---|---|
 | **GCP project** | `bens-project-462804`, `us-central1` |
 | **Events CF** | `people-process` — Pub/Sub trigger on the inbox-owned `email-events` topic (data source), entry point `process` in `main.py`; handles `email_classified` and `email_sent`, ignores everything else |
-| **Sync CF** | `people-sync` — HTTP trigger, entry point `sync`; POST with `Authorization: Bearer <people-sync-token>`; Cloud Scheduler `people-sync` at `0 4 * * *` America/New_York (before inbox's 5 AM sweep) — Google Contacts incremental sync (**adopts** an email-less contact with a usable phone number, `email IS NULL`; counts the rest `skipped`), then HubSpot reconcile |
+| **Sync CF** | `people-sync` — HTTP trigger, entry point `sync`; POST with `Authorization: Bearer <people-sync-token>`; Cloud Scheduler `people-sync` at `0 4 * * *` America/New_York (before inbox's 5 AM sweep) — Google Contacts incremental sync (**adopts** an email-less contact with a usable phone number or a LinkedIn profile URL, `email IS NULL`; counts the rest `skipped`), then HubSpot reconcile |
 | **API** | `people-api` — Cloud Run FastAPI service (`api/`); auth is Cloud Run IAM — `roles/run.invoker` granted per caller in `terraform/api.tf`; callers send `gcloud auth print-identity-token`; image in Artifact Registry repo `people`, deployed by `.github/workflows/deploy-api.yml`; `https://people-api.drolet.cloud` (Cloud Run domain mapping in `terraform/api.tf`; the CNAME lives in `~/src/infra` `cloudflare/drolet-cloud.tf`); the raw run.app URL is `terraform output -raw people_api_url` |
-| **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people` (incl. editable-contact-field columns `phone_numbers`, `company`, `job_title`, `google_fields` — see the source-of-truth table below), `sync_state`, `contact_groups`, `people_labels`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`, `imessage_handles`, `imessage_chats`, `imessage_messages`, `imessage_imports`, `whatsapp_handles`, `whatsapp_chats`, `whatsapp_chat_members`, `whatsapp_messages`, `whatsapp_imports`, `outreach_contacts`, `outreach_opportunities`, `outreach_events`; schema in `repo/schema.sql` |
+| **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people` (incl. editable-contact-field columns `phone_numbers`, `company`, `job_title`, `google_fields`, and the identifier `linkedin_url` — see the source-of-truth table below), `sync_state`, `contact_groups`, `people_labels`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`, `imessage_handles`, `imessage_chats`, `imessage_messages`, `imessage_imports`, `whatsapp_handles`, `whatsapp_chats`, `whatsapp_chat_members`, `whatsapp_messages`, `whatsapp_imports`, `outreach_contacts`, `outreach_opportunities`, `outreach_events`; schema in `repo/schema.sql` |
 | **Google Contacts** | People API v1 via `clients/google_contacts.py` — OAuth refresh-token creds, scope `https://www.googleapis.com/auth/contacts`; reuses schedule's OAuth client (`google-calendar-client-id`/`-secret`, data sources), a people-owned refresh token (`google-contacts-refresh-token`) |
 | **HubSpot** | `clients/hubspot.py` (ported from inbox) — contacts search/create/update/archive, email engagement create; bounded mirror, see §HubSpot below |
 | **Local Graph import** | `clients/graph_local.py` — device-code MSAL auth for `scripts/import_contacts.py` only; people's Cloud Functions never call Graph |
@@ -91,8 +91,8 @@ services/
                              context block a per-person Claude session boots with
   outreach_sync.py          Asana task payloads, sync_events / sync_pending (durable first, retried nightly)
   outreach_report.py        pure: floors TOML, stage_verdicts, render
-  outreach_seed.py          pure: warm-pool bars over raw rows → SeedPlan
-  person_lookup.py          resolve an email / phone / id to one people row for scripts
+  outreach_seed.py          pure: warm-pool bars over raw rows → SeedPlan; unlinked LinkedIn rows → link / in_google / possible_duplicate / create
+  person_lookup.py          resolve an email / LinkedIn URL / phone / id to one people row for scripts
   eligibility.py            is_automated / inbound_eligible (spec §5) — pure functions over env
   ingest.py                 record_inbound / record_outbound — counters + eligibility, shared by
                              handlers and scripts/import_contacts.py
@@ -101,7 +101,7 @@ services/
   person_edit.py            PATCH: write Google first, then refresh DB
   person_create.py          POST /people: validate → refuse duplicates → create in
                              Google → apply_person creates the row (spec §5)
-  identity.py               classify(ident) → email | phone | id (spec §5.1) — pure, no I/O
+  identity.py               classify(ident) → email | linkedin | phone | id (spec §5.1) — pure, no I/O
   contact_fields.py         pure: WRITABLE_FIELDS allowlist + shape validation, email
                              add-only rule, identifiers() for duplicate checking,
                              derive() of phone_numbers/company/job_title/google_fields
@@ -146,7 +146,7 @@ scripts/
   import_imessage.py        import chat.db into the imessage_* tables — --full, --dry-run, --db
   import_whatsapp.py        import ChatStorage.sqlite into the whatsapp_* tables — --full, --dry-run, --db
   outreach.py               referral outreach CLI: today, queue, decide, rank, mark, nudge, intro, conversation, lost, lead, draft, followups, report, sync-asana
-  outreach_seed.py          propose outreach candidates from the warm-pool bars — --dry-run
+  outreach_seed.py          propose outreach candidates, link or create LinkedIn-only people — --dry-run
 terraform/                  main, variables, secrets, cloudsql, pubsub, cloud_functions, iam, api, scheduler
 tests/                      one test module per unit
 .github/workflows/          ci.yml, deploy.yml (Functions), deploy-api.yml (Cloud Run)
@@ -193,6 +193,7 @@ exactly as tasks and schedule do.
 | `hubspot_contact_id` | DB (people manages) | Set on create/adopt, cleared on evict/heal. |
 | An adopted row's identity | Phone number / `id`, not email — until promoted | Nightly-sync adoption (§Identity below) sets `email = NULL` via `create_from_google`. It stays `NULL` through ordinary refreshes — the already-linked path (`update_from_google`) only writes `phone_numbers`/`company`/`job_title`/`google_fields` on its own — until `apply_person`'s promotion step (§Piece 3 below) sees the Google contact has gained an address and that address isn't already held by a different `people` row, at which point `update_from_google`'s optional `email` argument writes it onto this row. If the address *is* already claimed, promotion is skipped rather than writing it (it would violate `people_email_key` and abort the whole nightly sync) and the row keeps being addressed by phone or `id`; `querying-people-db`'s duplicate-detection query is how that two-rows-one-person case becomes visible — nothing merges it automatically. |
 | A hand-created row's identity | Google, same as everyone else | `POST /people` (§Piece 3 below) writes the Google Contact **first**; the `people` row is then derived from what Google returned, via the same `apply_person` path the nightly sync uses — a hand-created person is byte-identical in shape to one the sync created or adopted. If the Google write fails, nothing local is written. |
+| `linkedin_url` | Google Contacts (`urls`) | Google → DB on link, nightly sync, and after every `PATCH`, normalized to `linkedin.com/in/<slug>`; dropped (never written) when another row already holds it. Never pushed to HubSpot. |
 | `linkedin_*` tables | LinkedIn data export | Export → DB on manual import (`scripts/import_linkedin.py`). Never written back anywhere; LinkedIn is not a source for any `people` field. |
 | `imessage_*` tables | `chat.db` on Ben's Mac | chat.db → DB on local import (`scripts/import_imessage.py`). Never written back anywhere; iMessage is not a source for any `people` field. |
 | `whatsapp_*` tables | WhatsApp's local store on Ben's Mac | Store → DB on local import (`scripts/import_whatsapp.py`). Never written back anywhere; WhatsApp is not a source for any `people` field. |
@@ -283,6 +284,21 @@ numbers already shared across more than one row from duplicate Google
 contacts adopted separately before this endpoint existed — the rationale
 for refusing rather than creating a second row on a duplicate. See
 `.claude/skills/creating-person/SKILL.md` for the caller-facing detail.
+
+**Piece 4 — LinkedIn profile URL (2026-10-13,**
+`docs/superpowers/specs/2026-10-13-linkedin-identity-design.md`**).**
+`people.linkedin_url` (UNIQUE, normal form `linkedin.com/in/<slug>`) is a third
+identifier: `people_has_an_identifier` is now email, phone, or LinkedIn URL.
+`contact_fields.derive` reads it from the Google contact's `urls`;
+`apply_person` adopts a contact whose only identifier is the URL, and drops a URL
+another row already holds on every write path (a contact left with nothing is
+counted `linkedin_conflict`). `{ident}` accepts a profile URL — the API routes are
+`{ident:path}`, so a percent-encoded URL works. `POST /people` accepts a URL-only
+contact and refuses a duplicate URL on either side (`list_url_index` is a full
+listing; `searchContacts` doesn't index `urls`). The outreach seed creates a
+Google contact (label `from-linkedin`) for every warm LinkedIn connection with
+no row, unless it may duplicate someone. LinkedIn-only people are never mirrored
+to HubSpot.
 
 ### Editable contact fields (2026-09-24 design)
 
@@ -429,6 +445,7 @@ personal, so it lives in `terraform.tfvars` / a GitHub variable like
 
 ```bash
 .venv/bin/python scripts/outreach_seed.py --dry-run          # then without --dry-run
+                                                             # also lists LinkedIn link/create/possible duplicate/in Google
 .venv/bin/python scripts/outreach.py today                    # pace verdict + what to do (OUTREACH_TARGETS)
 .venv/bin/python scripts/outreach.py queue                    # to_contact in rank order
 .venv/bin/python scripts/outreach.py report                   # floors from OUTREACH_FLOORS

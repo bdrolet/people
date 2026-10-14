@@ -42,8 +42,9 @@ def create(
         raise Invalid(str(e)) from e
 
     emails, phones = contact_fields.identifiers(fields)
-    if not emails and not phones:
-        raise Invalid("a contact needs an email address or a phone number")
+    urls = contact_fields.profile_urls(fields)
+    if not emails and not phones and not urls:
+        raise Invalid("a contact needs an email address, a phone number or a LinkedIn profile URL")
 
     candidates: list[int] = []
     google_only = False
@@ -53,6 +54,10 @@ def create(
             candidates.append(row["id"])
     for phone in phones:
         for row in people.get_by_phone(conn, phone):
+            candidates.append(row["id"])
+    for url in urls:
+        row = people.get_by_linkedin_url(conn, url)
+        if row is not None:
             candidates.append(row["id"])
     if candidates:
         raise Duplicate("person exists", candidates=candidates)
@@ -65,6 +70,12 @@ def create(
         for phone in phones:
             if phone_index.get(phone):
                 google_only = True
+    if urls:
+        # searchContacts does not index urls, so this is a full listing
+        # (linkedin-identity design §5).
+        url_index, _ = gc.list_url_index()
+        if any(url_index.get(url) for url in urls):
+            google_only = True
     if google_only:
         raise Duplicate("person exists", candidates=[])
 

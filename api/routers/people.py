@@ -40,6 +40,7 @@ class PersonOut(BaseModel):
     company: str | None = None
     job_title: str | None = None
     contact: dict | None = None
+    linkedin_url: str | None = None
 
 
 class PersonList(BaseModel):
@@ -99,6 +100,7 @@ def to_out(
         company=row.get("company"),
         job_title=row.get("job_title"),
         contact=row.get("google_fields") if include_contact else None,
+        linkedin_url=row.get("linkedin_url"),
     )
 
 
@@ -141,8 +143,8 @@ def create_person(body: PersonCreate) -> PersonOut:
 
 
 def resolve_person(conn: Any, ident: str) -> dict:
-    """Classify `ident` — email, phone, or numeric id (spec §5.1) — and look
-    up the matching row. Raises 404 when nothing can match, and 409 with the
+    """Classify `ident` — email, LinkedIn profile URL, phone, or numeric id
+    (spec §5.1) — and look up the matching row. Raises 404 when nothing can match, and 409 with the
     candidate ids when a phone number is shared by more than one person
     (ambiguity is an error, not a guess: never pick one)."""
     classified = identity.classify(ident)
@@ -152,6 +154,8 @@ def resolve_person(conn: Any, ident: str) -> dict:
     row: dict | None
     if kind == "email":
         row = people.get(conn, str(value))
+    elif kind == "linkedin":
+        row = people.get_by_linkedin_url(conn, str(value))
     elif kind == "id":
         row = people.get_by_id(conn, int(value))
     else:
@@ -167,7 +171,9 @@ def resolve_person(conn: Any, ident: str) -> dict:
     return row
 
 
-@router.get("/people/{ident}", response_model=PersonOut)
+# {ident:path}: Starlette routes on the decoded path, so a percent-encoded LinkedIn
+# URL (linkedin.com%2Fin%2F…) arrives with real slashes (linkedin-identity design §3).
+@router.get("/people/{ident:path}", response_model=PersonOut)
 def get_person(ident: str) -> PersonOut:
     with db.get_conn() as conn:
         row = resolve_person(conn, ident)
@@ -177,7 +183,7 @@ def get_person(ident: str) -> PersonOut:
     return to_out(row, linkedin_row, imessage_row, whatsapp_row, include_contact=True)
 
 
-@router.patch("/people/{ident}", response_model=PersonOut)
+@router.patch("/people/{ident:path}", response_model=PersonOut)
 def patch_person(ident: str, body: PersonPatch) -> PersonOut:
     try:
         with db.get_conn() as conn:
@@ -204,7 +210,7 @@ def patch_person(ident: str, body: PersonPatch) -> PersonOut:
     return to_out(row, linkedin_row, imessage_row, whatsapp_row, include_contact=True)
 
 
-@router.post("/people/{ident}/sync", response_model=PersonOut)
+@router.post("/people/{ident:path}/sync", response_model=PersonOut)
 def sync_person(ident: str) -> PersonOut:
     with db.get_conn() as conn:
         row = resolve_person(conn, ident)

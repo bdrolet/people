@@ -68,10 +68,11 @@ REC = LinkedInRecommendation(
 
 
 def test_names_for_matching():
-    conn = FakeConn(results=[[{"id": 1, "email": "a@b.c", "display_name": "A"}]])
-    assert people.names_for_matching(conn) == [{"id": 1, "email": "a@b.c", "display_name": "A"}]
+    found = [{"id": 1, "email": "a@b.c", "display_name": "A", "linkedin_url": None, "urls": None}]
+    conn = FakeConn(results=[found])
+    assert people.names_for_matching(conn) == found
     assert conn.calls[0] == (
-        "SELECT id, email, display_name, google_fields->'urls' AS urls FROM people",
+        "SELECT id, email, display_name, linkedin_url, google_fields->'urls' AS urls FROM people",
         None,
     )
 
@@ -219,3 +220,12 @@ def test_latest_import():
     assert linkedin.latest_import(conn) == {"source": "Basic_Export"}
     sql, _ = conn.calls[0]
     assert "FROM linkedin_imports ORDER BY id DESC LIMIT 1" in sql
+
+
+def test_link_connection_sets_person_and_method():
+    conn = FakeConn()
+    linkedin.link_connection(conn, "linkedin.com/in/jane-example", 9)
+    assert conn.calls[0] == (
+        "UPDATE linkedin_connections SET person_id = %s, match_method = 'url' WHERE profile_url = %s",
+        (9, "linkedin.com/in/jane-example"),
+    )

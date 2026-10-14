@@ -64,6 +64,7 @@ def person(
     deleted=False,
     etag="e1",
     phones=(),
+    urls=(),
 ):
     p = {
         "resourceName": rn,
@@ -77,6 +78,8 @@ def person(
     }
     if phones:
         p["phoneNumbers"] = [{"value": v} for v in phones]
+    if urls:
+        p["urls"] = [{"value": v} for v in urls]
     if bio:
         p["biographies"] = [{"value": bio}]
     return p
@@ -307,6 +310,7 @@ def test_run_sync_updates_links_creates_deletes(wire, label_io):
         "deleted": 1,
         "skipped": 0,
         "promoted": 0,
+        "linkedin_conflict": 0,
     }
     assert ("people/l1", ["contactGroups/fam1"]) in label_io["set"]
     assert ("people/g1", []) in label_io["set"]  # deleted contact's labels cleared
@@ -653,3 +657,151 @@ def test_sync_one_refreshes_groups(label_io, monkeypatch):
     monkeypatch.setattr(sync.people, "get_by_id", lambda conn, pid: {"id": pid})
     sync.sync_one(None, {"id": 7, "email": "a@x.com", "google_resource_name": "people/c1"})
     assert len(label_io["replaced"]) == 1
+
+
+# --- LinkedIn profile URL (linkedin-identity design §3, §4) -----------------
+
+JANE = "https://www.linkedin.com/in/jane-example"
+JANE_KEY = "linkedin.com/in/jane-example"
+
+
+def _capture(monkeypatch, name):
+    got = {}
+    monkeypatch.setattr(
+        sync.people, name, lambda conn, key, **kw: got.update({"key": key, **kw}) or {"id": 1}
+    )
+    return got
+
+
+def test_a_linkedin_only_contact_is_adopted(monkeypatch):
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
+    monkeypatch.setattr(sync.people, "linkedin_owner", lambda conn, url: None)
+    created = _capture(monkeypatch, "create_from_google")
+    assert sync.apply_person(None, person(email=None, urls=[JANE])) == "created"
+    assert created["key"] is None and created["linkedin_url"] == JANE_KEY
+
+
+def test_a_claimed_url_alone_is_not_adopted_and_is_counted(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
+    monkeypatch.setattr(sync.people, "linkedin_owner", lambda conn, url: 99)
+    monkeypatch.setattr(sync.people, "create_from_google", lambda *a, **k: calls.append(1))
+    assert sync.apply_person(None, person(email=None, urls=[JANE])) == "linkedin_conflict"
+    assert calls == []
+
+
+def test_a_claimed_url_is_dropped_but_a_phone_still_adopts(monkeypatch):
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
+    monkeypatch.setattr(sync.people, "linkedin_owner", lambda conn, url: 99)
+    created = _capture(monkeypatch, "create_from_google")
+    kind = sync.apply_person(None, person(email=None, phones=["+15550100001"], urls=[JANE]))
+    assert kind == "created" and created["linkedin_url"] is None
+
+
+def test_a_claimed_url_is_dropped_on_the_linked_update(monkeypatch):
+    monkeypatch.setattr(
+        sync.people, "get_by_google_resource", lambda conn, rn: linked_row(email="a@example.com")
+    )
+    monkeypatch.setattr(sync.people, "linkedin_owner", lambda conn, url: 99)
+    updated = _capture(monkeypatch, "update_from_google")
+    assert sync.apply_person(None, person(email="a@example.com", urls=[JANE])) == "updated"
+    assert updated["linkedin_url"] is None
+
+
+def test_a_linked_row_keeps_its_own_url(monkeypatch):
+    # Review Focus 1: the owner check must exclude the row itself.
+    monkeypatch.setattr(
+        sync.people,
+        "get_by_google_resource",
+        lambda conn, rn: {
+            "id": 7,
+            "email": None,
+            "google_resource_name": rn,
+            "linkedin_url": JANE_KEY,
+        },
+    )
+    monkeypatch.setattr(sync.people, "linkedin_owner", lambda conn, url: 7)
+    updated = _capture(monkeypatch, "update_from_google")
+    for _ in range(2):
+        assert sync.apply_person(None, person(email=None, urls=[JANE])) == "updated"
+        assert updated["linkedin_url"] == JANE_KEY
+
+
+def test_a_claimed_url_is_dropped_when_linking_by_email(monkeypatch):
+    # Review Focus 2.
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
+    monkeypatch.setattr(
+        sync.people,
+        "get",
+        lambda conn, email: {
+            "id": 5,
+            "email": email,
+            "google_resource_name": None,
+            "google_deleted_at": None,
+        },
+    )
+    monkeypatch.setattr(sync.people, "linkedin_owner", lambda conn, url: 99)
+    linked = _capture(monkeypatch, "set_google")
+    assert sync.apply_person(None, person(email="alice@example.com", urls=[JANE])) == "linked"
+    assert linked["key"] == "alice@example.com" and linked["linkedin_url"] is None
+
+
+def test_a_claimed_url_is_dropped_on_email_create(monkeypatch):
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
+    monkeypatch.setattr(sync.people, "get", lambda conn, email: None)
+    monkeypatch.setattr(sync.people, "linkedin_owner", lambda conn, url: 99)
+    created = _capture(monkeypatch, "create_from_google")
+    assert sync.apply_person(None, person(email="alice@example.com", urls=[JANE])) == "created"
+    assert created["linkedin_url"] is None
+
+
+def test_a_linkedin_only_row_losing_its_url_is_skipped(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        sync.people,
+        "get_by_google_resource",
+        lambda conn, rn: {"id": 7, "email": None, "google_resource_name": rn},
+    )
+    monkeypatch.setattr(sync.people, "update_from_google", lambda conn, rn, **kw: calls.append(kw))
+    assert sync.apply_person(None, person(email=None)) == "skipped"
+    assert calls == []
+
+
+def test_a_phone_only_row_swapping_its_phone_for_a_url_updates(monkeypatch):
+    monkeypatch.setattr(
+        sync.people,
+        "get_by_google_resource",
+        lambda conn, rn: {"id": 7, "email": None, "google_resource_name": rn},
+    )
+    monkeypatch.setattr(sync.people, "linkedin_owner", lambda conn, url: None)
+    updated = _capture(monkeypatch, "update_from_google")
+    assert sync.apply_person(None, person(email=None, urls=[JANE])) == "updated"
+    assert updated["phone_numbers"] == [] and updated["linkedin_url"] == JANE_KEY
+
+
+def test_a_linkedin_only_row_gaining_an_email_is_promoted(monkeypatch):
+    monkeypatch.setattr(
+        sync.people,
+        "get_by_google_resource",
+        lambda conn, rn: {"id": 7, "email": None, "google_resource_name": rn},
+    )
+    monkeypatch.setattr(sync.people, "linkedin_owner", lambda conn, url: 7)
+    monkeypatch.setattr(sync.people, "email_owner", lambda conn, email: None)
+    updated = _capture(monkeypatch, "update_from_google")
+    kind = sync.apply_person(None, person(email="jane@example.com", urls=[JANE]))
+    assert kind == "promoted" and updated["email"] == "jane@example.com"
+
+
+def test_run_sync_counts_linkedin_conflict(monkeypatch):
+    # Review Focus 2: the run finishes and reports the conflict as a count only.
+    monkeypatch.setattr(
+        sync.gc,
+        "list_connections",
+        lambda token: ([person(rn="people/c2", email=None, urls=[JANE])], "tok"),
+    )
+    monkeypatch.setattr(sync.sync_state, "get_token", lambda conn: None)
+    monkeypatch.setattr(sync.sync_state, "set_token", lambda conn, t, s: None)
+    monkeypatch.setattr(sync.people, "get_by_google_resource", lambda conn, rn: None)
+    monkeypatch.setattr(sync.people, "linkedin_owner", lambda conn, url: 99)
+    counts = sync.run_sync(None)
+    assert counts["linkedin_conflict"] == 1 and counts["skipped"] == 0

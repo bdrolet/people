@@ -36,7 +36,8 @@ class ExportError(Exception):
     """The export is unusable: a required file or column is missing."""
 
 
-_URL_PREFIX = re.compile(r"^(https?://)?(www\.)?", re.IGNORECASE)
+_URL_PREFIX = re.compile(r"^(https?://)?([a-z]{2,3}\.)?", re.IGNORECASE)  # www., uk., …
+_PROFILE = re.compile(r"^linkedin\.com/in/([^/\s]+)(?:/|$)")
 _DATE_FORMATS = ("%d %b %Y", "%m/%d/%y %I:%M %p", "%m/%d/%y, %I:%M %p", "%m/%d/%Y", "%Y-%m-%d")
 _APOSTROPHE_MAP = str.maketrans(
     {
@@ -48,10 +49,14 @@ _APOSTROPHE_MAP = str.maketrans(
 
 
 def normalize_profile_url(url: str | None) -> str | None:
+    """linkedin.com/in/<slug>, or None for anything that is not a member profile: a
+    company page, a bare domain, a blank (linkedin-identity design §3). The one
+    normalizer shared by the export parser, Google derivation and identity
+    classification. A sub-path after the slug (/details/…) is dropped."""
     u = (url or "").strip()
     u = _URL_PREFIX.sub("", u).split("?", 1)[0].split("#", 1)[0].rstrip("/")
-    u = unquote(u).lower()
-    return u or None
+    m = _PROFILE.match(unquote(u).lower())
+    return f"linkedin.com/in/{m.group(1)}" if m else None
 
 
 def normalize_name(name: str | None) -> str:
@@ -244,10 +249,12 @@ _V = TypeVar("_V")
 
 
 def _unique_by_url(people_rows: list[dict]) -> dict[str, int]:
-    """normalized profile URL → person id, from the `urls` on each person's Google
-    contact, keeping only URLs that exactly one person carries."""
+    """normalized profile URL → person id, from each person's people.linkedin_url and
+    the `urls` on their Google contact, keeping only URLs that exactly one person carries."""
     owners: defaultdict[str, set[int]] = defaultdict(set)
     for r in people_rows:
+        if r.get("linkedin_url"):
+            owners[r["linkedin_url"]].add(r["id"])
         for u in r.get("urls") or []:
             url = normalize_profile_url(u.get("value")) if isinstance(u, dict) else None
             if url:
@@ -338,10 +345,10 @@ def _parse_recommendations(
 
 
 def match_people(snapshot: LinkedInSnapshot, people_rows: list[dict]) -> None:
-    """Soft-link connections to people rows (§5.4): a profile URL saved on exactly
-    one person's Google contact first, then exact email, then a normalized name
-    unique among people and among connections. Wrong links are worse than
-    missing ones."""
+    """Soft-link connections to people rows (§5.4): a profile URL exactly one person
+    carries — their people.linkedin_url or any URL saved on their Google contact
+    (linkedin-identity design §3) — first, then exact email, then a normalized name
+    unique among people and among connections. Wrong links are worse than missing ones."""
     people_by_url = _unique_by_url(people_rows)
     people_by_email = {normalize_email(r["email"]): r["id"] for r in people_rows if r.get("email")}
     for c in snapshot.connections:

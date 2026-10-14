@@ -586,3 +586,101 @@ def test_list_with_counts_includes_empty_labels(conn):
     labels_repo.set_contact_labels(conn, "people/c1", ["contactGroups/a"])
     got = [tuple(r) for r in labels_repo.list_with_counts(conn)]
     assert got == [("Book Club", 0), ("climbing", 1)]
+
+
+# --- LinkedIn profile URL as an identifier (2026-10-13-linkedin-identity-design.md §3) ---
+
+JANE = "linkedin.com/in/jane-example"
+
+
+def test_a_linkedin_only_person_satisfies_the_identifier_check(conn):
+    conn.execute("INSERT INTO people (first_seen, linkedin_url) VALUES (now(), %s)", (JANE,))
+
+
+def test_identifier_check_still_rejects_none_of_the_three(conn):
+    with pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute("INSERT INTO people (first_seen, linkedin_url) VALUES (now(), NULL)")
+
+
+def test_linkedin_url_is_unique_and_nulls_coexist(conn):
+    conn.execute("INSERT INTO people (first_seen, linkedin_url) VALUES (now(), %s)", (JANE,))
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        conn.execute("INSERT INTO people (first_seen, linkedin_url) VALUES (now(), %s)", (JANE,))
+
+
+def test_many_people_have_no_linkedin_url(conn):
+    _person(conn, "a@example.com")
+    _person(conn, "b@example.com")
+    assert conn.execute("select count(*) from people where linkedin_url is null").fetchone()[0] == 2
+
+
+def test_identifier_check_upgrade_runs_on_an_older_database(conn):
+    # A production database has the two-identifier CHECK from the person-identity migration.
+    conn.execute("ALTER TABLE people DROP CONSTRAINT people_has_an_identifier")
+    conn.execute(
+        "ALTER TABLE people ADD CONSTRAINT people_has_an_identifier"
+        " CHECK (email IS NOT NULL OR cardinality(phone_numbers) > 0)"
+    )
+    _apply(conn, SCHEMA.read_text())
+    _apply(conn, SCHEMA.read_text())
+    conn.execute("INSERT INTO people (first_seen, linkedin_url) VALUES (now(), %s)", (JANE,))
+    n = conn.execute(
+        "select count(*) from pg_constraint"
+        " where conrelid = 'people'::regclass and conname = 'people_has_an_identifier'"
+    ).fetchone()[0]
+    assert n == 1
+
+
+def test_migration_resumes_before_the_linkedin_block(conn):
+    conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    text = SCHEMA.read_text()
+    cut = text.index("-- LinkedIn profile URL as a third identifier")
+    _apply(conn, text[:cut])
+    _apply(conn, text)
+    conn.execute("INSERT INTO people (first_seen, linkedin_url) VALUES (now(), %s)", (JANE,))
+
+
+def test_google_writers_round_trip_linkedin_url(conn):
+    row = people_repo.create_from_google(
+        conn,
+        None,
+        display_name=None,
+        resource_name="people/c1",
+        etag=None,
+        notes=None,
+        phone_numbers=[],
+        company=None,
+        job_title=None,
+        google_fields=json.dumps({}),
+        linkedin_url=JANE,
+    )
+    assert row["linkedin_url"] == JANE
+    people_repo.update_from_google(
+        conn,
+        "people/c1",
+        etag="e2",
+        display_name=None,
+        notes=None,
+        phone_numbers=["+15550100001"],
+        company=None,
+        job_title=None,
+        google_fields=json.dumps({}),
+        linkedin_url="linkedin.com/in/jane-other",
+    )
+    assert people_repo.get_by_linkedin_url(conn, "linkedin.com/in/jane-other")["id"] == row["id"]
+    assert people_repo.linkedin_owner(conn, "linkedin.com/in/jane-other") == row["id"]
+    assert people_repo.linkedin_owner(conn, JANE) is None
+
+    _person(conn, "b@example.com")
+    people_repo.set_google(
+        conn,
+        "b@example.com",
+        resource_name="people/c2",
+        etag=None,
+        phone_numbers=[],
+        company=None,
+        job_title=None,
+        google_fields=json.dumps({}),
+        linkedin_url="linkedin.com/in/bob-example",
+    )
+    assert people_repo.get(conn, "b@example.com")["linkedin_url"] == "linkedin.com/in/bob-example"

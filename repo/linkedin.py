@@ -157,6 +157,16 @@ def repoint_person(conn: Any, from_id: int, to_id: int) -> int:
     ).rowcount
 
 
+def link_connection(conn: Any, profile_url: str, person_id: int) -> None:
+    """Link one connection to a person by its profile URL (the seed's link and create
+    paths, linkedin-identity design §5). The next import_linkedin re-derives the same
+    link through match_people's URL step."""
+    conn.execute(
+        "UPDATE linkedin_connections SET person_id = %s, match_method = 'url' WHERE profile_url = %s",
+        (person_id, profile_url),
+    )
+
+
 def connection_for_person(conn: Any, person_id: int) -> dict | None:
     return conn.execute(
         f"SELECT {_CONNECTION_COLUMNS} FROM {_CONNECTIONS_JOIN} WHERE lc.person_id = %s {_ORDER} LIMIT 1",

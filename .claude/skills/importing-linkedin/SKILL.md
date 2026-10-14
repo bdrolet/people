@@ -49,11 +49,12 @@ snapshot_at 2026-09-16T18:04:11Z
 
 - **url-matched / email-matched / name-matched** — connections soft-linked to
   a `people` row, tried in that order. A URL match is the connection's profile
-  URL saved in the `urls` of exactly one person's Google contact — the fix for
-  a connection whose name or email doesn't line up (add the URL with
-  `editing-person`, then re-import). Name matches require the normalized name
-  to be unique among both people and connections; ambiguous names and URLs
-  stay unmatched on purpose.
+  URL carried by exactly one person — their `people.linkedin_url` or a URL saved
+  in the `urls` of their Google contact (`match_method = 'url'`, printed as
+  `url-matched`) — the fix for a connection whose name or email doesn't line up
+  (add the URL with `editing-person`, then re-import). Name matches require the
+  normalized name to be unique among both people and connections; ambiguous
+  names and URLs stay unmatched on purpose.
 - **by-url / by-name / unmatched messages** — how each message was tied to a
   connection. Unmatched is normal for InMail and recruiters (non-connections).
   A large by-name or unmatched share suggests LinkedIn changed URL formats.

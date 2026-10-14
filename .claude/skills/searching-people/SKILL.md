@@ -192,5 +192,5 @@ If `email` is null, drop the `mailto:` link and fall back to
 
 - Mark `in_google_contacts`/`in_hubspot` only if the user asks about linkage.
 - Offer to open one with **fetching-person** (`GET /people/{ident}`) or
-  update it with **editing-person** — both take the email, phone, or id
+  update it with **editing-person** — both take the email, phone, LinkedIn URL, or id
   directly, no lookup step needed.

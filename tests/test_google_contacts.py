@@ -62,7 +62,7 @@ def raising_svc(monkeypatch):
 
     def _install(error: HttpError):
         class _List:
-            def execute(self):
+            def execute(self, num_retries=0):
                 raise error
 
         class _Connections:
@@ -130,7 +130,7 @@ def test_list_phone_index_groups_contacts_by_normalized_number(monkeypatch):
         def __init__(self, payload):
             self._payload = payload
 
-        def execute(self):
+        def execute(self, num_retries=0):
             return self._payload
 
     class FakeConnections:
@@ -172,7 +172,7 @@ def test_update_fields_sends_one_call_with_a_joined_mask(monkeypatch):
     calls = []
 
     class FakeReq:
-        def execute(self):
+        def execute(self, num_retries=0):
             return {"resourceName": "people/c1"}
 
     class FakePeople:
@@ -197,6 +197,27 @@ def test_update_fields_sends_one_call_with_a_joined_mask(monkeypatch):
     assert calls[0]["personFields"] == gc.PERSON_FIELDS
 
 
+def test_update_fields_does_not_retry_5xx(monkeypatch):
+    seen = []
+
+    class FakeReq:
+        def execute(self, *args, **kwargs):
+            seen.append((args, kwargs))
+            return {}
+
+    class FakePeople:
+        def updateContact(self, **kw):
+            return FakeReq()
+
+    class FakeService:
+        def people(self):
+            return FakePeople()
+
+    monkeypatch.setattr(gc, "_svc", lambda: FakeService())
+    gc.update_fields("people/c1", "etag-1", {"names": [{"givenName": "Alice"}]})
+    assert seen == [((), {})]  # no num_retries: a 5xx after an applied write would 409
+
+
 def test_update_fields_with_no_fields_does_not_call_google(monkeypatch):
     def boom():
         raise AssertionError("must not call Google")
@@ -209,7 +230,7 @@ def test_create_person_sends_the_body_and_group(monkeypatch):
     calls = []
 
     class FakeReq:
-        def execute(self):
+        def execute(self, num_retries=0):
             return {"resourceName": "people/c1"}
 
     class FakePeople:
@@ -235,7 +256,7 @@ def test_create_person_without_a_group_sends_no_membership(monkeypatch):
     calls = []
 
     class FakeReq:
-        def execute(self):
+        def execute(self, num_retries=0):
             return {"resourceName": "people/c1"}
 
     class FakePeople:
@@ -282,7 +303,7 @@ def test_list_groups_by_rn_pages_and_keeps_colliding_names(monkeypatch):
         def __init__(self, page):
             self.page = page
 
-        def execute(self):
+        def execute(self, num_retries=0):
             return self.page
 
     class Groups:
@@ -303,3 +324,104 @@ def test_list_groups_by_rn_pages_and_keeps_colliding_names(monkeypatch):
         "formattedName": "Family",
         "groupType": "USER_CONTACT_GROUP",
     }
+
+
+class _Req:
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = []
+
+    def execute(self, num_retries=0):
+        self.calls.append(num_retries)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def test_an_idempotent_request_lets_googleapiclient_retry():
+    req = _Req([{"ok": 1}])
+    assert gc._execute(req) == {"ok": 1}
+    assert req.calls == [gc._RETRIES]
+
+
+def test_a_create_retries_only_rate_limits(monkeypatch):
+    slept = []
+    monkeypatch.setattr(gc, "_sleep", slept.append)
+    req = _Req([_http_error(429, None), _http_error(429, None), {"resourceName": "people/c1"}])
+    assert gc._execute(req, idempotent=False) == {"resourceName": "people/c1"}
+    assert req.calls == [0, 0, 0] and slept == [1, 2]
+
+
+def test_a_create_never_retries_a_server_error(monkeypatch):
+    # A 5xx may have created the contact already; retrying could make a second one.
+    monkeypatch.setattr(gc, "_sleep", lambda s: pytest.fail("must not retry"))
+    with pytest.raises(HttpError):
+        gc._execute(_Req([_http_error(500, None)]), idempotent=False)
+
+
+def test_a_create_gives_up_after_the_last_retry(monkeypatch):
+    monkeypatch.setattr(gc, "_sleep", lambda s: None)
+    req = _Req([_http_error(429, None)] * (gc._RETRIES + 1))
+    with pytest.raises(HttpError):
+        gc._execute(req, idempotent=False)
+    assert len(req.calls) == gc._RETRIES + 1
+
+
+def test_list_url_index_normalizes_pages_and_keeps_every_contact(monkeypatch):
+    pages = [
+        {
+            "connections": [
+                {
+                    "resourceName": "people/c1",
+                    "names": [{"displayName": "Jane Example"}],
+                    "urls": [
+                        {"value": "https://www.linkedin.com/in/Jane-Example/"},
+                        {"value": "https://www.linkedin.com/company/acme"},
+                    ],
+                },
+                {"resourceName": "people/c2", "names": [{"displayName": "Lee Example"}]},
+            ],
+            "nextPageToken": "p2",
+        },
+        {
+            "connections": [
+                {"resourceName": "people/c3", "urls": [{"value": "linkedin.com/in/jane-example"}]}
+            ]
+        },
+    ]
+    seen = []
+
+    class _List:
+        def __init__(self, kw):
+            self.kw = kw
+
+        def execute(self, num_retries=0):
+            seen.append((self.kw.get("pageToken"), self.kw["personFields"], num_retries))
+            return pages[len(seen) - 1]
+
+    class _Connections:
+        def list(self, **kw):
+            return _List(kw)
+
+    class _People:
+        def connections(self):
+            return _Connections()
+
+    class _Svc:
+        def people(self):
+            return _People()
+
+    monkeypatch.setattr(gc, "_svc", lambda: _Svc())
+    by_url, contacts = gc.list_url_index()
+    assert by_url == {
+        "linkedin.com/in/jane-example": [
+            {"resource_name": "people/c1", "display_name": "Jane Example"},
+            {"resource_name": "people/c3", "display_name": None},
+        ]
+    }
+    assert [c["resource_name"] for c in contacts] == ["people/c1", "people/c2", "people/c3"]
+    assert seen == [
+        (None, "names,urls,metadata", gc._RETRIES),
+        ("p2", "names,urls,metadata", gc._RETRIES),
+    ]
