@@ -65,7 +65,7 @@ clients/
   hubspot.py                contacts search/create/update/archive, engagements
   graph_local.py            device-code MSAL for scripts/import_contacts.py only
   imessage_local.py         read-only chat.db access for scripts/import_imessage.py only
-  whatsapp_local.py         read-only ChatStorage.sqlite access for scripts/import_whatsapp.py only
+  whatsapp_local.py         read-only ChatStorage.sqlite + ContactsV2.sqlite access for scripts/import_whatsapp.py only
   gcp_auth.py               Google ID tokens for Cloud Run callers (tasks-api, inbox-api)
   tasks_api.py              create_task / complete_task / configured — Asana tasks via tasks-api
   inbox_api.py              create_draft (empty body) — CLI-only (scripts/outreach.py draft), so the

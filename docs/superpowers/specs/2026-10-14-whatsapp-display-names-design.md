@@ -1,7 +1,7 @@
 # WhatsApp Display Names and LID Phone Resolution — Design
 
 **Date:** 2026-10-14
-**Status:** Draft, awaiting review
+**Status:** Implemented
 **Repo:** `bdrolet/people`
 **Amends:** `docs/superpowers/specs/2026-09-29-whatsapp-snapshot-design.md` §5.3, §6.5, §6.6
 

@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 
 from models.whatsapp import WhatsAppBatch, WhatsAppChatMember, WhatsAppHandle
@@ -184,3 +186,29 @@ def test_otel_is_flushed_even_when_the_import_fails(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         import_whatsapp.main_with(["--db", str(tmp_path / "nope.sqlite")], lambda: FakeConn())
     assert flushed
+
+
+def test_summary_reports_lid_phone_matches_and_name_sources():
+    batch = WhatsAppBatch(mode="full", watermark=1)
+    batch.handles = [WhatsAppHandle(handle="lid:1", phone="+15550100005")]
+    batch.lid_phones = {"lid:1": "+15550100005"}
+    match_handles(batch, [{"id": 9, "display_name": "X", "phone_numbers": ["+15550100005"]}])
+    batch.names_address_book = 1
+    out = import_whatsapp.summary(batch, dry_run=False, deleted=0)
+    assert "phone-matched 0, name-matched 0, lid-phone-matched 1, unmatched 0" in out
+    assert "names: partner 0, address book 1, profile 0, member 0, none 0" in out
+    assert "+15550100005" not in out  # counts only, never a number
+
+
+def test_metrics_count_lid_phone_matches(monkeypatch):
+    seen = []
+
+    class FakeCounter:
+        def add(self, n, attrs):
+            seen.append((n, attrs))
+
+    monkeypatch.setattr(import_whatsapp.otel, "whatsapp_import_handles", FakeCounter())
+    batch = WhatsAppBatch(mode="full", watermark=1)
+    batch.matched_by_lid_phone = 3
+    import_whatsapp._record_metrics(batch, deleted=0, started_at=datetime.now(UTC))
+    assert (3, {"match_method": "lid_phone"}) in seen
