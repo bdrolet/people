@@ -118,8 +118,9 @@ def replace_snapshot(conn: Any, s: LinkedInSnapshot, chunk: int = 500) -> None:
     conn.execute(
         """
         INSERT INTO linkedin_imports (snapshot_at, source, connections, messages,
-            recommendations_given, recommendations_received, matched_by_email, matched_by_name)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            recommendations_given, recommendations_received, matched_by_url, matched_by_email,
+            matched_by_name)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             s.snapshot_at,
@@ -128,6 +129,7 @@ def replace_snapshot(conn: Any, s: LinkedInSnapshot, chunk: int = 500) -> None:
             len(s.messages),
             given,
             len(s.recommendations) - given,
+            s.matched_by_url,
             s.matched_by_email,
             s.matched_by_name,
         ),
@@ -247,7 +249,7 @@ def latest_import(conn: Any) -> dict | None:
     return conn.execute(
         """
         SELECT snapshot_at, source, connections, messages, recommendations_given,
-               recommendations_received, matched_by_email, matched_by_name
+               recommendations_received, matched_by_url, matched_by_email, matched_by_name
         FROM linkedin_imports ORDER BY id DESC LIMIT 1
         """
     ).fetchone()

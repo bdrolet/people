@@ -268,3 +268,57 @@ def test_match_people_links_by_unique_name_to_person_id():
     lx.match_people(s, [{"id": 22, "email": "alice@example.com", "display_name": "Alice Example"}])
     assert s.connections[0].person_id == 22
     assert s.connections[0].match_method == "name"
+
+
+def test_match_people_links_by_google_contact_url_first():
+    # No email and a different name: only the URL saved on the Google contact links
+    # them, and it beats the name match another person would otherwise get.
+    s = snapshot(connections=[connection(email=None)])
+    lx.match_people(
+        s,
+        [
+            {
+                "id": 30,
+                "email": None,
+                "display_name": "Ally E",
+                "urls": [
+                    {"value": "https://www.linkedin.com/in/Alice-Example/", "type": "LinkedIn"}
+                ],
+            },
+            {"id": 31, "email": "alice@example.com", "display_name": "Alice Example"},
+        ],
+    )
+    assert (s.connections[0].person_id, s.connections[0].match_method) == (30, "url")
+    assert (s.matched_by_url, s.matched_by_email, s.matched_by_name) == (1, 0, 0)
+
+
+def test_match_people_url_claims_the_person_before_email():
+    s = snapshot(
+        connections=[
+            connection("a", full_name="A One", email="a@x.example"),
+            connection("b", full_name="B Two"),
+        ]
+    )
+    people = [
+        {
+            "id": 40,
+            "email": "a@x.example",
+            "display_name": "Z",
+            "urls": [{"value": "linkedin.com/in/b"}],
+        }
+    ]
+    lx.match_people(s, people)
+    assert [(c.person_id, c.match_method) for c in s.connections] == [(None, None), (40, "url")]
+
+
+def test_match_people_ignores_a_url_two_people_carry():
+    s = snapshot(connections=[connection(full_name="Nobody Here")])
+    url = {"value": "linkedin.com/in/alice-example"}
+    lx.match_people(
+        s,
+        [
+            {"id": 50, "email": None, "display_name": "P", "urls": [url]},
+            {"id": 51, "email": None, "display_name": "Q", "urls": [url, {"type": "home"}]},
+        ],
+    )
+    assert s.connections[0].person_id is None and s.matched_by_url == 0

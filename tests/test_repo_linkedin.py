@@ -70,7 +70,10 @@ REC = LinkedInRecommendation(
 def test_names_for_matching():
     conn = FakeConn(results=[[{"id": 1, "email": "a@b.c", "display_name": "A"}]])
     assert people.names_for_matching(conn) == [{"id": 1, "email": "a@b.c", "display_name": "A"}]
-    assert conn.calls[0] == ("SELECT id, email, display_name FROM people", None)
+    assert conn.calls[0] == (
+        "SELECT id, email, display_name, google_fields->'urls' AS urls FROM people",
+        None,
+    )
 
 
 def test_replace_snapshot_writes_person_id():
@@ -100,7 +103,7 @@ def test_replace_snapshot_order_and_params():
     assert conn_params[0] == "linkedin.com/in/alice-example" and conn_params[-1] == NOW
     msg_params = conn.calls[4][1]
     assert ["linkedin.com/in/me-example"] in msg_params and msg_params[-1] == NOW
-    assert conn.calls[6][1] == (NOW, "Basic_Export", 1, 1, 1, 0, 1, 0)
+    assert conn.calls[6][1] == (NOW, "Basic_Export", 1, 1, 1, 0, 0, 1, 0)
 
 
 def test_replace_snapshot_skips_empty_inserts():
@@ -108,7 +111,7 @@ def test_replace_snapshot_skips_empty_inserts():
     linkedin.replace_snapshot(conn, snapshot(connections=[]))
     sqls = [sql for sql, _ in conn.calls]
     assert len(sqls) == 4 and sqls[3].startswith("INSERT INTO linkedin_imports")
-    assert conn.calls[3][1] == (NOW, "Basic_Export", 0, 0, 0, 0, 1, 0)
+    assert conn.calls[3][1] == (NOW, "Basic_Export", 0, 0, 0, 0, 0, 1, 0)
 
 
 def test_replace_snapshot_batches():

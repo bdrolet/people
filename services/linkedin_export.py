@@ -243,6 +243,18 @@ def _infer_me(messages: list[LinkedInMessage]) -> str | None:
 _V = TypeVar("_V")
 
 
+def _unique_by_url(people_rows: list[dict]) -> dict[str, int]:
+    """normalized profile URL → person id, from the `urls` on each person's Google
+    contact, keeping only URLs that exactly one person carries."""
+    owners: defaultdict[str, set[int]] = defaultdict(set)
+    for r in people_rows:
+        for u in r.get("urls") or []:
+            url = normalize_profile_url(u.get("value")) if isinstance(u, dict) else None
+            if url:
+                owners[url].add(r["id"])
+    return {url: next(iter(ids)) for url, ids in owners.items() if len(ids) == 1}
+
+
 def _unique_by_name(items: Iterable[tuple[str, _V]]) -> dict[str, _V]:
     """normalized name → value, keeping only names that occur exactly once."""
     counts: Counter[str] = Counter()
@@ -326,15 +338,24 @@ def _parse_recommendations(
 
 
 def match_people(snapshot: LinkedInSnapshot, people_rows: list[dict]) -> None:
-    """Soft-link connections to people rows (§5.4): exact email first, then a
-    normalized name unique among people and among connections. Wrong links are
-    worse than missing ones."""
+    """Soft-link connections to people rows (§5.4): a profile URL saved on exactly
+    one person's Google contact first, then exact email, then a normalized name
+    unique among people and among connections. Wrong links are worse than
+    missing ones."""
+    people_by_url = _unique_by_url(people_rows)
     people_by_email = {normalize_email(r["email"]): r["id"] for r in people_rows if r.get("email")}
     for c in snapshot.connections:
         c.person_id = c.match_method = None
-        if c.email and c.email in people_by_email:
-            c.person_id, c.match_method = people_by_email[c.email], "email"
+        if c.profile_url in people_by_url:
+            c.person_id, c.match_method = people_by_url[c.profile_url], "url"
     claimed = {c.person_id for c in snapshot.connections if c.person_id}
+    for c in snapshot.connections:
+        if c.person_id or not c.email:
+            continue
+        person_id = people_by_email.get(c.email)
+        if person_id and person_id not in claimed:
+            c.person_id, c.match_method = person_id, "email"
+            claimed.add(person_id)
 
     people_by_name = _unique_by_name((r.get("display_name") or "", r["id"]) for r in people_rows)
     connection_names = _unique_by_name((c.full_name, c.profile_url) for c in snapshot.connections)
@@ -347,5 +368,6 @@ def match_people(snapshot: LinkedInSnapshot, people_rows: list[dict]) -> None:
             c.person_id, c.match_method = person_id, "name"
             claimed.add(person_id)
 
+    snapshot.matched_by_url = sum(c.match_method == "url" for c in snapshot.connections)
     snapshot.matched_by_email = sum(c.match_method == "email" for c in snapshot.connections)
     snapshot.matched_by_name = sum(c.match_method == "name" for c in snapshot.connections)
