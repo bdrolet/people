@@ -166,7 +166,7 @@ def _one(
         if not args.spawn:
             return "resume", None
         prompt = None if args.idle else outreach_session.RELOAD_PROMPT
-        short = claude_sessions.resume(transcript.stem, cwd=Path(cwd), prompt=prompt)
+        short = claude_sessions.resume(transcript.stem, name, cwd=Path(cwd), prompt=prompt)
         if not short:
             return "resume failed", None
         return f"resumed {short}", {"session_id": transcript.stem, "cwd": cwd, "name": name}

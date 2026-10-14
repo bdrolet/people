@@ -61,8 +61,8 @@ def run(monkeypatch, tmp_path):
         _run.live[f"{short}-0000-4000-8000-000000000000"] = str(cwd)
         return short
 
-    def resume(session_id, *, cwd, prompt=None):
-        resumed.append({"session_id": session_id, "cwd": cwd, "prompt": prompt})
+    def resume(session_id, name, *, cwd, prompt=None):
+        resumed.append({"session_id": session_id, "name": name, "cwd": cwd, "prompt": prompt})
         return session_id[:8]
 
     def people_named(conn, text):
@@ -150,7 +150,12 @@ def test_a_closed_session_is_resumed_from_its_transcript_cwd(run, tmp_path):
     code, out, _ = run("388", "--spawn")
     assert code == 0 and "resumed ab12cd34" in out and run.spawned == []
     assert run.resumed == [
-        {"session_id": SID, "cwd": worktree, "prompt": cli.outreach_session.RELOAD_PROMPT}
+        {
+            "session_id": SID,
+            "name": "outreach: Jonah Example",
+            "cwd": worktree,
+            "prompt": cli.outreach_session.RELOAD_PROMPT,
+        }
     ]
     assert json.loads(run.state_path.read_text())["388"]["cwd"] == str(worktree)
 
