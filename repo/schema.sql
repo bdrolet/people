@@ -290,9 +290,9 @@ CREATE INDEX IF NOT EXISTS linkedin_connections_person_id_idx ON linkedin_connec
 CREATE TABLE IF NOT EXISTS whatsapp_handles (
     handle                 TEXT PRIMARY KEY,   -- E.164, or 'lid:<id>' (§6.4)
     jid                    TEXT,               -- the raw JID last seen for this handle
-    display_name           TEXT,               -- ZPARTNERNAME, else ZPUSHNAME (§6.6)
+    display_name           TEXT,               -- partner, address-book, profile or member name (2026-10-14 §5.2)
     person_id              BIGINT REFERENCES people(id) ON DELETE SET NULL,
-    match_method           TEXT,               -- 'phone' | 'name' | NULL
+    match_method           TEXT,               -- 'phone' | 'lid_phone' | 'name' | NULL
     message_count          INT NOT NULL DEFAULT 0,   -- 1:1 chats only
     my_message_count       INT NOT NULL DEFAULT 0,   -- 1:1 chats only
     last_message_at        TIMESTAMPTZ,
@@ -309,6 +309,9 @@ CREATE TABLE IF NOT EXISTS whatsapp_handles (
 CREATE INDEX IF NOT EXISTS whatsapp_handles_person_idx ON whatsapp_handles (person_id);
 CREATE INDEX IF NOT EXISTS whatsapp_handles_name_trgm_idx
     ON whatsapp_handles USING gin (display_name gin_trgm_ops);
+-- E.164: the handle itself, or a LID's phone from WhatsApp's address book
+-- (spec 2026-10-14 §5.3). Additive, so existing databases migrate in place.
+ALTER TABLE whatsapp_handles ADD COLUMN IF NOT EXISTS phone TEXT;
 
 CREATE TABLE IF NOT EXISTS whatsapp_chats (
     chat_jid          TEXT PRIMARY KEY,        -- ZWACHATSESSION.ZCONTACTJID; 208 sessions

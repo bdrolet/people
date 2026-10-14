@@ -67,12 +67,12 @@ def run(
             conn.rollback()
         else:
             whatsapp_repo.upsert_chats(conn, batch.chats)
-            whatsapp_repo.upsert_handles(conn, batch.handles)
+            whatsapp_repo.upsert_handles(conn, batch.handles, full=full)
             # §6.5 Finding A: batch.handles only covers this run's direct sessions
             # plus in-window group senders, so a stored handle outside that set
             # (a group-only sender the incremental window missed) never gets
             # upserted at all and its old link would otherwise never be revisited.
-            whatsapp_repo.rematch_stored_handles(conn)
+            whatsapp_repo.rematch_stored_handles(conn, skip=[h.handle for h in batch.handles])
             whatsapp_repo.replace_members(conn, batch.members)
             whatsapp_repo.upsert_messages(conn, batch.messages)
             if full:
@@ -100,9 +100,15 @@ def _record_metrics(batch: WhatsAppBatch, *, deleted: int, started_at: datetime)
         batch.senderless_dropped, {**mode, "outcome": "senderless_dropped"}
     )
     otel.whatsapp_import_messages.add(batch.duplicate_stanza_ids, {**mode, "outcome": "duplicate"})
-    unmatched = len(batch.handles) - batch.matched_by_phone - batch.matched_by_name
+    unmatched = (
+        len(batch.handles)
+        - batch.matched_by_phone
+        - batch.matched_by_name
+        - batch.matched_by_lid_phone
+    )
     otel.whatsapp_import_handles.add(batch.matched_by_phone, {"match_method": "phone"})
     otel.whatsapp_import_handles.add(batch.matched_by_name, {"match_method": "name"})
+    otel.whatsapp_import_handles.add(batch.matched_by_lid_phone, {"match_method": "lid_phone"})
     otel.whatsapp_import_handles.add(unmatched, {"match_method": "none"})
     otel.whatsapp_import_handles.add(batch.handles_unnormalized, {"match_method": "unnormalized"})
     otel.whatsapp_import_duration.record((datetime.now(UTC) - started_at).total_seconds(), mode)
@@ -112,7 +118,12 @@ def summary(batch: WhatsAppBatch, *, dry_run: bool, deleted: int) -> str:
     """Counts only (§6.8). Never a JID, a number, a name, or message text."""
     direct = sum(1 for c in batch.chats if c.kind == "direct")
     groups = sum(1 for c in batch.chats if c.kind == "group")
-    unmatched = len(batch.handles) - batch.matched_by_phone - batch.matched_by_name
+    unmatched = (
+        len(batch.handles)
+        - batch.matched_by_phone
+        - batch.matched_by_name
+        - batch.matched_by_lid_phone
+    )
     identities = len({m.handle for m in batch.members})
     members_matched = len({m.handle for m in batch.members if m.person_id})
     lines = ["DRY RUN — nothing written"] if dry_run else []
@@ -123,8 +134,12 @@ def summary(batch: WhatsAppBatch, *, dry_run: bool, deleted: int) -> str:
         f"{batch.senderless_dropped:,} senderless dropped, "
         f"{batch.duplicate_stanza_ids:,} duplicate id",
         f"handles {len(batch.handles):,} (phone-matched {batch.matched_by_phone:,}, "
-        f"name-matched {batch.matched_by_name:,}, unmatched {unmatched:,}, "
+        f"name-matched {batch.matched_by_name:,}, "
+        f"lid-phone-matched {batch.matched_by_lid_phone:,}, unmatched {unmatched:,}, "
         f"unnormalized {batch.handles_unnormalized:,})",
+        f"names: partner {batch.names_partner:,}, address book {batch.names_address_book:,}, "
+        f"profile {batch.names_profile:,}, member {batch.names_member:,}, "
+        f"none {batch.names_none:,}",
         f"members {len(batch.members):,} rows / {identities:,} identities across "
         f"{groups:,} groups (matched {members_matched:,})",
         f"watermark {batch.watermark:,}   mode {batch.mode}",
@@ -153,7 +168,7 @@ def main_with(argv: list[str], get_conn: Callable[[], Any]) -> None:
             print(f"could not read ChatStorage.sqlite: {e}", file=sys.stderr)
             sys.exit(2)
         except whatsapp_local.SchemaError as e:
-            print(f"ChatStorage.sqlite schema error: {e}", file=sys.stderr)
+            print(f"WhatsApp store schema error: {e}", file=sys.stderr)
             sys.exit(2)
         print(summary(batch, dry_run=args.dry_run, deleted=deleted))
     finally:

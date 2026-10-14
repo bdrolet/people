@@ -4,7 +4,14 @@ from pathlib import Path
 import pytest
 
 from clients import whatsapp_local
-from tests.fixtures.whatsapp import build_store
+from tests.fixtures.whatsapp import (
+    ALICE_JID,
+    MEMBER_2_JID,
+    MEMBER_4_JID,
+    MEMBER_LID_JID,
+    build_contacts,
+    build_store,
+)
 
 
 def test_read_returns_sessions_messages_and_members(tmp_path):
@@ -157,3 +164,59 @@ def test_copy_failure_raises_store_unreadable(tmp_path, monkeypatch):
     monkeypatch.setattr(whatsapp_local.shutil, "copy2", boom)
     with pytest.raises(whatsapp_local.StoreUnreadableError):
         whatsapp_local.read(path)
+
+
+# --- Profile push names and the address book (spec 2026-10-14 §5.1) ----------
+
+
+def test_read_returns_profile_push_names_and_skips_blank_ones(tmp_path):
+    raw = whatsapp_local.read(build_store(tmp_path))
+    assert raw.push_names[MEMBER_4_JID] == "Frank Push"
+    assert raw.push_names[MEMBER_LID_JID] == "Eve Push"
+    assert raw.push_names[ALICE_JID] == "Alice Push"
+    assert MEMBER_2_JID not in raw.push_names
+
+
+def test_read_returns_the_address_book_from_the_sibling_file(tmp_path):
+    path = build_store(tmp_path)
+    build_contacts(tmp_path)
+    raw = whatsapp_local.read(path)
+    assert {r["ZFULLNAME"] for r in raw.address_book} == {"Eve Saved", "Frank Saved"}
+    assert set(raw.address_book[0]) == {"ZLID", "ZWHATSAPPID", "ZFULLNAME"}
+
+
+def test_read_without_contacts_file_returns_an_empty_address_book(tmp_path, caplog):
+    raw = whatsapp_local.read(build_store(tmp_path))
+    assert raw.address_book == []
+    assert "address book" in caplog.text
+    assert str(tmp_path) not in caplog.text  # counts/notes only, never a path
+
+
+def test_contacts_file_missing_a_column_raises_naming_it(tmp_path):
+    import sqlite3
+
+    path = build_store(tmp_path)
+    contacts = build_contacts(tmp_path)
+    db = sqlite3.connect(contacts)
+    db.executescript("ALTER TABLE ZWAADDRESSBOOKCONTACT DROP COLUMN ZLID;")
+    db.commit()
+    db.close()
+    with pytest.raises(whatsapp_local.SchemaError, match="ContactsV2.sqlite.*ZLID"):
+        whatsapp_local.read(path)
+
+
+def test_messages_no_longer_carry_zpushname(tmp_path):
+    raw = whatsapp_local.read(build_store(tmp_path))
+    assert all("ZPUSHNAME" not in m for m in raw.messages)
+
+
+def test_an_unreadable_contacts_file_degrades_to_an_empty_address_book(tmp_path, caplog):
+    """Spec 2026-10-14 §10: the address book is a nicety — a damaged one must not
+    block the message import. Only a missing column stays fatal."""
+    path = build_store(tmp_path)
+    (tmp_path / "ContactsV2.sqlite").write_bytes(b"not a database at all" * 100)
+    raw = whatsapp_local.read(path)
+    assert raw.address_book == []
+    assert raw.sessions  # the message store was still read
+    assert "address book" in caplog.text
+    assert str(tmp_path) not in caplog.text

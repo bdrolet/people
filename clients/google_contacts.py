@@ -26,19 +26,27 @@ _RETRIES = 5
 _sleep = time.sleep  # patched in tests
 
 
-def _execute(request: Any, *, idempotent: bool = True) -> Any:
+# Google answers back-to-back changes to one contact group with 409 ABORTED. Adding or
+# removing a member is safe to repeat, so membership changes retry that, rate limits and
+# server errors.
+_MEMBERSHIP_RETRY = frozenset({409, 429, 500, 502, 503})
+
+
+def _execute(
+    request: Any, *, idempotent: bool = True, retry_on: frozenset[int] = frozenset({429})
+) -> Any:
     """Run one People API request, retrying rate limits (linkedin-identity design §5).
     Idempotent requests use googleapiclient's own retry (HTTP 429 and 5xx, with
-    backoff). A create or delete retries only HTTP 429, which Google returns before
-    doing anything: after a 5xx the contact may already exist, and a retry would
-    make a second one."""
+    backoff). Anything else retries only the statuses in `retry_on`: by default HTTP
+    429, which Google returns before doing anything, since after a 5xx a create may
+    already have made the contact and a retry would make a second one."""
     if idempotent:
         return request.execute(num_retries=_RETRIES)
     for attempt in range(_RETRIES + 1):
         try:
             return request.execute()
         except HttpError as e:
-            if e.resp.status != 429 or attempt == _RETRIES:
+            if e.resp.status not in retry_on or attempt == _RETRIES:
                 raise
             _sleep(2**attempt)
     raise AssertionError("unreachable")
@@ -208,6 +216,7 @@ def modify_group_members(group_resource_name: str, add: list[str], remove: list[
         _execute(
             _svc().contactGroups().members().modify(resourceName=group_resource_name, body=body),
             idempotent=False,
+            retry_on=_MEMBERSHIP_RETRY,
         )
 
 

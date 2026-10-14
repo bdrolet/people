@@ -107,20 +107,34 @@ def test_upsert_handles_writes_link_fields_only():
     whatsapp.upsert_handles(conn, [WhatsAppHandle(handle="+15550100001", jid="x@s.whatsapp.net")])
     sql, _ = conn.calls[0]
     assert (
-        "INSERT INTO whatsapp_handles (handle, jid, display_name, person_id, match_method)" in sql
+        "INSERT INTO whatsapp_handles (handle, jid, display_name, person_id, match_method, phone)"
+        in sql
     )
     assert "ON CONFLICT (handle) DO UPDATE" in sql
     for column in ("message_count", "my_message_count", "group_message_count", "group_count"):
         assert column not in sql
 
 
-def test_upsert_handles_keeps_a_known_display_name():
-    """A handle seen this run only as a group sender with no ZPUSHNAME carries no
-    name; that must not erase the one a direct session gave it earlier."""
+def test_upsert_handles_incremental_coalesces_name_and_phone():
+    """An incremental batch may not see a handle's 1:1 session or address-book row,
+    so a missing name or phone there means "not seen", not "has none"."""
     conn = FakeConn()
     whatsapp.upsert_handles(conn, [WhatsAppHandle(handle="+15550100001")])
     sql, _ = conn.calls[0]
     assert "display_name = COALESCE(EXCLUDED.display_name, whatsapp_handles.display_name)" in sql
+    assert "phone = COALESCE(EXCLUDED.phone, whatsapp_handles.phone)" in sql
+
+
+def test_upsert_handles_full_overwrites_name_and_phone():
+    """A full batch is authoritative, NULL included — this is what cleans the
+    stored protobuf-blob names (spec 2026-10-14 §5.4)."""
+    conn = FakeConn()
+    whatsapp.upsert_handles(conn, [WhatsAppHandle(handle="+15550100001")], full=True)
+    sql, params = conn.calls[0]
+    assert "display_name = EXCLUDED.display_name" in sql
+    assert "COALESCE(EXCLUDED.display_name" not in sql
+    assert "phone = EXCLUDED.phone" in sql
+    assert params == ("+15550100001", None, None, None, None, None)
 
 
 def test_upsert_handles_rewrites_the_link_even_to_null():
@@ -136,24 +150,28 @@ def test_upsert_handles_rewrites_the_link_even_to_null():
 # --- rematch_stored_handles (final-review Finding A) -------------------------
 
 
-def test_rematch_stored_handles_excludes_lid_handles_entirely():
-    """A `lid:` handle carries a name match this SQL cannot recompute; it must
-    not appear in either the candidates CTE or the update target (§6.5)."""
+def test_rematch_stored_handles_covers_phone_handles_and_lids_with_a_phone():
+    """A LID with a stored phone is re-matched by it (spec 2026-10-14 §5.3); a LID
+    without one keeps its name link, which this SQL cannot recompute."""
     conn = FakeConn()
     whatsapp.rematch_stored_handles(conn)
     sql, params = conn.calls[0]
-    assert sql.count("NOT LIKE 'lid:%'") == 2
-    assert params is None
+    assert "WHERE (handle NOT LIKE 'lid:%%' OR phone IS NOT NULL)" in sql
+    assert "COALESCE(phone, handle) AS phone" in sql
+    assert params == ([],)
 
 
 def test_rematch_stored_handles_links_on_an_exact_unique_phone_match():
     conn = FakeConn()
     whatsapp.rematch_stored_handles(conn)
     sql, _ = conn.calls[0]
-    assert "JOIN people p ON h.handle = ANY(p.phone_numbers)" in sql
+    assert "JOIN people p ON k.phone = ANY(p.phone_numbers)" in sql
     assert "COUNT(DISTINCT person_id) AS n" in sql
     assert "WHEN counts.n = 1 THEN counts.only_id ELSE NULL END" in sql
-    assert "match_method = CASE WHEN counts.n = 1 THEN 'phone' ELSE NULL END" in sql
+    assert (
+        "WHEN counts.n = 1 AND k.is_lid THEN 'lid_phone'"
+        " WHEN counts.n = 1 THEN 'phone' ELSE NULL END" in sql
+    )
 
 
 def test_rematch_stored_handles_nulls_on_zero_or_ambiguous_matches():
@@ -166,6 +184,21 @@ def test_rematch_stored_handles_nulls_on_zero_or_ambiguous_matches():
     assert "LEFT JOIN counts ON counts.handle = k.handle" in sql
     assert "UPDATE whatsapp_handles h SET" in sql
     assert "updated_at = now()" in sql
+
+
+def test_summary_for_person_ranks_lid_phone_between_phone_and_name():
+    conn = FakeConn()
+    whatsapp.summary_for_person(conn, 1)
+    sql, _ = conn.calls[0]
+    assert sql.index("'phone') THEN 'phone'") < sql.index("'lid_phone') THEN 'lid_phone'")
+    assert sql.index("'lid_phone') THEN 'lid_phone'") < sql.index("'name') THEN 'name'")
+
+
+def test_handle_reads_serve_phone():
+    conn = FakeConn()
+    whatsapp.handles(conn)
+    sql, _ = conn.calls[0]
+    assert "h.phone" in sql
 
 
 # --- Members -----------------------------------------------------------------
@@ -457,3 +490,15 @@ def test_latest_import_reads_the_newest_row():
     conn = FakeConn(results=[[{"mode": "full"}]])
     assert whatsapp.latest_import(conn)["mode"] == "full"
     assert "ORDER BY id DESC LIMIT 1" in conn.calls[0][0]
+
+
+def test_rematch_stored_handles_skips_the_batch_s_own_handles():
+    """match_handles in Python is the only authority for handles in this run's
+    batch; the SQL rematch exists for stored handles the batch did not carry
+    (§6.5 Finding A). Re-matching batch handles from a stale stored phone would
+    overwrite a fresh name link and split handle from member links."""
+    conn = FakeConn()
+    whatsapp.rematch_stored_handles(conn, skip=["lid:1", "+15550100001"])
+    sql, params = conn.calls[0]
+    assert "AND NOT (handle = ANY(%s))" in sql
+    assert params == (["lid:1", "+15550100001"],)

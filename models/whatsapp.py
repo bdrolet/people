@@ -14,7 +14,9 @@ class WhatsAppHandle:
     jid: str | None = None
     display_name: str | None = None
     person_id: int | None = None
-    match_method: str | None = None  # 'phone' | 'name' | None
+    match_method: str | None = None  # 'phone' | 'lid_phone' | 'name' | None
+    # E.164: the handle itself, or a LID's phone from the address book (2026-10-14 §5.3)
+    phone: str | None = None
 
 
 @dataclass
@@ -65,6 +67,9 @@ class WhatsAppBatch:
     # match (§6.5) reads this and nothing else, so a group member's ZCONTACTNAME can
     # never feed it.
     partner_names: dict[str, str] = field(default_factory=dict)
+    # 'lid:<id>' -> E.164 via the address book, for handles and members alike
+    # (spec 2026-10-14 §5.3). match_handles reads this.
+    lid_phones: dict[str, str] = field(default_factory=dict)
     sessions_skipped: int = 0
     duplicate_jids: int = 0
     duplicate_stanza_ids: int = 0
@@ -73,3 +78,9 @@ class WhatsAppBatch:
     handles_unnormalized: int = 0
     matched_by_phone: int = 0
     matched_by_name: int = 0
+    matched_by_lid_phone: int = 0
+    names_partner: int = 0
+    names_address_book: int = 0
+    names_profile: int = 0
+    names_member: int = 0
+    names_none: int = 0

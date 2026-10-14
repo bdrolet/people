@@ -1,13 +1,17 @@
 import logging
 
 from clients import whatsapp_local
+from models.whatsapp import WhatsAppBatch, WhatsAppHandle
 from services import whatsapp_export as wa
 from tests.fixtures.whatsapp import (
     ALICE_JID,
     GROUP_JID,
     LID_JID,
     MEMBER_4_JID,
+    MEMBER_LID_JID,
+    MEMBER_LID_PHONE_JID,
     MX_JID,
+    build_contacts,
     build_store,
 )
 
@@ -336,7 +340,8 @@ def test_a_group_only_sender_earns_a_handle_from_zmemberjid_not_zfromjid(tmp_pat
     frank = handles["+15550100004"]
     assert frank.jid == MEMBER_4_JID
     assert frank.jid != GROUP_JID
-    assert frank.display_name == "Frank"
+    # Never the message's ZPUSHNAME (a protobuf blob): the profile push name.
+    assert frank.display_name == "Frank Push"
 
 
 def test_handles_are_unique_in_the_batch(tmp_path):
@@ -519,3 +524,138 @@ def test_no_email_matching_happens(tmp_path):
     b = batch(tmp_path)
     wa.match_handles(b, [{"id": 1, "display_name": "Alice Example", "email": "alice@example.com"}])
     assert all(h.person_id is None for h in b.handles)
+
+
+# --- Display names and LID phones (spec 2026-10-14 §5.2, §5.3) ----------------
+
+
+def batch_with_contacts(tmp_path, rows=None):
+    path = build_store(tmp_path)
+    build_contacts(tmp_path, rows)
+    return wa.build_batch(whatsapp_local.read(path), mode="full")
+
+
+def test_blob_guard_catches_padded_protobufs():
+    for blob in ("IAA=", "CJaiyNAGIAA=", "IAA6FDNCQkYzMzE5NDFDRTc1MDdDNjRDQMCN59zdM3iKuf654jM="):
+        assert wa.looks_like_blob(blob), blob
+
+
+def test_blob_guard_never_drops_a_real_name():
+    for name in ("Mike", "Anna", "Jo", "Alice Example", "王小明", "Zoë 🎉", "Bob", "A+B"):
+        assert not wa.looks_like_blob(name), name
+
+
+def test_resolve_display_name_precedence():
+    r = wa.resolve_display_name
+    assert r(partner="P", address_book="A", profile="F", member="M") == ("P", "partner")
+    assert r(partner=None, address_book="A", profile="F", member="M") == ("A", "address_book")
+    assert r(partner=None, address_book=None, profile="F", member="M") == ("F", "profile")
+    assert r(partner=None, address_book=None, profile=None, member="M") == ("M", "member")
+    assert r(partner=None, address_book=None, profile=None, member=None) == (None, "none")
+
+
+def test_resolve_display_name_skips_blank_and_blob_candidates():
+    r = wa.resolve_display_name
+    assert r(partner="  ", address_book="IAA=", profile="Frank", member=None) == (
+        "Frank",
+        "profile",
+    )
+    assert r(partner=None, address_book=None, profile="CJaiyNAGIAA=", member=None) == (
+        None,
+        "none",
+    )
+
+
+def test_lid_phone_resolves_through_the_address_book():
+    book = {MEMBER_LID_JID: MEMBER_LID_PHONE_JID}
+    assert wa.lid_phone("lid:99900000000002", book) == "+15550100005"
+    assert wa.lid_phone("lid:99900000000099", book) is None
+    assert wa.lid_phone("+15550100001", book) is None  # not a LID handle
+
+
+def test_lid_phone_ignores_unnormalizable_and_lidless_rows(tmp_path):
+    b = batch_with_contacts(
+        tmp_path,
+        rows=[
+            (MEMBER_LID_JID, "5@s.whatsapp.net", "Eve Saved"),  # won't normalize
+            (None, MEMBER_4_JID, "Frank Saved"),  # no LID: name still usable
+        ],
+    )
+    assert b.lid_phones == {}
+    assert {h.handle: h for h in b.handles}["+15550100004"].display_name == "Frank Saved"
+
+
+def test_group_only_sender_takes_the_profile_name_without_an_address_book(tmp_path):
+    frank = {h.handle: h for h in batch(tmp_path).handles}["+15550100004"]
+    assert frank.display_name == "Frank Push"
+
+
+def test_address_book_name_beats_profile_name(tmp_path):
+    frank = {h.handle: h for h in batch_with_contacts(tmp_path).handles}["+15550100004"]
+    assert frank.display_name == "Frank Saved"
+
+
+def test_partner_name_still_wins_for_direct_chats(tmp_path):
+    alice = {h.handle: h for h in batch_with_contacts(tmp_path).handles}["+15550100001"]
+    assert alice.display_name == "Alice Example"
+
+
+def test_no_handle_ever_carries_a_message_push_name_blob(tmp_path):
+    for h in batch_with_contacts(tmp_path).handles:
+        assert h.display_name is None or not wa.looks_like_blob(h.display_name), h.handle
+
+
+def test_phone_handles_carry_their_own_phone_and_lid_members_resolve(tmp_path):
+    b = batch_with_contacts(tmp_path)
+    handles = {h.handle: h for h in b.handles}
+    assert handles["+15550100001"].phone == "+15550100001"
+    assert handles["lid:99900000000001"].phone is None  # Bob: not in the address book
+    assert b.lid_phones == {"lid:99900000000002": "+15550100005"}  # Eve, a member only
+
+
+def test_name_source_counters_add_up(tmp_path):
+    b = batch_with_contacts(tmp_path)
+    total = b.names_partner + b.names_address_book + b.names_profile + b.names_member + b.names_none
+    assert total == len(b.handles)
+    assert b.names_address_book == 1  # Frank
+
+
+def test_a_lid_member_links_by_its_address_book_phone(tmp_path):
+    b = batch_with_contacts(tmp_path)
+    wa.match_handles(b, [{"id": 11, "display_name": "Someone", "phone_numbers": ["+15550100005"]}])
+    eve = next(m for m in b.members if m.handle == "lid:99900000000002")
+    assert eve.person_id == 11
+
+
+def test_a_lid_handle_links_as_lid_phone():
+    b = WhatsAppBatch(mode="full")
+    b.handles = [WhatsAppHandle(handle="lid:1", phone="+15550100005")]
+    b.lid_phones = {"lid:1": "+15550100005"}
+    wa.match_handles(b, [{"id": 11, "display_name": "X", "phone_numbers": ["+15550100005"]}])
+    assert (b.handles[0].person_id, b.handles[0].match_method) == (11, "lid_phone")
+    assert (b.matched_by_lid_phone, b.matched_by_phone, b.matched_by_name) == (1, 0, 0)
+
+
+def test_lid_phone_ambiguity_links_nothing_and_skips_the_name_match():
+    """§5.3 step 3: a known phone that does not resolve to one row is "no match" —
+    the unique partner name must not be tried."""
+    b = WhatsAppBatch(mode="full")
+    b.handles = [WhatsAppHandle(handle="lid:1", phone="+15550100005")]
+    b.lid_phones = {"lid:1": "+15550100005"}
+    b.partner_names = {"lid:1": "Zoe Example"}
+    rows = [
+        {"id": 11, "display_name": "A", "phone_numbers": ["+15550100005"]},
+        {"id": 12, "display_name": "B", "phone_numbers": ["+15550100005"]},
+        {"id": 13, "display_name": "Zoe Example", "phone_numbers": []},
+    ]
+    wa.match_handles(b, rows)
+    assert (b.handles[0].person_id, b.handles[0].match_method) == (None, None)
+    assert b.matched_by_name == 0
+
+
+def test_a_lid_handle_without_a_phone_still_name_matches():
+    b = WhatsAppBatch(mode="full")
+    b.handles = [WhatsAppHandle(handle="lid:1")]
+    b.partner_names = {"lid:1": "Zoe Example"}
+    wa.match_handles(b, [{"id": 13, "display_name": "Zoe Example", "phone_numbers": []}])
+    assert (b.handles[0].person_id, b.handles[0].match_method) == (13, "name")

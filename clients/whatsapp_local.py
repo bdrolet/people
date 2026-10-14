@@ -3,15 +3,18 @@
 script use only — people's Cloud Functions never read WhatsApp, exactly as
 clients/imessage_local.py and clients/graph_local.py are import-only."""
 
+import logging
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 EPOCH_2001 = 978307200
 
@@ -40,7 +43,6 @@ REQUIRED_COLUMNS = {
         "ZMESSAGEDATE",
         "ZTEXT",
         "ZMESSAGETYPE",
-        "ZPUSHNAME",
         "ZGROUPMEMBER",
         "ZMEDIAITEM",
     ),
@@ -54,7 +56,22 @@ REQUIRED_COLUMNS = {
     ),
     "ZWAGROUPINFO": ("Z_PK", "ZCREATIONDATE"),
     "ZWAMEDIAITEM": ("Z_PK", "ZMEDIALOCALPATH", "ZMEDIAURL", "ZVCARDSTRING", "ZTITLE"),
+    "ZWAPROFILEPUSHNAME": ("ZJID", "ZPUSHNAME"),
 }
+
+# WhatsApp's copy of the phone's address book, beside the message store in the same
+# group container (spec 2026-10-14 §5.1). Optional: names and LID phones degrade
+# without it, the import does not fail.
+CONTACTS_FILENAME = "ContactsV2.sqlite"
+CONTACTS_REQUIRED_COLUMNS = {"ZWAADDRESSBOOKCONTACT": ("ZLID", "ZWHATSAPPID", "ZFULLNAME")}
+ADDRESS_BOOK_SQL = "SELECT ZLID, ZWHATSAPPID, ZFULLNAME FROM ZWAADDRESSBOOKCONTACT"
+
+# The real push names (spec 2026-10-14 §1). ZWAMESSAGE.ZPUSHNAME is a base64 protobuf
+# on this store, never a name, and is no longer read.
+PUSH_NAME_SQL = """
+SELECT ZJID, ZPUSHNAME FROM ZWAPROFILEPUSHNAME
+WHERE ZJID IS NOT NULL AND ZPUSHNAME IS NOT NULL AND trim(ZPUSHNAME) <> ''
+"""
 
 # ZWACHATSESSION.ZGROUPINFO -> ZWAGROUPINFO.Z_PK (the indexed direction; the reverse
 # link ZWAGROUPINFO.ZCHATSESSION also exists). A group's subject is the session's
@@ -71,7 +88,7 @@ ORDER BY s.Z_PK
 # that is true of 7,762 plain-text rows (§5.3 item 1).
 MESSAGE_SQL = """
 SELECT m.Z_PK, m.ZSTANZAID, m.ZCHATSESSION, m.ZISFROMME, m.ZMESSAGEDATE, m.ZTEXT,
-       m.ZMESSAGETYPE, m.ZPUSHNAME, m.ZGROUPMEMBER, m.ZMEDIAITEM,
+       m.ZMESSAGETYPE, m.ZGROUPMEMBER, m.ZMEDIAITEM,
        md.ZMEDIALOCALPATH, md.ZMEDIAURL, md.ZVCARDSTRING, md.ZTITLE
 FROM ZWAMESSAGE m
 LEFT JOIN ZWAMEDIAITEM md ON md.Z_PK = m.ZMEDIAITEM
@@ -102,6 +119,8 @@ class RawStore:
     messages: list[dict[str, Any]]
     members: list[dict[str, Any]]
     max_pk: int
+    push_names: dict[str, str] = field(default_factory=dict)
+    address_book: list[dict[str, Any]] = field(default_factory=list)
 
 
 @contextmanager
@@ -125,16 +144,44 @@ def _copied(path: Path) -> Iterator[Path]:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _check_schema(conn: sqlite3.Connection) -> None:
+def _check_schema(
+    conn: sqlite3.Connection,
+    required: Mapping[str, tuple[str, ...]] = REQUIRED_COLUMNS,
+    label: str = "ChatStorage.sqlite",
+) -> None:
     missing: list[str] = []
-    for table, columns in REQUIRED_COLUMNS.items():
+    for table, columns in required.items():
         present = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         if not present:
             missing.append(table)
             continue
         missing += [f"{table}.{c}" for c in columns if c not in present]
     if missing:
-        raise SchemaError(f"ChatStorage.sqlite is missing: {', '.join(missing)}")
+        raise SchemaError(f"{label} is missing: {', '.join(missing)}")
+
+
+def _read_address_book(path: Path) -> list[dict[str, Any]]:
+    """Every ZWAADDRESSBOOKCONTACT row, from a temp copy (spec 2026-10-14 §5.1).
+
+    A missing or unreadable file (failed copy, corrupt or locked database) is an
+    empty book, logged without the path (public repo): names are a nicety and must
+    not block the message import (§10). A missing table or column stays a
+    SchemaError, as for the message store."""
+    if not path.exists():
+        logger.warning("whatsapp address book not found; names and LID phones degrade")
+        return []
+    try:
+        with _copied(path) as copy:
+            conn = sqlite3.connect(f"file:{copy}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            try:
+                _check_schema(conn, CONTACTS_REQUIRED_COLUMNS, CONTACTS_FILENAME)
+                return [dict(r) for r in conn.execute(ADDRESS_BOOK_SQL)]
+            finally:
+                conn.close()
+    except (sqlite3.Error, StoreUnreadableError):
+        logger.warning("whatsapp address book unreadable; names and LID phones degrade")
+        return []
 
 
 def read(
@@ -147,7 +194,10 @@ def read(
     """Copy the store, then read sessions, messages and group members from the copy.
 
     Sessions and members are always read in full; messages honour the Z_PK
-    watermark plus an optional re-scan window (§6.2). `full` ignores both."""
+    watermark plus an optional re-scan window (§6.2). `full` ignores both.
+
+    Also reads profile push names, and the sibling ContactsV2.sqlite address book
+    in full (spec 2026-10-14 §5.1)."""
     if not path.exists():
         raise StoreUnreadableError(f"{path} does not exist")
     with _copied(path) as copy:
@@ -172,8 +222,15 @@ def read(
             sessions = [dict(r) for r in conn.execute(SESSION_SQL)]
             members = [dict(r) for r in conn.execute(MEMBER_SQL)]
             max_pk = conn.execute("SELECT MAX(Z_PK) FROM ZWAMESSAGE").fetchone()[0] or 0
-            return RawStore(
-                sessions=sessions, messages=messages, members=members, max_pk=int(max_pk)
+            push_names = {r["ZJID"]: r["ZPUSHNAME"].strip() for r in conn.execute(PUSH_NAME_SQL)}
+            raw = RawStore(
+                sessions=sessions,
+                messages=messages,
+                members=members,
+                max_pk=int(max_pk),
+                push_names=push_names,
             )
         finally:
             conn.close()
+    raw.address_book = _read_address_book(path.with_name(CONTACTS_FILENAME))
+    return raw

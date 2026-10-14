@@ -9,6 +9,7 @@ or normalize_handle would be worse (§3).
 """
 
 import logging
+import re
 from typing import Any
 
 from clients.whatsapp_local import RawStore
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 GROUP_SUFFIX = "@g.us"
 LID_SUFFIX = "@lid"
+LID_PREFIX = "lid:"
 PHONE_SUFFIX = "@s.whatsapp.net"
 STATUS_JIDS = {"status@broadcast", "0@status"}
 STATUS_SUFFIX = ".status"
@@ -51,6 +53,47 @@ MEDIA_CONTENT_COLUMNS = ("ZMEDIALOCALPATH", "ZMEDIAURL", "ZVCARDSTRING")
 # The JID suffix is authoritative; ZSESSIONTYPE is only a sanity check, and a
 # disagreement is logged rather than trusted (§6.3).
 SESSION_TYPES = {"direct": {0}, "group": {1, 4}}
+
+# A padded base64 string: what ZWAMESSAGE.ZPUSHNAME actually holds (spec 2026-10-14
+# §1). Padding is required so a real name like "Mike" — valid, unpadded base64 —
+# is never mistaken for one (§5.2).
+_BLOB = re.compile(r"[A-Za-z0-9+/]+={1,2}")
+
+
+def looks_like_blob(value: str) -> bool:
+    return bool(_BLOB.fullmatch(value)) and len(value) % 4 == 0
+
+
+def resolve_display_name(
+    *, partner: str | None, address_book: str | None, profile: str | None, member: str | None
+) -> tuple[str | None, str]:
+    """First usable name by the spec 2026-10-14 §5.2 precedence, and its source.
+
+    ZPARTNERNAME, then Ben's address-book name, then the contact's own profile push
+    name, then ZCONTACTNAME. Blank and blob-shaped candidates are skipped."""
+    for value, source in (
+        (partner, "partner"),
+        (address_book, "address_book"),
+        (profile, "profile"),
+        (member, "member"),
+    ):
+        name = (value or "").strip()
+        if name and not looks_like_blob(name):
+            return name, source
+    return None, "none"
+
+
+def lid_phone(handle: str, phone_jid_by_lid: dict[str, str]) -> str | None:
+    """E.164 for a 'lid:<id>' handle whose LID is in the address book, else None
+    (spec 2026-10-14 §5.3). Normalized exactly as any phone JID is (§6.4, MX/AR rule
+    included) — never from ZPHONENUMBER, which carries locale formatting."""
+    if not handle.startswith(LID_PREFIX):
+        return None
+    phone_jid = phone_jid_by_lid.get(handle[len(LID_PREFIX) :] + LID_SUFFIX)
+    if not phone_jid:
+        return None
+    phone, _kind = jid_to_handle(phone_jid)
+    return phone if phone and not phone.startswith(LID_PREFIX) else None
 
 
 def normalize_phone_local(local: str) -> str | None:
@@ -293,14 +336,45 @@ def build_batch(raw: RawStore, *, mode: str) -> WhatsAppBatch:
                         if group_member_pk is not None
                         else None
                     ),
-                    display_name=row.get("ZPUSHNAME") or member_names.get(sender_handle),
                 )
+
+    # Address book, keyed both ways: a LID or a phone JID -> Ben's saved name, and a
+    # LID -> its phone JID (spec 2026-10-14 §5.1-§5.3). Rows missing a key are skipped.
+    book_name_by_jid: dict[str, str] = {}
+    phone_jid_by_lid: dict[str, str] = {}
+    for entry in raw.address_book:
+        lid_jid = entry.get("ZLID")
+        phone_jid = entry.get("ZWHATSAPPID")
+        full_name = entry.get("ZFULLNAME")
+        for book_jid in (lid_jid, phone_jid):
+            if book_jid and full_name:
+                book_name_by_jid.setdefault(book_jid, full_name)
+        if lid_jid and phone_jid:
+            phone_jid_by_lid.setdefault(lid_jid, phone_jid)
+
+    for handle_row in handles.values():
+        jid = handle_row.jid or ""
+        name, source = resolve_display_name(
+            partner=batch.partner_names.get(handle_row.handle),
+            address_book=book_name_by_jid.get(jid),
+            profile=raw.push_names.get(jid),
+            member=member_names.get(handle_row.handle),
+        )
+        handle_row.display_name = name
+        counter = f"names_{source}"
+        setattr(batch, counter, getattr(batch, counter) + 1)
+        if handle_row.handle.startswith(LID_PREFIX):
+            handle_row.phone = lid_phone(handle_row.handle, phone_jid_by_lid)
+        else:
+            handle_row.phone = handle_row.handle
+
+    for handle in set(handles) | {m.handle for m in batch.members}:
+        phone = lid_phone(handle, phone_jid_by_lid)
+        if phone:
+            batch.lid_phones[handle] = phone
 
     batch.handles = list(handles.values())
     return batch
-
-
-LID_PREFIX = "lid:"
 
 
 def match_handles(batch: WhatsAppBatch, people_rows: list[dict[str, Any]]) -> None:
@@ -314,6 +388,10 @@ def match_handles(batch: WhatsAppBatch, people_rows: list[dict[str, Any]]) -> No
     name is unique on the `people` side (§6.5) — a name shared by more than one
     `people` row links to nothing; nothing here requires the WhatsApp side's
     name to be unique.
+
+    By LID phone: a LID handle or member whose LID the address book maps to a
+    phone is matched by that phone, as 'lid_phone'; the name rule then never runs
+    for it (spec 2026-10-14 §5.3).
 
     A handle with a phone that does not match means "no match": falling back to
     the name there would manufacture false links. Mutates the batch in place, and
@@ -332,22 +410,33 @@ def match_handles(batch: WhatsAppBatch, people_rows: list[dict[str, Any]]) -> No
     targets = {h.handle for h in batch.handles} | {m.handle for m in batch.members}
     for handle in sorted(targets):
         if handle.startswith(LID_PREFIX):
-            name = normalize_name(batch.partner_names.get(handle))
-            candidates = ids_by_name.get(name, set()) if name else set()
-            method = "name"
+            resolved = batch.lid_phones.get(handle)
+            if resolved is not None:
+                # A known phone that does not resolve to one row is "no match";
+                # never fall back to the name (spec 2026-10-14 §5.3 step 3).
+                candidates = ids_by_phone.get(resolved, set())
+                method = "lid_phone"
+            else:
+                name = normalize_name(batch.partner_names.get(handle))
+                candidates = ids_by_name.get(name, set()) if name else set()
+                method = "name"
         else:
             candidates = ids_by_phone.get(handle, set())
             method = "phone"
         if len(candidates) == 1:
             links[handle] = (next(iter(candidates)), method)
 
-    batch.matched_by_phone = batch.matched_by_name = 0
+    batch.matched_by_phone = batch.matched_by_name = batch.matched_by_lid_phone = 0
     for handle_row in batch.handles:
         link = links.get(handle_row.handle)
         handle_row.person_id, handle_row.match_method = link if link else (None, None)
-        if link and link[1] == "phone":
+        if not link:
+            continue
+        if link[1] == "phone":
             batch.matched_by_phone += 1
-        elif link:
+        elif link[1] == "lid_phone":
+            batch.matched_by_lid_phone += 1
+        else:
             batch.matched_by_name += 1
     for member in batch.members:
         link = links.get(member.handle)

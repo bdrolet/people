@@ -286,6 +286,17 @@ def test_whatsapp_tables_exist(conn):
     }
 
 
+def test_whatsapp_handles_has_a_phone_column(conn):
+    cols = {
+        r[0]
+        for r in conn.execute(
+            "select column_name from information_schema.columns"
+            " where table_name = 'whatsapp_handles'"
+        ).fetchall()
+    }
+    assert "phone" in cols
+
+
 def test_whatsapp_handle_person_id_must_exist(conn):
     with pytest.raises(psycopg.errors.ForeignKeyViolation):
         conn.execute(
