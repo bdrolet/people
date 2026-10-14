@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from scripts import outreach_seed as script
 from services import outreach_seed as seed
 
@@ -208,10 +210,14 @@ def test_contact_for_without_names_or_company():
 
 class Conn:
     def __init__(self):
-        self.rolled_back = False
+        self.rolled_back = 0
+        self.commits = 0
 
     def rollback(self):
-        self.rolled_back = True
+        self.rolled_back += 1
+
+    def commit(self):
+        self.commits += 1
 
     def __enter__(self):
         return self
@@ -220,41 +226,164 @@ class Conn:
         return False
 
 
-def _wire(monkeypatch):
+def _wire(monkeypatch, *, linkedin_rows=(), people_rows=(), google=None, create=None):
     repo = script.outreach_repo
     monkeypatch.setattr(repo, "email_seed_rows", lambda c: [email(1), email(2)])
-    monkeypatch.setattr(repo, "linkedin_seed_rows", lambda c: [])
+    monkeypatch.setattr(repo, "linkedin_seed_rows", lambda c: list(linkedin_rows))
     monkeypatch.setattr(repo, "imessage_seed_rows", lambda c: [])
     monkeypatch.setattr(repo, "whatsapp_seed_rows", lambda c: [])
     monkeypatch.setattr(repo, "pipeline_person_ids", lambda c: {2})
-    inserted = []
+    monkeypatch.setattr(repo, "people_seed_rows", lambda c: list(people_rows))
+    monkeypatch.setattr(script.gc, "list_url_index", lambda: google or ({}, []))
+    log = {"inserted": [], "linked": [], "created": []}
     monkeypatch.setattr(
         script.outreach,
         "ensure_contact",
-        lambda c, pid, *, at, source: inserted.append((pid, source)),
+        lambda c, pid, *, at, source: log["inserted"].append((pid, source)) or 1,
     )
-    return inserted
+    monkeypatch.setattr(
+        script.linkedin_repo,
+        "link_connection",
+        lambda c, url, pid: log["linked"].append((url, pid)),
+    )
+
+    def fake_create(c, *, contact, labels):
+        log["created"].append((contact["urls"][0]["value"], labels))
+        if create:
+            create(contact)
+        return {"id": 100 + len(log["created"])}
+
+    monkeypatch.setattr(script.person_create, "create", fake_create)
+    return log
 
 
-def test_dry_run_inserts_nothing(monkeypatch):
-    inserted = _wire(monkeypatch)
+def _run(conn, *, dry_run=False):
+    return script.run(lambda: conn, now=NOW, window_days=730, min_messages=10, dry_run=dry_run)
+
+
+def test_dry_run_writes_nothing(monkeypatch):
+    log = _wire(
+        monkeypatch,
+        linkedin_rows=[li("a"), li("e", first="Dee", last="New")],
+        people_rows=[person_row(5, "Pat Linked", url="linkedin.com/in/a")],
+    )
     conn = Conn()
-    p = script.run(lambda: conn, now=NOW, window_days=730, min_messages=10, dry_run=True)
-    assert inserted == [] and conn.rolled_back and set(p.candidates) == {1}
+    r = _run(conn, dry_run=True)
+    assert log == {"inserted": [], "linked": [], "created": []}
+    assert conn.rolled_back and conn.commits == 0 and set(r.plan.candidates) == {1}
+    text = script.summary(r, dry_run=True)
+    assert "DRY RUN" in text
+    assert "link 1, create 1, possible duplicate 0, in Google not synced 0" in text
 
 
 def test_a_real_run_inserts_candidates_as_seed(monkeypatch):
-    inserted = _wire(monkeypatch)
-    script.run(lambda: Conn(), now=NOW, window_days=730, min_messages=10, dry_run=False)
-    assert inserted == [(1, "seed")]
+    log = _wire(monkeypatch)
+    r = _run(Conn())
+    assert log["inserted"] == [(1, "seed")] and r.entered == 1
 
 
-def test_summary_counts_and_lists_unlinked_people():
+def test_link_enters_the_person_without_google(monkeypatch):
+    log = _wire(
+        monkeypatch,
+        linkedin_rows=[li("a")],
+        people_rows=[person_row(5, "Pat Linked", url="linkedin.com/in/a")],
+    )
+    r = _run(Conn())
+    assert log["linked"] == [("linkedin.com/in/a", 5)]
+    assert (5, "seed") in log["inserted"]
+    assert log["created"] == [] and r.linked == 1
+
+
+def test_create_labels_links_and_commits_per_person(monkeypatch):
+    log = _wire(
+        monkeypatch,
+        linkedin_rows=[li("d", first="Dee", last="New"), li("e", first="Eve", last="Other")],
+    )
+    conn = Conn()
+    r = _run(conn)
+    assert log["created"] == [
+        ("https://www.linkedin.com/in/d", ["from-linkedin"]),
+        ("https://www.linkedin.com/in/e", ["from-linkedin"]),
+    ]
+    assert log["linked"] == [("linkedin.com/in/d", 101), ("linkedin.com/in/e", 102)]
+    assert (101, "seed") in log["inserted"] and (102, "seed") in log["inserted"]
+    assert r.created == 2 and conn.commits == 3  # the candidates, then one per person
+
+
+def test_one_failure_does_not_stop_the_run(monkeypatch):
+    def create(contact):
+        if contact["urls"][0]["value"].endswith("/d"):
+            raise RuntimeError("quota")
+
+    log = _wire(
+        monkeypatch,
+        linkedin_rows=[li("d", first="Dee", last="New"), li("e", first="Eve", last="Other")],
+        create=create,
+    )
+    conn = Conn()
+    r = _run(conn)
+    assert r.created == 1 and [name for name, _ in r.failures] == ["Dee New"]
+    assert conn.rolled_back == 1
+    assert log["linked"] == [("linkedin.com/in/e", 102)]
+    assert "Failed:" in script.summary(r, dry_run=False)
+
+
+def test_a_rerun_links_instead_of_creating(monkeypatch):
+    log = _wire(monkeypatch, linkedin_rows=[li("d", first="Dee", last="New")])
+    _run(Conn())
+    created_id = log["linked"][0][1]
+    log = _wire(
+        monkeypatch,
+        linkedin_rows=[li("d", first="Dee", last="New")],
+        people_rows=[person_row(created_id, "Dee New", url="linkedin.com/in/d")],
+    )
+    r = _run(Conn())
+    assert log["created"] == [] and log["linked"] == [("linkedin.com/in/d", created_id)]
+    assert r.linked == 1
+
+
+def test_an_orphaned_google_contact_is_reported_not_recreated(monkeypatch):
+    # Review Focus 3: the create reached Google but the commit did not.
+    log = _wire(
+        monkeypatch,
+        linkedin_rows=[li("d", first="Dee", last="New")],
+        google=(
+            {"linkedin.com/in/d": [{"resource_name": "people/c9", "display_name": "Dee New"}]},
+            [{"resource_name": "people/c9", "display_name": "Dee New"}],
+        ),
+    )
+    r = _run(Conn())
+    assert log["created"] == [] and [o.kind for o in r.plan.linkedin] == ["in_google"]
+    assert "In Google, not synced" in script.summary(r, dry_run=False)
+
+
+def test_summary_lists_possible_duplicates_and_unlinked_handles():
     p = seed.SeedPlan(
         candidates={1: {"email"}},
         already_in={2},
-        unlinked=[seed.Unlinked("linkedin", "Lee Example", "https://www.linkedin.com/in/lee")],
+        unlinked=[seed.Unlinked("whatsapp", "Lee Example", "+15550100009")],
+        linkedin=[
+            seed.LinkedInOutcome(
+                "possible_duplicate",
+                li("c", first="Jonathan", last="Smith"),
+                candidates=[6],
+                google_names=["Jon Smith"],
+            )
+        ],
     )
-    text = script.summary(p, dry_run=True)
-    assert "DRY RUN" in text and "candidates 1" in text and "already in the pipeline 1" in text
+    text = script.summary(script.SeedRun(p), dry_run=True)
+    assert "candidates 1" in text and "already in the pipeline 1" in text
+    assert "Possible duplicate" in text and "person 6" in text and "Jon Smith" in text
     assert "Lee Example" in text and "creating-person" in text
+
+
+def test_main_exits_1_when_a_create_failed(monkeypatch):
+    _wire(monkeypatch, linkedin_rows=[li("d", first="Dee", last="New")], create=_raise)
+    monkeypatch.setattr(script.otel, "setup_telemetry", lambda name: None)
+    with pytest.raises(SystemExit) as e:
+        script.main_with([], lambda: Conn())
+    assert e.value.code == 1
+
+
+def _raise(contact):
+    raise RuntimeError("quota")
