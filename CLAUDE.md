@@ -70,6 +70,7 @@ clients/
   tasks_api.py              create_task / complete_task / configured — Asana tasks via tasks-api
   inbox_api.py              create_draft (empty body) — CLI-only (scripts/outreach.py draft), so the
                              Graph rule still holds: Cloud Functions never use it
+  claude_sessions.py        `claude --bg` spawn / live ids / state file — CLI-only (outreach-sessions)
   otel.py                   OTel setup + counters (people.* instruments)
 repo/
   schema.sql                people (incl. contact-field columns), sync_state tables
@@ -86,6 +87,8 @@ services/
   outreach.py               the only stage writer: transition / advance / advance_from_event / advance_from_sent, nudge, ranks, opportunities, merge_person, queue, follow_ups, today_counts, counts, is_outreach_sender
   outreach_targets.py       pure: targets TOML → Targets (per_day, per_week, plan window, workdays)
   outreach_today.py         pure: TodayCounts + Targets → pace verdicts and the daily screen
+  outreach_session.py       one person's DB snapshot (incl. recent 1:1 message text) → the
+                             context block a per-person Claude session boots with
   outreach_sync.py          Asana task payloads, sync_events / sync_pending (durable first, retried nightly)
   outreach_report.py        pure: floors TOML, stage_verdicts, render
   outreach_seed.py          pure: warm-pool bars over raw rows → SeedPlan
@@ -135,7 +138,10 @@ scripts/
                              run does a full pass (one-time, after adoption shipped)
   fetch-env.sh               populate .env from Secret Manager + terraform.tfvars
   test-api-local.py          smoke test people-api
-  link-skills.sh             symlink searching-people/fetching-person/editing-person/creating-person/working-outreach-queue into ~/.claude/skills/
+  link-skills.sh             symlink searching-people/fetching-person/editing-person/creating-person/working-outreach-queue into ~/.claude/skills/,
+                             the outreach-launcher agent into ~/.claude/agents/, outreach-sessions into ~/.local/bin/
+  outreach_sessions.py      one background Claude session per outreach person, preloaded and prepping
+                             (`outreach-sessions` wrapper runs it under the venv) — --next N, --spawn, --idle
   import_linkedin.py        load a LinkedIn export snapshot — --dry-run, --me
   import_imessage.py        import chat.db into the imessage_* tables — --full, --dry-run, --db
   import_whatsapp.py        import ChatStorage.sqlite into the whatsapp_* tables — --full, --dry-run, --db
@@ -150,6 +156,7 @@ tests/                      one test module per unit
                              searching-people, fetching-person, editing-person, creating-person,
                              importing-linkedin, importing-imessage, importing-whatsapp,
                              working-outreach-queue
+.claude/agents/             outreach-launcher (linked into ~/.claude/agents/)
 ```
 
 ## Event schema
