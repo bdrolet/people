@@ -214,3 +214,16 @@ def test_a_company_page_is_not_an_identifier(wired):
             None, contact={"urls": [{"value": "https://www.linkedin.com/company/acme"}]}
         )
     assert wired["created_body"] is None
+
+
+def test_a_failed_label_step_reports_the_row_it_made(wired, monkeypatch):
+    # The Google contact and the row exist once apply_person ran; a failure in the
+    # labels step must not hide that (the caller commits the row and reports it).
+    def boom(conn, pid, **kw):
+        raise person_edit_real.Invalid("The operation was aborted.")
+
+    monkeypatch.setattr(person_create.person_edit, "update", boom)
+    with pytest.raises(person_create.PartiallyCreated) as e:
+        person_create.create(None, contact=PHONE_ONLY, labels=["from-linkedin"])
+    assert e.value.row["id"] == 7
+    assert "aborted" in e.value.reason

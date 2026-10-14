@@ -425,3 +425,33 @@ def test_list_url_index_normalizes_pages_and_keeps_every_contact(monkeypatch):
         (None, "names,urls,metadata", gc._RETRIES),
         ("p2", "names,urls,metadata", gc._RETRIES),
     ]
+
+
+def test_a_membership_change_retries_an_aborted_group(monkeypatch):
+    # Google answers back-to-back changes to one contact group with 409 ABORTED.
+    # Adding or removing a member is safe to repeat, so it is retried.
+    slept = []
+    monkeypatch.setattr(gc, "_sleep", slept.append)
+    req = _Req([_http_error(409, None), _http_error(503, None), {}])
+
+    class _Members:
+        def modify(self, **kw):
+            return req
+
+    class _Groups:
+        def members(self):
+            return _Members()
+
+    class _Svc:
+        def contactGroups(self):
+            return _Groups()
+
+    monkeypatch.setattr(gc, "_svc", lambda: _Svc())
+    gc.modify_group_members("contactGroups/abc", ["people/c1"], [])
+    assert len(req.calls) == 3 and slept == [1, 2]
+
+
+def test_a_create_does_not_retry_an_aborted_409(monkeypatch):
+    monkeypatch.setattr(gc, "_sleep", lambda s: pytest.fail("must not retry"))
+    with pytest.raises(HttpError):
+        gc._execute(_Req([_http_error(409, None)]), idempotent=False)

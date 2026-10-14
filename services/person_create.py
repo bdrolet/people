@@ -15,6 +15,17 @@ class Invalid(Exception):
     create a row. -> 400."""
 
 
+class PartiallyCreated(Exception):
+    """The Google contact and its row exist, but applying notes or labels failed.
+    The caller commits the row (a retry would be refused as a duplicate) and reports
+    what is missing."""
+
+    def __init__(self, row: dict, reason: str):
+        super().__init__(reason)
+        self.row = row
+        self.reason = reason
+
+
 class Duplicate(Exception):
     """The contact already exists, on either side. -> 409.
 
@@ -96,7 +107,10 @@ def create(
         )
 
     if notes is not None or labels:
-        return person_edit.update(
-            conn, row["id"], notes=notes, labels={"add": labels} if labels else None
-        )
+        try:
+            return person_edit.update(
+                conn, row["id"], notes=notes, labels={"add": labels} if labels else None
+            )
+        except Exception as e:
+            raise PartiallyCreated(row, str(e)) from e
     return row
