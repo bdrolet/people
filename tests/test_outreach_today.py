@@ -194,3 +194,22 @@ def test_to_json_is_plain_json():
     data = json.loads(to_json(t))
     assert data["day"] == "2026-10-13" and data["verdict"] == "ON PACE"
     assert data["next_up"][0]["person"]["id"] == 7
+
+
+def test_last_starts_in_one_column_whatever_the_channels():
+    all_four = _queued(pid=8, rank=2) | {
+        "channels": {
+            "email": True,
+            "imessage": True,
+            "linkedin": "linkedin.com/in/x",
+            "whatsapp": True,
+        }
+    }
+    one = _queued(pid=9, rank=None) | {
+        "channels": {"email": True, "imessage": False, "linkedin": False, "whatsapp": False}
+    }
+    t = build(_counts(next_up=[all_four, one]), TARGETS, now=_at(date(2026, 10, 14), 10))
+    lines = [line for line in render(t).splitlines() if " last 2026-09-30" in line]
+    assert len(lines) == 2
+    assert "email · imessage · linkedin · whatsapp last 2026-09-30" in lines[0]
+    assert lines[0].index(" last ") == lines[1].index(" last ")

@@ -9,6 +9,11 @@ def people(monkeypatch):
         person_lookup.people, "get", lambda c, e: {"id": 1} if e == "alice@example.com" else None
     )
     monkeypatch.setattr(
+        person_lookup.people,
+        "get_by_linkedin_url",
+        lambda c, u: {"id": 5} if u == "linkedin.com/in/jane-example" else None,
+    )
+    monkeypatch.setattr(
         person_lookup.people, "get_by_id", lambda c, i: {"id": i} if i == 7 else None
     )
     monkeypatch.setattr(
@@ -41,3 +46,12 @@ def test_a_shared_phone_is_ambiguous(people):
 def test_no_match(people, ident):
     with pytest.raises(person_lookup.NotFound):
         person_lookup.resolve(None, ident)
+
+
+def test_resolves_a_linkedin_url(people):
+    assert person_lookup.resolve(None, "https://www.linkedin.com/in/Jane-Example/")["id"] == 5
+
+
+def test_an_unknown_linkedin_url_is_not_found(people):
+    with pytest.raises(person_lookup.NotFound):
+        person_lookup.resolve(None, "linkedin.com/in/nobody-example")

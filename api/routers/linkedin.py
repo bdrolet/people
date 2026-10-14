@@ -75,6 +75,7 @@ class LinkedInImportOut(BaseModel):
     messages: int
     recommendations_given: int
     recommendations_received: int
+    matched_by_url: int
     matched_by_email: int
     matched_by_name: int
 

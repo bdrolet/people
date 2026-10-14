@@ -140,7 +140,13 @@ def test_derive_falls_back_to_the_first_organization():
 
 def test_derive_handles_missing_and_empty_payloads():
     got = cf.derive({})
-    assert got == {"phone_numbers": [], "company": None, "job_title": None, "google_fields": {}}
+    assert got == {
+        "phone_numbers": [],
+        "company": None,
+        "job_title": None,
+        "google_fields": {},
+        "linkedin_url": None,
+    }
     got = cf.derive({"phoneNumbers": [], "organizations": []})
     assert got["phone_numbers"] == [] and got["company"] is None
 
@@ -205,3 +211,67 @@ def test_identifiers_deduplicates_preserving_order():
         }
     )
     assert emails == ["a@example.com", "b@example.com"]
+
+
+# --- LinkedIn profile URL (linkedin-identity design §3, §4) -----------------
+
+JANE_URLS = [{"value": "https://www.linkedin.com/in/jane-example"}]
+A_PHONE = [{"value": "+15550100001"}]
+
+
+def test_derive_returns_the_first_profile_url():
+    got = cf.derive(
+        {
+            "urls": [
+                {"value": "https://example.com"},
+                {"value": "https://www.linkedin.com/company/acme"},
+                {"value": "https://www.linkedin.com/in/Jane-Example/"},
+                {"value": "https://www.linkedin.com/in/someone-else"},
+            ]
+        }
+    )
+    assert got["linkedin_url"] == "linkedin.com/in/jane-example"
+    assert "urls" in got["google_fields"]
+
+
+def test_derive_has_no_linkedin_url_without_a_profile():
+    assert cf.derive({"urls": [{"value": "https://example.com"}, {}]})["linkedin_url"] is None
+
+
+def test_profile_urls_normalizes_and_deduplicates():
+    contact = {
+        "urls": [
+            {"value": "https://www.linkedin.com/in/Jane-Example/"},
+            {"value": "linkedin.com/in/jane-example"},
+            {"value": "https://www.linkedin.com/company/acme"},
+            {"value": None},
+        ]
+    }
+    assert cf.profile_urls(contact) == ["linkedin.com/in/jane-example"]
+    assert cf.profile_urls({}) == []
+
+
+def test_identifier_kept_refuses_removing_the_last_url():
+    with pytest.raises(cf.IdentifierRuleError):
+        cf.check_identifier_kept(
+            None, {"urls": JANE_URLS}, {"urls": [{"value": "https://example.com"}]}
+        )
+
+
+def test_identifier_kept_refuses_clearing_the_last_phone():
+    with pytest.raises(cf.IdentifierRuleError):
+        cf.check_identifier_kept(None, {"phoneNumbers": A_PHONE}, {"phoneNumbers": []})
+
+
+def test_identifier_kept_allows_clearing_phones_while_a_url_remains():
+    cf.check_identifier_kept(
+        None, {"urls": JANE_URLS, "phoneNumbers": A_PHONE}, {"phoneNumbers": []}
+    )
+
+
+def test_identifier_kept_allows_swapping_the_url_for_a_phone():
+    cf.check_identifier_kept(None, {"urls": JANE_URLS}, {"urls": [], "phoneNumbers": A_PHONE})
+
+
+def test_identifier_kept_ignores_a_person_with_an_email():
+    cf.check_identifier_kept("a@example.com", {}, {"urls": [], "phoneNumbers": []})

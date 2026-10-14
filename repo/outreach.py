@@ -455,10 +455,18 @@ def email_seed_rows(conn: Any) -> list[dict]:
 def linkedin_seed_rows(conn: Any) -> list[dict]:
     return conn.execute(
         """
-        SELECT person_id, full_name, company, position, profile_url,
+        SELECT person_id, full_name, first_name, last_name, company, position, profile_url,
                message_count, my_message_count, last_message_at
         FROM linkedin_connections
         """
+    ).fetchall()
+
+
+def people_seed_rows(conn: Any) -> list[dict]:
+    """What the seed needs to link, or flag as a possible duplicate, an unlinked LinkedIn
+    connection (linkedin-identity design §5)."""
+    return conn.execute(
+        "SELECT id, display_name, linkedin_url, google_resource_name FROM people"
     ).fetchall()
 
 

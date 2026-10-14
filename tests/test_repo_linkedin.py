@@ -68,9 +68,13 @@ REC = LinkedInRecommendation(
 
 
 def test_names_for_matching():
-    conn = FakeConn(results=[[{"id": 1, "email": "a@b.c", "display_name": "A"}]])
-    assert people.names_for_matching(conn) == [{"id": 1, "email": "a@b.c", "display_name": "A"}]
-    assert conn.calls[0] == ("SELECT id, email, display_name FROM people", None)
+    found = [{"id": 1, "email": "a@b.c", "display_name": "A", "linkedin_url": None, "urls": None}]
+    conn = FakeConn(results=[found])
+    assert people.names_for_matching(conn) == found
+    assert conn.calls[0] == (
+        "SELECT id, email, display_name, linkedin_url, google_fields->'urls' AS urls FROM people",
+        None,
+    )
 
 
 def test_replace_snapshot_writes_person_id():
@@ -100,7 +104,7 @@ def test_replace_snapshot_order_and_params():
     assert conn_params[0] == "linkedin.com/in/alice-example" and conn_params[-1] == NOW
     msg_params = conn.calls[4][1]
     assert ["linkedin.com/in/me-example"] in msg_params and msg_params[-1] == NOW
-    assert conn.calls[6][1] == (NOW, "Basic_Export", 1, 1, 1, 0, 1, 0)
+    assert conn.calls[6][1] == (NOW, "Basic_Export", 1, 1, 1, 0, 0, 1, 0)
 
 
 def test_replace_snapshot_skips_empty_inserts():
@@ -108,7 +112,7 @@ def test_replace_snapshot_skips_empty_inserts():
     linkedin.replace_snapshot(conn, snapshot(connections=[]))
     sqls = [sql for sql, _ in conn.calls]
     assert len(sqls) == 4 and sqls[3].startswith("INSERT INTO linkedin_imports")
-    assert conn.calls[3][1] == (NOW, "Basic_Export", 0, 0, 0, 0, 1, 0)
+    assert conn.calls[3][1] == (NOW, "Basic_Export", 0, 0, 0, 0, 0, 1, 0)
 
 
 def test_replace_snapshot_batches():
@@ -216,3 +220,12 @@ def test_latest_import():
     assert linkedin.latest_import(conn) == {"source": "Basic_Export"}
     sql, _ = conn.calls[0]
     assert "FROM linkedin_imports ORDER BY id DESC LIMIT 1" in sql
+
+
+def test_link_connection_sets_person_and_method():
+    conn = FakeConn()
+    linkedin.link_connection(conn, "linkedin.com/in/jane-example", 9)
+    assert conn.calls[0] == (
+        "UPDATE linkedin_connections SET person_id = %s, match_method = 'url' WHERE profile_url = %s",
+        (9, "linkedin.com/in/jane-example"),
+    )

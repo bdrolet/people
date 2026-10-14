@@ -2,11 +2,11 @@
 name: fetching-person
 description: >
   Use when the user wants the full record for a specific person by email
-  address, phone number, or person id — labels, notes, message
+  address, phone number, LinkedIn profile URL, or person id — labels, notes, message
   counts, Google Contacts/HubSpot linkage. Use for "what do we know about X",
   "show me that contact", "pull up alice@example.com". Use after
   searching-people to open a selected result, or directly when you already
-  have the email, phone, or id.
+  have the email, phone, LinkedIn profile URL, or id.
 metadata:
   depends-on: "searching-people"
 ---
@@ -15,7 +15,8 @@ metadata:
 
 ## Prerequisites
 
-You need an email address, an E.164 phone number, or a person id (the `id`
+You need an email address, an E.164 phone number, a LinkedIn profile URL
+(`linkedin.com/in/jane-example`), or a person id (the `id`
 field on a **searching-people** result). If you only have a name, use
 **searching-people** first.
 
@@ -32,9 +33,10 @@ TOKEN=$(gcloud auth print-identity-token)   # Cloud Run IAM; your gcloud login i
 GET $BASE/people/{ident}
 ```
 
-`{ident}` is an email, an E.164 phone number, or a numeric person id — the
-API classifies which one it is (an `@` means email, a parseable phone number
-means phone, all-digits means id). Percent-encode a `+` in a phone number as
+`{ident}` is an email, a LinkedIn profile URL, an E.164 phone number, or a
+numeric person id — the API classifies which one it is, in that order (an `@`
+means email, a `linkedin.com/in/<slug>` URL means LinkedIn, a parseable phone
+number means phone, all-digits means id). Percent-encode a `+` in a phone number as
 `%2B` (a literal `+` also works, but percent-encoding is the reliable form
 in a shell double-quoted string):
 
@@ -42,9 +44,10 @@ in a shell double-quoted string):
 curl -s "$BASE/people/<email>" -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 curl -s "$BASE/people/%2B15550100001" -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 curl -s "$BASE/people/42" -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+curl -s "$BASE/people/linkedin.com%2Fin%2Fjane-example" -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 ```
 
-`404` = nobody matches — an unknown email/phone/id, or a person people
+`404` = nobody matches — an unknown email/phone/LinkedIn URL/id, or a person people
 hasn't seen mail from or to yet. Check first with **searching-people** if
 the exact identifier is uncertain.
 
@@ -55,7 +58,8 @@ of the candidate ids (`GET $BASE/people/<id>`) after confirming which person
 the user means.
 
 **Response fields:** `id`, `email` (nullable — null for a phone-only
-person), `display_name`, `first_seen`, `last_seen`, `last_contacted`,
+person), `linkedin_url` (the person's normalized LinkedIn profile,
+`linkedin.com/in/<slug>`, or `null`), `display_name`, `first_seen`, `last_seen`, `last_contacted`,
 `message_count` (inbound), `my_response_count` (Ben's replies),
 `labels` (a list), `notes`, `eligible`, `automated`, `in_google_contacts`,
 `in_hubspot`, `linkedin` (null, or the linked LinkedIn connection's
@@ -110,7 +114,7 @@ iMessage: <message_count> msgs / <my_message_count> from Ben · last <last_messa
 WhatsApp: <message_count> msgs / <my_message_count> from Ben · last <last_message_at> · groups <group_count> (sent in groups <group_message_count>) · shared groups <shared_groups>   ← only if whatsapp is set; all zero + match_method null just means group-only overlap
 ```
 
-`email` may be null (a phone-only person) — fall back to `display_name`,
+`email` may be null (a phone-only or LinkedIn-only person) — fall back to `display_name`,
 then a phone number, then `person <id>`, and drop the `mailto:` link.
 
 `notes` is the Google contact's **biography** field — `labels` are the

@@ -20,6 +20,18 @@ from tests.test_repo_linkedin import connection, snapshot
         ("linkedin.com/in/Jörg-Example", "linkedin.com/in/jörg-example"),
         ("", None),
         (None, None),
+        ("https://uk.linkedin.com/in/jane-example", "linkedin.com/in/jane-example"),
+        (
+            "https://www.linkedin.com/in/jane-example/details/experience/",
+            "linkedin.com/in/jane-example",
+        ),
+        ("https://www.linkedin.com/company/acme/", None),
+        ("linkedin.com", None),
+        ("https://www.linkedin.com/in/jane%20example", None),
+        ("https://www.linkedin.com/in/", None),
+        ("https://example.com/in/jane-example", None),
+        ("jane@example.com", None),
+        ("+15550100001", None),
     ],
 )
 def test_normalize_profile_url(raw, expected):
@@ -268,3 +280,114 @@ def test_match_people_links_by_unique_name_to_person_id():
     lx.match_people(s, [{"id": 22, "email": "alice@example.com", "display_name": "Alice Example"}])
     assert s.connections[0].person_id == 22
     assert s.connections[0].match_method == "name"
+
+
+def test_a_non_profile_sender_is_dropped_like_a_blank():
+    messages, skipped = lx._parse_messages(
+        [
+            {
+                "CONVERSATION ID": "c1",
+                "DATE": "2026-01-02 10:00:00 UTC",
+                "FROM": "Acme",
+                "SENDER PROFILE URL": "https://www.linkedin.com/company/acme",
+                "RECIPIENT PROFILE URLS": "https://www.linkedin.com/in/me-example,https://www.linkedin.com/company/acme",
+            }
+        ]
+    )
+    assert skipped == 0
+    assert messages[0].sender_profile_url is None
+    assert messages[0].recipient_profile_urls == ["linkedin.com/in/me-example"]
+
+
+def test_match_people_links_by_google_contact_url_first():
+    # No email and a different name: only the URL saved on the Google contact links
+    # them, and it beats the name match another person would otherwise get.
+    s = snapshot(connections=[connection(email=None)])
+    lx.match_people(
+        s,
+        [
+            {
+                "id": 30,
+                "email": None,
+                "display_name": "Ally E",
+                "urls": [
+                    {"value": "https://www.linkedin.com/in/Alice-Example/", "type": "LinkedIn"}
+                ],
+            },
+            {"id": 31, "email": "alice@example.com", "display_name": "Alice Example"},
+        ],
+    )
+    assert (s.connections[0].person_id, s.connections[0].match_method) == (30, "url")
+    assert (s.matched_by_url, s.matched_by_email, s.matched_by_name) == (1, 0, 0)
+
+
+def test_a_url_linked_person_is_not_reused_by_name():
+    s = snapshot(connections=[connection(), connection(slug="alice-example-2")])
+    lx.match_people(
+        s,
+        [
+            {
+                "id": 30,
+                "email": None,
+                "display_name": "Alice Example",
+                "linkedin_url": "linkedin.com/in/alice-example",
+            }
+        ],
+    )
+    links = {c.profile_url: (c.person_id, c.match_method) for c in s.connections}
+    assert links == {
+        "linkedin.com/in/alice-example": (30, "url"),
+        "linkedin.com/in/alice-example-2": (None, None),
+    }
+
+
+def test_match_people_url_claims_the_person_before_email():
+    s = snapshot(
+        connections=[
+            connection("a", full_name="A One", email="a@x.example"),
+            connection("b", full_name="B Two"),
+        ]
+    )
+    people = [
+        {
+            "id": 40,
+            "email": "a@x.example",
+            "display_name": "Z",
+            "urls": [{"value": "linkedin.com/in/b"}],
+        }
+    ]
+    lx.match_people(s, people)
+    assert [(c.person_id, c.match_method) for c in s.connections] == [(None, None), (40, "url")]
+
+
+def test_match_people_ignores_a_url_two_people_carry():
+    s = snapshot(connections=[connection(full_name="Nobody Here")])
+    url = {"value": "linkedin.com/in/alice-example"}
+    lx.match_people(
+        s,
+        [
+            {"id": 50, "email": None, "display_name": "P", "urls": [url]},
+            {"id": 51, "email": None, "display_name": "Q", "urls": [url, {"type": "home"}]},
+        ],
+    )
+    assert s.connections[0].person_id is None and s.matched_by_url == 0
+
+
+def test_match_people_links_by_people_linkedin_url():
+    # A LinkedIn-only person (linkedin-identity design §3) carries the URL in
+    # people.linkedin_url; it beats an email match on another person.
+    s = snapshot(connections=[connection(email="alice@example.com")])
+    lx.match_people(
+        s,
+        [
+            {"id": 21, "email": "alice@example.com", "display_name": "Alice Example"},
+            {
+                "id": 30,
+                "email": None,
+                "display_name": "Someone Else",
+                "linkedin_url": "linkedin.com/in/alice-example",
+            },
+        ],
+    )
+    assert (s.connections[0].person_id, s.connections[0].match_method) == (30, "url")
+    assert (s.matched_by_url, s.matched_by_email, s.matched_by_name) == (1, 0, 0)

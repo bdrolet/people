@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS linkedin_imports (
     matched_by_email         INT NOT NULL,
     matched_by_name          INT NOT NULL
 );
+ALTER TABLE linkedin_imports ADD COLUMN IF NOT EXISTS matched_by_url INT NOT NULL DEFAULT 0;
 
 -- iMessage snapshot (docs/superpowers/specs/2026-09-21-imessage-snapshot-design.md §4).
 -- Upserted incrementally by scripts/import_imessage.py; message text is stored here
@@ -496,5 +497,28 @@ DO $$ BEGIN
         ALTER TABLE outreach_events ADD CONSTRAINT outreach_events_stage_check CHECK (stage IN
             ('candidate','to_contact','briefed','replied','introduced','declined','skipped',
              'intro','conversation','proposal','signed','lost','nudge'));
+    END IF;
+END $$;
+
+-- LinkedIn profile URL as a third identifier
+-- (docs/superpowers/specs/2026-10-13-linkedin-identity-design.md §3). Normal form
+-- linkedin.com/in/<slug>, derived from the Google contact's urls; NULL for most rows.
+-- UNIQUE so two rows never claim one profile (many NULLs are fine).
+ALTER TABLE people ADD COLUMN IF NOT EXISTS linkedin_url TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS people_linkedin_url_key ON people (linkedin_url);
+
+-- people_has_an_identifier gains the URL. Replaced once: a database whose CHECK already
+-- names linkedin_url is left alone, so the file stays safe to re-run. position(), not LIKE
+-- with wildcards: this file holds no percent sign, so no driver's paramstyle can misread it.
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'people'::regclass
+          AND conname = 'people_has_an_identifier'
+          AND position('linkedin_url' in pg_get_constraintdef(oid)) > 0
+    ) THEN
+        ALTER TABLE people DROP CONSTRAINT IF EXISTS people_has_an_identifier;
+        ALTER TABLE people ADD CONSTRAINT people_has_an_identifier
+            CHECK (email IS NOT NULL OR cardinality(phone_numbers) > 0 OR linkedin_url IS NOT NULL);
     END IF;
 END $$;

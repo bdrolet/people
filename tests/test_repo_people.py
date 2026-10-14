@@ -245,3 +245,81 @@ def test_with_label_filters_by_group_and_orders_by_interaction():
     sql, params = conn.calls[0]
     assert "people_labels" in sql and "ORDER BY GREATEST" in sql
     assert params == ("contactGroups/a",)
+
+
+def test_columns_include_linkedin_url():
+    assert "linkedin_url" in people._COLUMNS
+
+
+def test_get_by_linkedin_url_selects_on_the_column():
+    conn = FakeConn(results=[[{"id": 4}]])
+    assert people.get_by_linkedin_url(conn, "linkedin.com/in/jane-example")["id"] == 4
+    sql, params = conn.calls[0]
+    assert "WHERE linkedin_url = %s" in sql and params == ("linkedin.com/in/jane-example",)
+
+
+def test_linkedin_owner_selects_on_the_column():
+    conn = FakeConn(results=[[{"id": 9}]])
+    assert people.linkedin_owner(conn, "linkedin.com/in/jane-example") == 9
+    sql, params = conn.calls[0]
+    assert sql == "SELECT id FROM people WHERE linkedin_url = %s"
+    assert params == ("linkedin.com/in/jane-example",)
+
+
+def test_linkedin_owner_returns_none_when_unclaimed():
+    assert people.linkedin_owner(FakeConn(results=[[]]), "linkedin.com/in/x") is None
+
+
+def test_update_from_google_writes_linkedin_url_even_when_null():
+    conn = FakeConn()
+    people.update_from_google(
+        conn,
+        "people/c1",
+        etag="e1",
+        display_name=None,
+        notes=None,
+        phone_numbers=["+15550100001"],
+        company=None,
+        job_title=None,
+        google_fields={},
+    )
+    sql, params = conn.calls[0]
+    assert "linkedin_url = %s" in sql
+    assert params[-1] == "people/c1" and params[-2] is None
+
+
+def test_create_from_google_inserts_and_upserts_linkedin_url():
+    conn = FakeConn(results=[[{"id": 5, "email": None}]])
+    people.create_from_google(
+        conn,
+        None,
+        display_name=None,
+        resource_name="people/c1",
+        etag=None,
+        notes=None,
+        phone_numbers=[],
+        company=None,
+        job_title=None,
+        google_fields={},
+        linkedin_url="linkedin.com/in/jane-example",
+    )
+    sql, params = conn.calls[0]
+    assert "linkedin_url = EXCLUDED.linkedin_url" in sql
+    assert "linkedin.com/in/jane-example" in params
+
+
+def test_set_google_writes_linkedin_url():
+    conn = FakeConn()
+    people.set_google(
+        conn,
+        "a@example.com",
+        resource_name="people/c1",
+        etag=None,
+        phone_numbers=[],
+        company=None,
+        job_title=None,
+        google_fields={},
+        linkedin_url="linkedin.com/in/jane-example",
+    )
+    sql, params = conn.calls[0]
+    assert "linkedin_url = %s" in sql and "linkedin.com/in/jane-example" in params

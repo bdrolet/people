@@ -135,9 +135,9 @@ def update(
                 contact_fields.check_email_addition(live, fields["emailAddresses"], row["email"])
             except contact_fields.EmailRuleError as e:
                 raise Conflict(str(e)) from e
-        if "phoneNumbers" in fields:
+        if "phoneNumbers" in fields or "urls" in fields:
             try:
-                contact_fields.check_phone_removal(row["email"], fields["phoneNumbers"])
+                contact_fields.check_identifier_kept(row["email"], live, fields)
             except contact_fields.IdentifierRuleError as e:
                 raise Conflict(str(e)) from e
     if notes is not None:

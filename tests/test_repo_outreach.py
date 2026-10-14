@@ -84,3 +84,17 @@ def test_update_contact_accepts_the_working_queue_columns():
     conn = FakeConn([[{"person_id": 1}]])
     outreach.update_contact(conn, 1, {"nudge_count": 1, "last_nudged_at": TS, "rank": None})
     assert conn.calls[0][1] == (1, TS, None, 1)
+
+
+def test_people_seed_rows_select_identity_columns():
+    conn = FakeConn()
+    outreach.people_seed_rows(conn)
+    sql, _ = conn.calls[0]
+    assert sql == "SELECT id, display_name, linkedin_url, google_resource_name FROM people"
+
+
+def test_linkedin_seed_rows_carry_first_and_last_names():
+    conn = FakeConn()
+    outreach.linkedin_seed_rows(conn)
+    sql, _ = conn.calls[0]
+    assert "first_name" in sql and "last_name" in sql

@@ -118,8 +118,9 @@ def replace_snapshot(conn: Any, s: LinkedInSnapshot, chunk: int = 500) -> None:
     conn.execute(
         """
         INSERT INTO linkedin_imports (snapshot_at, source, connections, messages,
-            recommendations_given, recommendations_received, matched_by_email, matched_by_name)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            recommendations_given, recommendations_received, matched_by_url, matched_by_email,
+            matched_by_name)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             s.snapshot_at,
@@ -128,6 +129,7 @@ def replace_snapshot(conn: Any, s: LinkedInSnapshot, chunk: int = 500) -> None:
             len(s.messages),
             given,
             len(s.recommendations) - given,
+            s.matched_by_url,
             s.matched_by_email,
             s.matched_by_name,
         ),
@@ -153,6 +155,16 @@ def repoint_person(conn: Any, from_id: int, to_id: int) -> int:
         "UPDATE linkedin_connections SET person_id = %s WHERE person_id = %s",
         (to_id, from_id),
     ).rowcount
+
+
+def link_connection(conn: Any, profile_url: str, person_id: int) -> None:
+    """Link one connection to a person by its profile URL (the seed's link and create
+    paths, linkedin-identity design §5). The next import_linkedin re-derives the same
+    link through match_people's URL step."""
+    conn.execute(
+        "UPDATE linkedin_connections SET person_id = %s, match_method = 'url' WHERE profile_url = %s",
+        (person_id, profile_url),
+    )
 
 
 def connection_for_person(conn: Any, person_id: int) -> dict | None:
@@ -247,7 +259,7 @@ def latest_import(conn: Any) -> dict | None:
     return conn.execute(
         """
         SELECT snapshot_at, source, connections, messages, recommendations_given,
-               recommendations_received, matched_by_email, matched_by_name
+               recommendations_received, matched_by_url, matched_by_email, matched_by_name
         FROM linkedin_imports ORDER BY id DESC LIMIT 1
         """
     ).fetchone()

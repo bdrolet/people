@@ -21,8 +21,9 @@ field — spec §4.3, contact-field-edits design), then refreshes the `people`
 DB row from Google and returns it. It never creates a new person — see "No
 creation" below.
 
-`{ident}` takes the same three forms as **fetching-person**: an email, an
-E.164 phone number (percent-encode `+` as `%2B`), or a numeric person id. A
+`{ident}` takes the same forms as **fetching-person**: an email, a LinkedIn
+profile URL, an E.164 phone number (percent-encode `+` as `%2B`), or a numeric
+person id. A
 phone number shared by more than one person 409s with the candidate ids
 instead of guessing — see fetching-person's `409` note.
 
@@ -177,17 +178,20 @@ see the duplicate-check query in **querying-people-db**.
 
 ## Errors
 
-- `404` — unknown email, phone, or id. Check with **searching-people** first.
+- `404` — unknown email, phone, LinkedIn URL, or id. Check with **searching-people** first.
 - `400` — an unknown/excluded `contact` key (the response names it), or a
   value that isn't an object or list of objects.
-- `409` — one of three things: the phone number resolves to more than one
+- `409` — one of these: the phone number resolves to more than one
   person (`detail` carries `{"error": "ambiguous phone", "candidates":
   [...]}`) — retry with one of the candidate ids; the person has no linked
   Google contact yet (not eligible, or eligible but people hasn't
   created/linked one — wait for the next `email_classified`/`email_sent`
   event or nightly sync, then retry); or a submitted `emailAddresses` would
   remove/change an existing address (send the full existing set, or drop
-  `emailAddresses` from the request); or a concurrent edit changed the
+  `emailAddresses` from the request); or a `urls` list that drops a
+  LinkedIn-only person's profile URL (`a person must keep an email address,
+  a phone number or a LinkedIn profile URL`) — a `urls` PATCH replaces the
+  whole list, so include the contact's existing URLs; or a concurrent edit changed the
   contact between the read and the write (stale etag) — re-fetch with
   **fetching-person** and retry.
 
