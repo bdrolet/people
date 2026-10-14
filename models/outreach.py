@@ -60,3 +60,5 @@ class TodayCounts:
     queue_depth: int
     follow_ups: list[dict]  # services.outreach.follow_up_item dicts
     next_up: list[dict]  # services.outreach.queue_item dicts, rank order
+    # services.outreach.fresh_item dicts: who on the list messaged Ben recently, newest first
+    fresh: list[dict] = field(default_factory=list)

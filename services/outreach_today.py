@@ -17,6 +17,7 @@ from services.outreach_targets import Targets
 
 TZ = ZoneInfo("America/New_York")
 MET, ON_PACE, BEHIND, NA = "met", "on pace", "behind", "n/a"
+FRESH_HOURS = 48  # how far back the Fresh section looks
 
 
 @dataclass
@@ -48,6 +49,7 @@ class Today:
     next_up: list[dict]
     nudges: list[dict]
     closes: list[dict]
+    fresh: list[dict]  # who on the list messaged Ben in the last FRESH_HOURS, newest first
 
 
 def workdays(start: date, end: date, days: frozenset[int]) -> int:
@@ -146,6 +148,7 @@ def build(counts: TodayCounts, targets: Targets, *, now: datetime) -> Today:
         next_up=counts.next_up,
         nudges=nudges,
         closes=closes,
+        fresh=counts.fresh,
     )
 
 
@@ -187,9 +190,28 @@ def _close_line(item: dict) -> str:
     )
 
 
+def _fresh_line(item: dict) -> str:
+    """`  Jamie Example     imessage · 10-14 09:00 · briefed · unanswered · "are you around?"`"""
+    when = datetime.fromisoformat(item["at"]).strftime("%m-%d %H:%M")
+    parts = [
+        item["channel"],
+        when,
+        item["stage"],
+        "answered" if item["answered"] else "unanswered",
+    ]
+    if item["text"]:
+        parts.append(f'"{item["text"]}"')
+    return f"  {_name(item['person']):<18}{' · '.join(parts)}"
+
+
 def render(t: Today) -> str:
     head = f"Outreach: {t.day:%a %Y-%m-%d}"
     lines = [f"{head:<60}{t.verdict}", ""]
+    if t.fresh:
+        # First thing on the screen: someone on the list just wrote, and a reply while
+        # it's fresh beats any brief still owed today.
+        lines += [f"Fresh: messaged you in the last {FRESH_HOURS}h (Pacific time)"]
+        lines += [_fresh_line(i) for i in t.fresh] + [""]
     if t.today_target is not None:
         parts = [f"today {t.briefs_today}/{t.today_target}"]
     else:

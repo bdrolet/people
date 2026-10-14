@@ -464,6 +464,7 @@ def test_today_renders_the_screen(monkeypatch, run, tmp_path):
         "per_day": 5,
         "plan_start": date(2026, 10, 13),
         "plan_end": date(2026, 11, 21),
+        "fresh_since": NOW - timedelta(hours=48),
     }
 
 

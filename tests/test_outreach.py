@@ -967,3 +967,73 @@ def test_people_named_trims_and_skips_a_blank_name(repo):
     repo.pipeline_people_named = named
     assert svc.people_named(None, "  jo ") == [{"id": 1, "display_name": "Jo Example"}]
     assert svc.people_named(None, "   ") == [] and seen == ["jo"]
+
+
+FRESH_ROW = {
+    "person_id": 7,
+    "display_name": "Jamie Example",
+    "stage": "briefed",
+    "channel": "imessage",
+    "at": datetime(2026, 10, 14, 13, 0, tzinfo=UTC),
+    "text": "are you\naround?",
+    "answered": False,
+}
+
+
+class _QuietRepo:
+    def __init__(self, fresh_rows):
+        self.fresh_rows, self.seen = fresh_rows, []
+
+    def first_briefs_between(self, conn, *, since, until):
+        return 0
+
+    nudges_between = first_briefs_between
+
+    def stage_count(self, conn, stage):
+        return 0
+
+    def follow_ups(self, conn, *, today):
+        return []
+
+    def queue(self, conn, *, stage, limit):
+        return []
+
+    def fresh_inbound(self, conn, *, since):
+        self.seen.append(since)
+        return self.fresh_rows
+
+
+def _today(**kw):
+    return svc.today_counts(
+        None,
+        today=date(2026, 10, 14),
+        per_day=5,
+        plan_start=date(2026, 10, 13),
+        plan_end=date(2026, 11, 21),
+        **kw,
+    )
+
+
+def test_today_counts_carries_fresh_messages(monkeypatch):
+    email = FRESH_ROW | {"person_id": 8, "display_name": None, "channel": "email", "text": None}
+    repo = _QuietRepo([FRESH_ROW, email, FRESH_ROW | {"person_id": 9, "text": "x" * 300}])
+    monkeypatch.setattr(svc, "outreach_repo", repo)
+    since = datetime(2026, 10, 12, 13, tzinfo=UTC)
+    counts = _today(fresh_since=since)
+    assert repo.seen == [since]
+    assert counts.fresh[0] == {
+        "person": {"id": 7, "display_name": "Jamie Example"},
+        "stage": "briefed",
+        "channel": "imessage",
+        "at": "2026-10-14T06:00:00-07:00",  # Pacific: Ben reads Fresh in his own time
+        "text": "are you around?",  # whitespace flattened
+        "answered": False,
+    }
+    assert counts.fresh[1]["text"] is None and counts.fresh[1]["person"]["display_name"] is None
+    assert counts.fresh[2]["text"] == "x" * svc.FRESH_TEXT_MAX + "…"
+
+
+def test_today_counts_without_a_window_reads_no_messages(monkeypatch):
+    repo = _QuietRepo([FRESH_ROW])
+    monkeypatch.setattr(svc, "outreach_repo", repo)
+    assert _today().fresh == [] and repo.seen == []
