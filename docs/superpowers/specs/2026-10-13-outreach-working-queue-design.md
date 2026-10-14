@@ -389,8 +389,13 @@ not compete with `logging-job-search` ("heard back from Acme") or
 - Briefs and email nudges go from the consulting identity (the first entry of
   `OUTREACH_FROM_ADDRESSES`). Mail from the default sender (inbox-api's
   `DEFAULT_FROM_ADDRESS`) never counts.
-- The skill never sends. Email is left as a draft, and Ben sends other
-  channels himself.
+- **Amended 2026-10-13:** the skill never drafts a message, so the
+  `email-builder` dispatches and the "write the text for Ben" steps in §7.3 are
+  withdrawn. Ben writes every brief, nudge and reply himself; the skill supplies
+  research and talking points only. This follows
+  `~/src/consulting/docs/business_strategy.md`: AI-drafted warm messages are
+  detectable and underperform hand-written notes.
+- The skill never sends.
 - A non-email brief, nudge or reply is recorded only after Ben confirms it
   happened. Anything email proves is never recorded by hand.
 - Closing is always Ben's call.

@@ -21,7 +21,8 @@ TEXT_MAX = 300
 CHANNEL_TITLES = {"imessage": "iMessage", "whatsapp": "WhatsApp", "linkedin": "LinkedIn"}
 PREP_PROMPT = (
     "Prep this outreach brief now: follow the working-outreach-queue skill's \"Prep a "
-    'brief" procedure for the person in your system prompt, then wait for Ben.'
+    'brief" procedure for the person in your system prompt and give Ben talking '
+    "points — never draft the message; Ben writes it himself. Then wait for Ben."
 )
 
 
@@ -157,5 +158,10 @@ def context_block(snap: dict, *, today: date) -> str:
         lines += [_message_line(m, them) for m in messages]
     if not any_messages:
         lines += ["", "No direct messages on file."]
-    lines += ["", "Work only this person."]
+    lines += [
+        "",
+        "Never draft the message. Ben writes every brief, nudge and reply himself; "
+        "give him research and talking points, and record nothing until he says he "
+        "sent it. Work only this person.",
+    ]
     return "\n".join(lines)

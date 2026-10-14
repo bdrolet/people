@@ -140,6 +140,15 @@ def test_prep_prompt_points_at_the_skill_procedure():
     assert "working-outreach-queue" in svc.PREP_PROMPT and "Prep a brief" in svc.PREP_PROMPT
 
 
+def test_prep_prompt_and_context_forbid_drafting_the_message(monkeypatch):
+    """Ben writes every outreach message himself (consulting business_strategy.md);
+    sessions give talking points only."""
+    assert "talking points" in svc.PREP_PROMPT and "never draft" in svc.PREP_PROMPT
+    _patch(monkeypatch, FakeRepos())
+    block = svc.context_block(svc.snapshot(None, 388, limit=60), today=date(2026, 10, 13))
+    assert "Never draft the message" in block
+
+
 def test_people_api_never_reads_message_text():
     """Message text goes only into a local session's prompt; people-api must never
     reach the functions that select it (iMessage and WhatsApp §7)."""
