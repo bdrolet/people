@@ -5,7 +5,9 @@ conversation:
 - doc plus session resume;
 - the docs are machine-maintained;
 - they live in a new My Drive folder, `Consulting/Outreach`;
-- a short spec comes before the build.
+- a short spec comes before the build;
+- the doc link is stored in `outreach_contacts.doc_url` (D8);
+- the doc carries the raw messages (D6).
 
 **Builds on:** PR #26 (`outreach-sessions`, the `outreach-launcher` agent, and
 `working-outreach-queue`'s Prep a brief procedure), and the docs repo's filing
@@ -33,8 +35,9 @@ then lives only in Claude's local transcript, which:
 | D3 | **Every reload refreshes.** The session re-pulls the DB snapshot and email, works out what changed since the doc's last log entry, updates the doc, and rewrites the talking points for the next step. | Ben chose "reopen and refresh". Between visits the person moves (brief → nudge → reply), so stale talking points would mislead. |
 | D4 | **Outreach docs are machine-maintained.** Sessions write them without asking first. This is an explicit exception to `editing-doc`'s confirm-every-write rule, for these docs only. | Ben's choice. A reload or outcome that waits for a yes defeats the point. |
 | D5 | **Docs live in a new private My Drive folder, `Consulting/Outreach`,** blessed with a `_FOLDER.md`. | Filing rule 3: relationship material stays in My Drive. Rule 5: a new document type gets its own blessed folder. |
-| D6 | **The doc holds summaries of private threads, never raw message text.** | Message text never leaves the machine today (iMessage and WhatsApp §7). A summary in Ben's own Drive is the smallest step that makes the record durable. |
+| D6 | **The doc also holds the raw messages:** the most recent `DOC_MESSAGES = 100` per channel (iMessage, WhatsApp, LinkedIn), oldest first, in a `## Messages` section regenerated from the DB on every write. | Ben asked for it (2026-10-14). The text goes into his private My Drive (D5). It also becomes searchable through docs-api's index (`searching-docs`), which is a deliberate change from iMessage and WhatsApp §7, where message text never left the machine. The cap keeps a large thread (Tesa's, at 3,533 messages) under docs-api's live-export size limit (413), since every write replaces the whole doc. |
 | D7 | **No drafted messages, in the doc or anywhere.** Talking points only. | Ben's standing rule (`business_strategy.md`; memory `outreach-talking-points-not-drafts`). |
+| D8 | **The doc link is stored in a new `outreach_contacts.doc_url` column.** `services/outreach.py` writes it, and it's the only record of which doc belongs to whom. | Ben asked for the link in the DB and chose the pipeline table: it sits beside the rest of the outreach record, has a single writer, and cascades with the person. The `people` columns all come from Google or are counters, so this doesn't belong there. |
 
 ## 3. The doc
 
@@ -50,7 +53,7 @@ people id: <id> · stage: <stage> · last updated: <YYYY-MM-DD>
 <role, company, life outside work, how Ben knows them — rewritten as facts change>
 
 ## History
-<summary of past threads, favors both ways, open loops — never raw message text>
+<summary of past threads, favors both ways, open loops>
 
 ## Log
 - 2026-10-14 · prepped brief (iMessage)
@@ -62,7 +65,20 @@ people id: <id> · stage: <stage> · last updated: <YYYY-MM-DD>
 
 ## Ben's notes
 <Ben's own; sessions never edit this section>
+
+## Messages (last 100 per channel, regenerated <YYYY-MM-DD>)
+### iMessage
+2025-12-01 23:30 Ben: …
+2025-12-01 23:31 Jonah: …
+### WhatsApp
+### LinkedIn
 ```
+
+`## Messages` comes from the DB (`services/outreach_session.py::snapshot`,
+with `limit = DOC_MESSAGES`), never from the session's own judgment. It's
+rendered by a pure function, `services/outreach_doc.py::render_messages`. Lines
+carry a date and time, and nothing is truncated (unlike the 300-character cap
+in the session context). An empty channel is omitted.
 
 ### Write protocol
 
@@ -74,6 +90,12 @@ anything:
    - Keep every existing `## Log` line and append new ones.
    - Rewrite only the header line, `Who they are`, `History` and `Talking
      points`.
+   - Regenerate `## Messages` from the DB.
+
+   The merge and the message render are code
+   (`outreach-sessions --write-doc <person>`, reading the session's new
+   sections from a file). Sessions don't hand-assemble the doc, so the
+   preservation rules can't be skipped.
 3. **Replace with a version check.** PUT with `if_version` set to that version.
 4. **On a 409** (Ben edited the doc meanwhile), re-fetch, re-merge and retry
    once. If it still conflicts, stop and tell Ben. Never blind-overwrite.
@@ -93,11 +115,12 @@ anything:
 ### State file
 
 `~/.claude/outreach-sessions.json` becomes a record per person, which is never
-dropped when a session closes:
+dropped when a session closes. It only tracks sessions; the doc link is in the
+DB (D8):
 
 ```json
 {"388": {"session_id": "<full uuid>", "cwd": "/Users/ben/src/people",
-         "name": "outreach: Jonah Stiennon", "doc_id": "<drive id or null>"}}
+         "name": "outreach: Jonah Stiennon"}}
 ```
 
 An older entry holding a bare short id is upgraded on read: its full uuid comes
@@ -119,7 +142,7 @@ found".
 |---|---|---|
 | Recorded session is live (`claude agents --json --all`) | nothing | `already open <id>` |
 | Recorded session closed, transcript exists | `claude --bg --resume <uuid>` from the recorded cwd, prompt = `RELOAD_PROMPT` | `resumed <id>` |
-| No record, or transcript gone | fresh `claude --bg` with the snapshot, **plus the doc's content when `doc_id` is set**, prompt = `PREP_PROMPT` (or `RELOAD_PROMPT` when a doc exists) | `spawned <id>` |
+| No record, or transcript gone | fresh `claude --bg` with the snapshot, **plus the doc's content when `doc_url` is set**, prompt = `PREP_PROMPT` (or `RELOAD_PROMPT` when a doc exists) | `spawned <id>` |
 
 `--idle` skips the prompt. The dry run (no `--spawn`) prints `resume` or
 `spawn` per row.
@@ -136,12 +159,22 @@ found".
 
 Like `PREP_PROMPT`, it says never to draft the message.
 
-### Recording the doc id
+### Recording the doc link (D8)
 
-The session prints the doc id after creating it, and records it with
-`outreach-sessions --set-doc <id> <doc_id>`. That's a small subcommand that
-writes `doc_id` into the state file. The state file stays the only place the
-mapping lives.
+- **Schema:** `ALTER TABLE outreach_contacts ADD COLUMN IF NOT EXISTS doc_url
+  TEXT;` in `repo/schema.sql`. It's added to `_CONTACT_COLUMNS` and
+  `_CONTACT_UPDATABLE`.
+- **Writer:** `services/outreach.py::set_doc(conn, person_id, url) -> dict`.
+  It refuses a person with no pipeline row (`NotInPipeline`) and accepts only
+  a `https://docs.google.com/document/d/<id>` URL.
+- **CLI:** `outreach doc <person> <url>`. After creating the doc, the session
+  runs it with the `web_url` docs-api returned.
+- **Reads:**
+  - `doc_url` is added to `_pipeline_rows`, `queue_item` (so `queue --json` and
+    `today --json` carry it) and the session context block;
+  - `outreach-sessions` reads it from the snapshot to fetch the doc on a fresh
+    spawn, using the doc id parsed from the URL;
+  - `outreach queue` shows a `doc` column (✓ when set).
 
 ## 5. The folder (docs repo)
 
@@ -183,10 +216,14 @@ hard-codes a Drive id.
   - closed with a transcript → resumed, with `RELOAD_PROMPT` and the recorded
     cwd;
   - transcript gone → fresh spawn, with the doc content in the context when
-    `doc_id` is set;
+    `doc_url` is set;
   - name resolution: a session name, a pipeline name, ambiguous, not found;
-  - `--set-doc`;
   - a closed session no longer frees the person.
+- **`tests/test_outreach.py` and `tests/test_outreach_cli.py`:**
+  - `set_doc` stores the URL;
+  - it refuses a non-Docs URL and someone not in the pipeline;
+  - `outreach doc` round-trips;
+  - `queue_item` carries `doc_url`.
 - **`tests/test_outreach_session.py`:**
   - `context_block` includes the doc section when one is given;
   - `RELOAD_PROMPT` names the steps and forbids drafting.
@@ -196,14 +233,26 @@ hard-codes a Drive id.
   - log lines are kept and appended;
   - the other sections are replaced;
   - it doesn't break when `existing` has unexpected extra sections (they're
-    kept, placed before `Ben's notes`).
-- **Real-Postgres:** none new. No schema change.
+    kept, placed before `Ben's notes`);
+  - `## Messages` is regenerated, not merged: an edit Ben made there is
+    overwritten, and the doc says so in that section's heading;
+  - `render_messages` respects the per-channel cap, ordering and date/time
+    format, and omits empty channels.
+- **`--write-doc`, against fake docs-api calls:**
+  - creates the doc, then calls `set_doc`;
+  - on update: GET, merge, then PUT with `if_version`;
+  - a 409 triggers one re-fetch, re-merge and retry, then stops.
+- **Real-Postgres:**
+  - the migration runs twice cleanly;
+  - `doc_url` round-trips through `update_contact` and `pipeline_row`.
 
 ## 8. Rollout
 
 1. Merge the docs-repo PR (§5) and run `scripts/filing.py bootstrap` there.
    Confirm `GET /folders` lists `consulting-outreach`.
-2. Merge this PR. In `~/src/people` on `main`, run `scripts/link-skills.sh`.
+2. Run `scripts/migrate_db.py` against production **before merging**: the new
+   code reads `outreach_contacts.doc_url`. Then merge this PR, and in
+   `~/src/people` on `main` run `scripts/link-skills.sh`.
 3. Backfill today's five sessions (Jonah, Ahmed, Paul, Coki, Anshu) into the
    new state format. Each one's doc is created on its next reload.
 4. Try `outreach-sessions Jonah --spawn` and check that the row says
