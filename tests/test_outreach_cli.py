@@ -553,3 +553,62 @@ def test_followups_prints_the_classification(monkeypatch, run):
     monkeypatch.setattr(cli.outreach, "follow_ups", lambda c, today: [item])
     code, out, _ = run("followups")
     assert code == 0 and "nudge 2" in out and "switch to imessage" in out
+
+
+DOC = "https://docs.google.com/document/d/doc7/edit"
+
+
+def test_doc_records_the_link(monkeypatch, run):
+    seen = {}
+    monkeypatch.setattr(
+        cli.outreach, "set_doc", lambda c, pid, url: seen.update(pid=pid, url=url) or {}
+    )
+    code, out, _ = run("doc", "alice@example.com", DOC)
+    assert code == 0 and seen == {"pid": 7, "url": DOC}
+    assert f"doc recorded ({DOC})" in out and run.conn.log == ["commit"]
+
+
+def test_doc_clear(monkeypatch, run):
+    seen = {}
+    monkeypatch.setattr(cli.outreach, "set_doc", lambda c, pid, url: seen.update(url=url) or {})
+    code, out, _ = run("doc", "alice@example.com", "--clear")
+    assert code == 0 and seen == {"url": None} and "doc link cleared" in out
+
+
+@pytest.mark.parametrize(
+    "argv", [("doc", "alice@example.com"), ("doc", "alice@example.com", DOC, "--clear")]
+)
+def test_doc_needs_a_link_or_clear(run, argv):
+    code, _, err = run(*argv)
+    assert code == 1 and "--clear" in err
+
+
+def test_doc_refuses_a_non_docs_link(monkeypatch, run):
+    def set_doc(c, pid, url):
+        raise svc.InvalidDocUrl(f"not a Google Docs link: {url}")
+
+    monkeypatch.setattr(cli.outreach, "set_doc", set_doc)
+    code, _, err = run("doc", "alice@example.com", "https://example.com/x")
+    assert code == 1 and "not a Google Docs link" in err and run.conn.log == ["rollback"]
+
+
+def test_queue_table_marks_people_with_a_doc(monkeypatch, run):
+    def item(pid, name, doc_url):
+        return {
+            "person": {"id": pid, "email": None, "display_name": name, "company": None},
+            "rank": None,
+            "last_interaction": None,
+            "channels": {"email": True},
+            "follow_up_on": None,
+            "has_lead": False,
+            "doc_url": doc_url,
+        }
+
+    items = [item(7, "Alice Example", DOC), item(8, "Bob Example", None)]
+    monkeypatch.setattr(cli.outreach, "queue", lambda c, *, stage, limit: items)
+    monkeypatch.setattr(cli.outreach, "shared_briefs", lambda c: [])
+    code, out, _ = run("queue")
+    lines = out.splitlines()
+    assert code == 0 and "doc" in lines[0]
+    assert "✓" in next(line for line in lines if "Alice" in line)
+    assert "✓" not in next(line for line in lines if "Bob" in line)
