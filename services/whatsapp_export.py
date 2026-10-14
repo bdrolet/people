@@ -9,6 +9,7 @@ or normalize_handle would be worse (§3).
 """
 
 import logging
+import re
 from typing import Any
 
 from clients.whatsapp_local import RawStore
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 GROUP_SUFFIX = "@g.us"
 LID_SUFFIX = "@lid"
+LID_PREFIX = "lid:"
 PHONE_SUFFIX = "@s.whatsapp.net"
 STATUS_JIDS = {"status@broadcast", "0@status"}
 STATUS_SUFFIX = ".status"
@@ -51,6 +53,47 @@ MEDIA_CONTENT_COLUMNS = ("ZMEDIALOCALPATH", "ZMEDIAURL", "ZVCARDSTRING")
 # The JID suffix is authoritative; ZSESSIONTYPE is only a sanity check, and a
 # disagreement is logged rather than trusted (§6.3).
 SESSION_TYPES = {"direct": {0}, "group": {1, 4}}
+
+# A padded base64 string: what ZWAMESSAGE.ZPUSHNAME actually holds (spec 2026-10-14
+# §1). Padding is required so a real name like "Mike" — valid, unpadded base64 —
+# is never mistaken for one (§5.2).
+_BLOB = re.compile(r"[A-Za-z0-9+/]+={1,2}")
+
+
+def looks_like_blob(value: str) -> bool:
+    return bool(_BLOB.fullmatch(value)) and len(value) % 4 == 0
+
+
+def resolve_display_name(
+    *, partner: str | None, address_book: str | None, profile: str | None, member: str | None
+) -> tuple[str | None, str]:
+    """First usable name by the spec 2026-10-14 §5.2 precedence, and its source.
+
+    ZPARTNERNAME, then Ben's address-book name, then the contact's own profile push
+    name, then ZCONTACTNAME. Blank and blob-shaped candidates are skipped."""
+    for value, source in (
+        (partner, "partner"),
+        (address_book, "address_book"),
+        (profile, "profile"),
+        (member, "member"),
+    ):
+        name = (value or "").strip()
+        if name and not looks_like_blob(name):
+            return name, source
+    return None, "none"
+
+
+def lid_phone(handle: str, phone_jid_by_lid: dict[str, str]) -> str | None:
+    """E.164 for a 'lid:<id>' handle whose LID is in the address book, else None
+    (spec 2026-10-14 §5.3). Normalized exactly as any phone JID is (§6.4, MX/AR rule
+    included) — never from ZPHONENUMBER, which carries locale formatting."""
+    if not handle.startswith(LID_PREFIX):
+        return None
+    phone_jid = phone_jid_by_lid.get(handle[len(LID_PREFIX) :] + LID_SUFFIX)
+    if not phone_jid:
+        return None
+    phone, _kind = jid_to_handle(phone_jid)
+    return phone if phone and not phone.startswith(LID_PREFIX) else None
 
 
 def normalize_phone_local(local: str) -> str | None:
@@ -293,14 +336,45 @@ def build_batch(raw: RawStore, *, mode: str) -> WhatsAppBatch:
                         if group_member_pk is not None
                         else None
                     ),
-                    display_name=row.get("ZPUSHNAME") or member_names.get(sender_handle),
                 )
+
+    # Address book, keyed both ways: a LID or a phone JID -> Ben's saved name, and a
+    # LID -> its phone JID (spec 2026-10-14 §5.1-§5.3). Rows missing a key are skipped.
+    book_name_by_jid: dict[str, str] = {}
+    phone_jid_by_lid: dict[str, str] = {}
+    for entry in raw.address_book:
+        lid_jid = entry.get("ZLID")
+        phone_jid = entry.get("ZWHATSAPPID")
+        full_name = entry.get("ZFULLNAME")
+        for key in (lid_jid, phone_jid):
+            if key and full_name:
+                book_name_by_jid.setdefault(key, full_name)
+        if lid_jid and phone_jid:
+            phone_jid_by_lid.setdefault(lid_jid, phone_jid)
+
+    for handle_row in handles.values():
+        jid = handle_row.jid or ""
+        name, source = resolve_display_name(
+            partner=batch.partner_names.get(handle_row.handle),
+            address_book=book_name_by_jid.get(jid),
+            profile=raw.push_names.get(jid),
+            member=member_names.get(handle_row.handle),
+        )
+        handle_row.display_name = name
+        counter = f"names_{source}"
+        setattr(batch, counter, getattr(batch, counter) + 1)
+        if handle_row.handle.startswith(LID_PREFIX):
+            handle_row.phone = lid_phone(handle_row.handle, phone_jid_by_lid)
+        else:
+            handle_row.phone = handle_row.handle
+
+    for handle in set(handles) | {m.handle for m in batch.members}:
+        phone = lid_phone(handle, phone_jid_by_lid)
+        if phone:
+            batch.lid_phones[handle] = phone
 
     batch.handles = list(handles.values())
     return batch
-
-
-LID_PREFIX = "lid:"
 
 
 def match_handles(batch: WhatsAppBatch, people_rows: list[dict[str, Any]]) -> None:
