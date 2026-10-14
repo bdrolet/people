@@ -20,11 +20,17 @@ def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
 
 
-def spawn_argv(name: str, context: str, prompt: str | None = None) -> list[str]:
+def _model(model: str | None) -> list[str]:
+    return ["--model", model] if model else []
+
+
+def spawn_argv(
+    name: str, context: str, prompt: str | None = None, *, model: str | None = None
+) -> list[str]:
     """`claude --bg` picks the session id itself (it ignores --session-id), so the
     id is read back from its output. With a prompt the session starts working at
     once; without one it idles at zero cost until someone attaches."""
-    argv = ["claude", "--bg", "-n", name, "--append-system-prompt", context]
+    argv = ["claude", "--bg", "-n", name, *_model(model), "--append-system-prompt", context]
     return [*argv, prompt] if prompt else argv
 
 
@@ -39,28 +45,43 @@ def parse_session_id(output: str) -> str | None:
 
 
 def spawn(
-    name: str, context: str, *, cwd: Path, prompt: str | None = None, runner: Runner = _run
+    name: str,
+    context: str,
+    *,
+    cwd: Path,
+    prompt: str | None = None,
+    model: str | None = None,
+    runner: Runner = _run,
 ) -> str | None:
-    """Start a background session in `cwd`; return the short id `claude attach` takes."""
-    result = runner(spawn_argv(name, context, prompt), cwd)
+    """Start a background session in `cwd`; return the short id `claude attach` takes.
+    Without `model` the session runs on the user's default Claude Code model."""
+    result = runner(spawn_argv(name, context, prompt, model=model), cwd)
     return parse_session_id(result.stdout) if result.returncode == 0 else None
 
 
-def resume_argv(session_id: str, name: str, prompt: str | None = None) -> list[str]:
+def resume_argv(
+    session_id: str, name: str, prompt: str | None = None, *, model: str | None = None
+) -> list[str]:
     """`-n` again on resume: without it Claude renames the session after its prompt."""
-    argv = ["claude", "--bg", "--resume", session_id, "-n", name]
+    argv = ["claude", "--bg", "--resume", session_id, "-n", name, *_model(model)]
     return [*argv, prompt] if prompt else argv
 
 
 def resume(
-    session_id: str, name: str, *, cwd: Path, prompt: str | None = None, runner: Runner = _run
+    session_id: str,
+    name: str,
+    *,
+    cwd: Path,
+    prompt: str | None = None,
+    model: str | None = None,
+    runner: Runner = _run,
 ) -> str | None:
     """Bring an exited session back under its own id. `cwd` must be the directory it last
     ran in (transcript_cwd): the transcript is looked up under that directory's project.
     An exited session comes back under its own id, so the short id stands even if no
     `backgrounded` line prints; a session ended with `claude stop` comes back under a new
     id, which the printed line carries — the caller records whichever id is running."""
-    result = runner(resume_argv(session_id, name, prompt), cwd)
+    result = runner(resume_argv(session_id, name, prompt, model=model), cwd)
     if result.returncode != 0:
         return None
     return parse_session_id(result.stdout) or session_id[:SHORT_ID]

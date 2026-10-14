@@ -39,6 +39,7 @@ class Conn:
 
 @pytest.fixture
 def run(monkeypatch, tmp_path):
+    monkeypatch.delenv("OUTREACH_SESSION_MODEL", raising=False)
     state_path = tmp_path / "sessions.json"
     projects = tmp_path / "projects"
     projects.mkdir()
@@ -55,14 +56,16 @@ def run(monkeypatch, tmp_path):
             return None
         return {"pid": pid, "limit": limit, "item": {"doc_url": _run.doc_urls.get(pid)}}
 
-    def spawn(name, context, *, cwd, prompt=None):
+    def spawn(name, context, *, cwd, prompt=None, model=None):
         spawned.append({"name": name, "context": context, "prompt": prompt, "cwd": cwd})
+        _run.models.append(model)
         short = f"id{len(spawned):06d}"
         _run.live[f"{short}-0000-4000-8000-000000000000"] = str(cwd)
         return short
 
-    def resume(session_id, name, *, cwd, prompt=None):
+    def resume(session_id, name, *, cwd, prompt=None, model=None):
         resumed.append({"session_id": session_id, "name": name, "cwd": cwd, "prompt": prompt})
+        _run.models.append(model)
         if _run.resume_as:  # a stopped session comes back under a new id
             _run.live[_run.resume_as] = str(cwd)
             return _run.resume_as[:8]
@@ -97,6 +100,7 @@ def run(monkeypatch, tmp_path):
     _run.spawned, _run.resumed, _run.named = spawned, resumed, named
     _run.live, _run.doc_urls, _run.named_result = {}, {}, []
     _run.resume_as = None
+    _run.models = []
     _run.state_path, _run.projects = state_path, projects
     return _run
 
@@ -406,3 +410,16 @@ def test_a_resume_under_a_new_id_records_the_new_id(run, tmp_path):
     assert json.loads(run.state_path.read_text())["388"]["session_id"] == new
     code, out, _ = run("388", "--spawn")
     assert "already open cd34ef56" in out and len(run.resumed) == 1
+
+
+def test_sessions_run_on_opus_unless_configured(run, monkeypatch, tmp_path):
+    run("388", "--spawn")
+    _record(run, {"session_id": SID})
+    run.live.clear()
+    _transcript(run, SID, tmp_path)
+    run("388", "--spawn")
+    assert run.models == ["opus", "opus"]  # spawn, then resume
+    monkeypatch.setenv("OUTREACH_SESSION_MODEL", "sonnet")
+    run.live.clear()
+    run("388", "--spawn")
+    assert run.models[-1] == "sonnet"
