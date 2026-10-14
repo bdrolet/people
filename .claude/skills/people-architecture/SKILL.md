@@ -149,7 +149,7 @@ connects through the Cloud SQL Python Connector with pg8000
 (`CLOUD_SQL_CONNECTION_NAME` set); local uses direct psycopg3
 (`POSTGRES_HOST`). See `querying-people-db`.
 
-## Identity: `id`, `email`, and phone (2026-09-24 design)
+## Identity: `id`, `email`, phone, and LinkedIn URL (2026-09-24 design)
 
 `people.id` (`BIGSERIAL`) is the primary key; `email` is nullable and
 unique (`phone_numbers`, `text[]`, already existed). A person is addressed

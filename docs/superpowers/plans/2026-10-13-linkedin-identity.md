@@ -2765,7 +2765,7 @@ Not for an agent to run unattended. Listed so the PR carries them (spec §8).
    .venv/bin/python scripts/clear_sync_token.py
    gcloud scheduler jobs run people-sync --location us-central1
    ```
-   Then check the run's counts with `fetch-people-logs`. `linkedin_conflict` should be 0. Any other number is the count of Google contacts sharing a profile URL; merge those in Google before step 6.
+   Then check the run's counts with `fetch-people-logs`. `linkedin_conflict` counts only contacts the conflict left with no identifier (a contact that keeps an email or phone has a claimed URL dropped silently), so 0 does not prove no URL is shared. Merge any it reports in Google before step 6.
 4. **Re-import LinkedIn** (optional; it keeps the snapshot's match counts truthful):
    ```bash
    .venv/bin/python scripts/import_linkedin.py <latest export>
@@ -2781,4 +2781,4 @@ Not for an agent to run unattended. Listed so the PR carries them (spec §8).
    .venv/bin/python scripts/outreach_seed.py
    .venv/bin/python scripts/outreach.py queue --stage candidate
    ```
-   The candidate count should grow by the link and create counts. Then reassess with the `working-outreach-queue` skill. New contacts carry the `from-linkedin` label in Google Contacts.
+   The candidate count should grow by the `entered` count plus the people newly linked or created who weren't already in the pipeline. Then reassess with the `working-outreach-queue` skill. New contacts carry the `from-linkedin` label in Google Contacts.

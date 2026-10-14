@@ -21,8 +21,9 @@ field — spec §4.3, contact-field-edits design), then refreshes the `people`
 DB row from Google and returns it. It never creates a new person — see "No
 creation" below.
 
-`{ident}` takes the same three forms as **fetching-person**: an email, an
-E.164 phone number (percent-encode `+` as `%2B`), or a numeric person id. A
+`{ident}` takes the same forms as **fetching-person**: an email, a LinkedIn
+profile URL, an E.164 phone number (percent-encode `+` as `%2B`), or a numeric
+person id. A
 phone number shared by more than one person 409s with the candidate ids
 instead of guessing — see fetching-person's `409` note.
 

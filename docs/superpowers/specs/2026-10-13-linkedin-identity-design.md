@@ -314,8 +314,10 @@ deploys in step 2.
    The §5 Google index already stops the seed from creating duplicates of
    these. This pass makes them `link` instead of `in Google, not synced`.
    Check the run's counts in the logs (`fetch-people-logs`): `linkedin_conflict`
-   should be 0. Any other number is the count of Google contacts sharing a
-   profile URL, which is worth merging in Google before step 6.
+   counts only contacts the conflict left with no identifier; a contact that
+   keeps an email or phone has a claimed URL dropped silently. So 0 does not
+   prove no URL is shared. A non-zero count is worth merging in Google before
+   step 6.
 4. Run `.venv/bin/python scripts/import_linkedin.py <latest export>`, so
    connections link by URL (`match_method = 'url'`). Optional: the seed's
    `link` outcome would link them anyway, but this keeps the snapshot's own
@@ -330,7 +332,8 @@ deploys in step 2.
    - An `in Google, not synced` entry clears after the next nightly sync, or
      at once with `POST /people/{ident}/sync` on the contact.
 6. Run `.venv/bin/python scripts/outreach_seed.py`. Check that
-   `outreach queue --stage candidate` grew by the link and create counts, then
+   `outreach queue --stage candidate` grew by the `entered` count plus the people newly linked or created who
+   weren't already in the pipeline, then
    reassess the queue with the `working-outreach-queue` skill. The new
    contacts carry the `from-linkedin` label in Google Contacts.
 

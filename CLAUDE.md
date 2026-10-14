@@ -92,7 +92,7 @@ services/
   outreach_sync.py          Asana task payloads, sync_events / sync_pending (durable first, retried nightly)
   outreach_report.py        pure: floors TOML, stage_verdicts, render
   outreach_seed.py          pure: warm-pool bars over raw rows → SeedPlan; unlinked LinkedIn rows → link / in_google / possible_duplicate / create
-  person_lookup.py          resolve an email / phone / id to one people row for scripts
+  person_lookup.py          resolve an email / LinkedIn URL / phone / id to one people row for scripts
   eligibility.py            is_automated / inbound_eligible (spec §5) — pure functions over env
   ingest.py                 record_inbound / record_outbound — counters + eligibility, shared by
                              handlers and scripts/import_contacts.py
