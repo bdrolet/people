@@ -7,7 +7,7 @@ from typing import Any
 
 _CONTACT_COLUMNS = """
     person_id, stage, cohort_week, briefed_at, replied_at, channel, has_lead,
-    follow_up_on, notes, nudge_count, last_nudged_at, rank, hubspot_synced_at,
+    follow_up_on, notes, nudge_count, last_nudged_at, rank, doc_url, hubspot_synced_at,
     created_at, updated_at
 """
 _OPPORTUNITY_COLUMNS = """
@@ -20,6 +20,7 @@ _CONTACT_UPDATABLE = frozenset(
         "nudge_count",
         "last_nudged_at",
         "rank",
+        "doc_url",
         "stage",
         "cohort_week",
         "briefed_at",
@@ -250,7 +251,7 @@ def _pipeline_rows(where: str) -> str:
     return f"""
         SELECT p.id, p.email, p.display_name, p.company, p.job_title, p.notes,
                c.stage, c.follow_up_on, c.has_lead, c.notes AS outreach_notes, c.rank,
-               c.briefed_at, c.channel, c.nudge_count, c.last_nudged_at,
+               c.briefed_at, c.channel, c.nudge_count, c.last_nudged_at, c.doc_url,
                NULLIF(GREATEST(COALESCE(p.last_seen, 'epoch'::timestamptz),
                                COALESCE(p.last_contacted, 'epoch'::timestamptz)),
                       'epoch'::timestamptz) AS email_last,
@@ -274,6 +275,21 @@ def _pipeline_rows(where: str) -> str:
         ) li ON TRUE
         WHERE {where}
     """
+
+
+def pipeline_people_named(conn: Any, text: str) -> list[dict]:
+    """Pipeline people whose display name contains `text`, case-insensitively (contact-docs
+    spec §4). position(), not ILIKE: this SQL holds no percent sign for a paramstyle to
+    misread."""
+    return conn.execute(
+        """
+        SELECT p.id, p.display_name
+        FROM outreach_contacts c JOIN people p ON p.id = c.person_id
+        WHERE position(lower(%s) in lower(COALESCE(p.display_name, ''))) > 0
+        ORDER BY p.id
+        """,
+        (text,),
+    ).fetchall()
 
 
 def queue(conn: Any, *, stage: str, limit: int) -> list[dict]:

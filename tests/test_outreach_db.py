@@ -560,3 +560,22 @@ def test_session_reads_direct_messages_and_the_pipeline_row(conn):
     row = outreach_repo.pipeline_row(conn, pid)
     assert row["id"] == pid and row["stage"] == "to_contact" and row["rank"] == 2
     assert row["has_imessage"] and row["has_whatsapp"]
+
+
+def test_doc_url_round_trips_and_names_find_pipeline_people(conn):
+    pid = _person(conn, display_name="Jamie Example")
+    other = _person(conn, email="other@example.com", display_name="Jamie Other")
+    _person(conn, email="outside@example.com", display_name="Jamie Outside")
+    for p in (pid, other):
+        outreach_repo.insert_contact_if_missing(conn, p)
+
+    assert outreach_repo.get_contact(conn, pid)["doc_url"] is None
+    url = "https://docs.google.com/document/d/doc1/edit"
+    assert outreach_repo.update_contact(conn, pid, {"doc_url": url})["doc_url"] == url
+    assert outreach_repo.pipeline_row(conn, pid)["doc_url"] == url
+    assert outreach_repo.update_contact(conn, pid, {"doc_url": None})["doc_url"] is None
+
+    named = outreach_repo.pipeline_people_named(conn, "JAMIE")
+    assert [r["id"] for r in named] == [pid, other]  # the person outside the pipeline is not
+    assert outreach_repo.pipeline_people_named(conn, "e exa")[0]["display_name"] == "Jamie Example"
+    assert outreach_repo.pipeline_people_named(conn, "outside") == []
