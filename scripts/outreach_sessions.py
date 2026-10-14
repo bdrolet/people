@@ -187,7 +187,8 @@ def _one(
     )
     if not short:
         return "spawn failed", None
-    full = claude_sessions.find_live(short, claude_sessions.live_sessions(cwd=REPO)) or short
+    listed = claude_sessions.live_sessions(cwd=REPO) or {}
+    full = claude_sessions.find_live(short, listed) or short
     return f"spawned {short}{note}", {"session_id": full, "cwd": str(REPO), "name": name}
 
 
@@ -231,17 +232,33 @@ def run(
         return
 
     people = _targets(conn, args, state)
-    live = claude_sessions.live_sessions(cwd=REPO)
-    for person in people:
-        key = str(person["id"])
-        name = outreach_session.session_name(person)
-        outcome, record = _one(conn, args, person, name, state.get(key), live, today=today)
-        if record is not None:
-            state[key] = record
-        print(f"{person['id']}\t{name}\t→ {outcome}", file=out)
+    listed = claude_sessions.live_sessions(cwd=REPO)
+    if listed is None:
+        if args.spawn:
+            raise CliError(
+                "can't list running Claude sessions (claude agents --json failed); "
+                "nothing spawned or resumed"
+            )
+        print(
+            "warning: can't list running Claude sessions (claude agents --json failed); "
+            "treating none as running",
+            file=err,
+        )
+    live = listed or {}
+    try:
+        for person in people:
+            key = str(person["id"])
+            name = outreach_session.session_name(person)
+            outcome, record = _one(conn, args, person, name, state.get(key), live, today=today)
+            if record is not None:
+                state[key] = record
+            print(f"{person['id']}\t{name}\t→ {outcome}", file=out)
+    finally:
+        # A later person's failure must not lose an earlier person's new session record.
+        if args.spawn:
+            claude_sessions.save_state(state_path, state)
 
     if args.spawn:
-        claude_sessions.save_state(state_path, state)
         print("\nclaude agents          # the view", file=err)
         print("claude attach <id>     # work one (needs a real terminal)", file=err)
     else:

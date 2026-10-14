@@ -26,6 +26,7 @@ NOTES_PREAMBLE = (
 _ESCAPED = re.compile(r"\\(.)")
 _MD_SPECIAL = re.compile(r"([\\`*_\[\]<>#|~])")
 _NEXT_STEP = re.compile(r"\(next step:\s*([^)]*)\)")
+_REF_DEF = re.compile(r"^\[[^\]]+\]:\s")
 _LOG_LINE = re.compile(r"^[-*] \d{4}-\d{2}-\d{2} · \S")
 
 
@@ -192,15 +193,18 @@ def merge(
     replaced: set[str] = set()
     before_notes: list[str] = []
     notes: list[str] = []  # Ben's notes, then whatever Ben put after them
+    dropped: list[str] = []  # lines of sections rewritten or regenerated below
     for heading, body in sections:
         key = _key(heading)
         block = f"{heading}\n\n{_trim(body)}".rstrip()
         if key == "messages":
+            dropped += body
             continue
         if key == "log":
             log += [line.rstrip() for line in body if line.strip()]
         elif key in SESSION_SECTIONS and key not in replaced and not notes:
             replaced.add(key)
+            dropped += body
         elif key == NOTES or notes:
             notes.append(block)
         else:
@@ -214,6 +218,16 @@ def merge(
     if not notes:
         notes = [f"## Ben's notes\n\n{NOTES_PREAMBLE}"]
 
+    # Drive's export puts `[image1]: <data:...>` and `[^1]: …` definitions at the very end
+    # of the doc, i.e. inside Messages. Dropping that section must not drop them.
+    kept_text = "\n".join([extra, *before_notes, *notes])
+    kept_lines = {line.rstrip() for line in kept_text.splitlines()}
+    definitions: list[str] = []
+    for line in dropped:
+        line = line.rstrip()
+        if _REF_DEF.match(line) and line not in kept_lines and line not in definitions:
+            definitions.append(line)
+
     parts = [
         f"# {title(person)}",
         f"people id: {person['id']} · stage: {stage} · last updated: {today.isoformat()}",
@@ -225,5 +239,6 @@ def merge(
         *before_notes,
         *notes,
         messages,
+        *(["\n".join(definitions)] if definitions else []),
     ]
     return "\n\n".join(parts) + "\n"

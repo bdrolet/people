@@ -63,15 +63,24 @@ def resume(
     return parse_session_id(result.stdout) or session_id[:SHORT_ID]
 
 
-def live_sessions(*, cwd: Path, runner: Runner = _run) -> dict[str, str]:
-    """Session id (full when listed, else short) → cwd for every running session.
+def live_sessions(*, cwd: Path, runner: Runner = _run) -> dict[str, str] | None:
+    """Session id (full when listed, else short) → cwd for every running session, or
+    None when the listing can't be trusted (the command failed, or its output isn't a
+    list): an empty dict means "nothing is running", None means "don't know".
     `claude agents --json` without --all: with it, exited sessions are listed too."""
     try:
-        listing = json.loads(runner(["claude", "agents", "--json"], cwd).stdout or "[]")
+        result = runner(["claude", "agents", "--json"], cwd)
+        if result.returncode != 0:
+            return None
+        listing = json.loads(result.stdout or "[]")
     except (OSError, json.JSONDecodeError):
-        return {}
+        return None
+    if not isinstance(listing, list):
+        return None
     live = {}
     for session in listing:
+        if not isinstance(session, dict):
+            continue
         sid = session.get("sessionId") or session.get("id")
         if sid:
             live[sid] = session.get("cwd") or ""
@@ -111,7 +120,7 @@ def transcript_cwd(path: Path) -> str | None:
                     continue
                 if isinstance(value, str) and value:
                     cwd = value
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     return cwd
 

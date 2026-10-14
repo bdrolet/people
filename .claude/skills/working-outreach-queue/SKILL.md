@@ -163,9 +163,11 @@ Ben attaches; then present it and wait.
    <the talking points from step 4: fragments and questions, never a drafted message>
    ```
    Then run `outreach-sessions --write-doc <id> --sections <scratchpad>/doc-<id>.md`.
-   It prints `created <url>` or `updated <url>`. If it prints
+   It prints `created <url>` or `updated <url>`. If it prints an error that starts
    `error: the doc changed while it was being written`, Ben is editing it: tell him,
-   and stop. If it prints `DocNotRecorded`, run the `outreach doc` command it names.
+   and stop; writing again later is safe. If it prints
+   `error: created <url> but could not record it (...)`, run the `outreach doc`
+   command it names (`outreach doc <id> <url>`) before writing again.
 6. **Stop.** Present the briefing with the doc link and wait. Don't offer to write
    the message. Record nothing until Ben says he sent it.
 

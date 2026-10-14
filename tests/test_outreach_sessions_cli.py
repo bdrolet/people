@@ -335,3 +335,35 @@ def test_write_doc_reports_a_conflict(run, monkeypatch, tmp_path):
     monkeypatch.setattr(cli.outreach_doc_write, "write", write)
     code, _, err = run("--write-doc", "388", "--sections", str(path))
     assert code == 1 and "changed while it was being written" in err
+
+
+def test_an_unlistable_session_list_stops_a_spawn(run, monkeypatch):
+    monkeypatch.setattr(cli.claude_sessions, "live_sessions", lambda cwd: None)
+    code, out, err = run("jonah@example.com", "--spawn")
+    assert code == 1
+    assert "can't list running Claude sessions" in err
+    assert run.spawned == [] and run.resumed == [] and not run.state_path.exists()
+
+
+def test_an_unlistable_session_list_warns_on_a_dry_run(run, monkeypatch):
+    monkeypatch.setattr(cli.claude_sessions, "live_sessions", lambda cwd: None)
+    code, out, err = run("jonah@example.com")
+    assert code == 0
+    assert "→ spawn" in out
+    assert "warning:" in err and "claude agents --json" in err
+    assert run.spawned == []
+
+
+def test_state_is_saved_when_a_later_person_raises(run, monkeypatch):
+    real = cli.outreach_session.snapshot
+
+    def snapshot(conn, pid, limit):
+        if pid == 41:
+            raise RuntimeError("db went away")
+        return real(conn, pid, limit)
+
+    monkeypatch.setattr(cli.outreach_session, "snapshot", snapshot)
+    with pytest.raises(RuntimeError):
+        run("jonah@example.com", "ana@example.com", "--spawn")
+    saved = json.loads(run.state_path.read_text())
+    assert list(saved) == ["388"] and saved["388"]["session_id"].startswith("id000001")

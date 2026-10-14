@@ -261,3 +261,32 @@ def test_merge_keeps_bold_notes_heading_body_and_adds_no_default_notes():
     assert "## **Ben’s notes**\n\nCall on *Tuesday*\\. Kids: two\\.\n" in out
     assert doc.NOTES_PREAMBLE not in out and "## Ben's notes" not in out
     assert out.count("Ben’s notes") == 1
+
+
+DRIVE_TAIL = "[image1]: <data:image/png;base64,AAAA>"
+WITH_IMAGE = (
+    EXPORTED.replace("Call on *Tuesday*\\. Kids: two\\.", "Call on *Tuesday*\\. ![][image1]")
+    + "\n"
+    + DRIVE_TAIL
+    + "\n"
+)
+
+
+def test_merge_keeps_reference_definitions_from_the_messages_section():
+    out = _merge(WITH_IMAGE)
+    assert "![][image1]" in out
+    assert out.count(DRIVE_TAIL) == 1
+    assert out.index("Alex: hi") < out.index(DRIVE_TAIL)
+    assert out.endswith(DRIVE_TAIL + "\n")
+    assert _merge(out) == out
+
+
+def test_merge_keeps_footnote_definitions_and_does_not_duplicate_kept_ones():
+    existing = WITH_IMAGE + "[^1]: note\n"
+    out = _merge(existing)
+    assert out.count("[^1]: note") == 1 and out.count(DRIVE_TAIL) == 1
+    assert _merge(out) == out
+    inside_notes = EXPORTED.replace("Kids: two\\.", "Kids: two\\.\n\n[n]: <http://x>")
+    kept = _merge(inside_notes)
+    assert kept.count("[n]: <http://x>") == 1
+    assert kept.index("[n]: <http://x>") < kept.index("## Call prep")

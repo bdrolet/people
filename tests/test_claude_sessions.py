@@ -78,7 +78,24 @@ def test_live_sessions_lists_running_sessions_only():
 
     assert cs.live_sessions(cwd=CWD, runner=runner) == {SID: "/a", "ef56ab78": "/b"}
     assert seen["argv"] == ["claude", "agents", "--json"]  # --all would list exited sessions
-    assert cs.live_sessions(cwd=CWD, runner=lambda argv, cwd: _result("not json")) == {}
+    assert cs.live_sessions(cwd=CWD, runner=lambda argv, cwd: _result("[]")) == {}
+
+
+def test_live_sessions_is_none_when_the_listing_cannot_be_trusted():
+    assert cs.live_sessions(cwd=CWD, runner=lambda argv, cwd: _result("", 1)) is None
+    assert cs.live_sessions(cwd=CWD, runner=lambda argv, cwd: _result("not json")) is None
+    assert cs.live_sessions(cwd=CWD, runner=lambda argv, cwd: _result('{"a": 1}')) is None
+
+    def boom(argv, cwd):
+        raise OSError("no claude")
+
+    assert cs.live_sessions(cwd=CWD, runner=boom) is None
+
+
+def test_live_sessions_skips_items_that_are_not_objects():
+    listing = [{"sessionId": SID, "cwd": "/a"}, "x", 3, None, ["y"]]
+    runner = lambda argv, cwd: _result(json.dumps(listing))  # noqa: E731
+    assert cs.live_sessions(cwd=CWD, runner=runner) == {SID: "/a"}
 
 
 def test_find_live_matches_by_prefix_either_way():
@@ -120,6 +137,12 @@ def test_transcript_cwd_is_the_last_one_recorded(tmp_path):
     path.write_text("\n".join(lines) + "\n")
     assert cs.transcript_cwd(path) == "/repo/.claude/worktrees/w"
     assert cs.transcript_cwd(tmp_path / "missing.jsonl") is None
+
+
+def test_transcript_cwd_is_none_for_undecodable_bytes(tmp_path):
+    path = tmp_path / "t.jsonl"
+    path.write_bytes(b'{"cwd": "/repo"}\n\xff\xfe\n')
+    assert cs.transcript_cwd(path) is None
 
 
 def test_state_records_and_legacy_entries(tmp_path):
