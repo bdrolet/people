@@ -18,7 +18,7 @@ class LinkedInConnection:
     position: str | None
     connected_on: date | None
     person_id: int | None = None  # soft link to people.id
-    match_method: str | None = None  # 'email' | 'name' | None
+    match_method: str | None = None  # 'url' | 'email' | 'name' | None
     message_count: int = 0
     my_message_count: int = 0
     last_message_at: datetime | None = None
@@ -68,5 +68,6 @@ class LinkedInSnapshot:
     messages_unmatched: int = 0
     messages_skipped: int = 0  # rows with no conversation id or an unparseable DATE
     missing_files: list[str] = field(default_factory=list)
+    matched_by_url: int = 0
     matched_by_email: int = 0
     matched_by_name: int = 0
