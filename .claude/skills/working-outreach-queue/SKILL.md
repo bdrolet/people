@@ -158,12 +158,17 @@ The note is free text. A late reply later is `$O mark <person> replied --channel
 ## Add a person
 
 1. Find them with `searching-people`. If they're missing, create them with
-   `creating-person` (needs an email or an E.164 phone).
+   `creating-person` (needs an email, an E.164 phone, or a LinkedIn profile URL).
 2. `$O decide <person>` — moves them to `to_contact` and adds the
    `consulting-outreach` label.
 3. If Ben gives a position ("near the top"): `$O rank <person> <n>`.
 4. Many people at once: point Ben to `scripts/import_contacts.py`, then
    `scripts/outreach_seed.py --dry-run`. He runs those.
+   The seed creates LinkedIn-only people itself (label `from-linkedin`) and
+   lists possible duplicates for Ben to resolve by adding the LinkedIn URL to
+   the existing contact with `editing-person`. A LinkedIn-only person has no
+   email, so their brief is never email-proven: record it with
+   `outreach mark <person> briefed --channel linkedin` after Ben confirms.
 
 ## Record outcomes
 

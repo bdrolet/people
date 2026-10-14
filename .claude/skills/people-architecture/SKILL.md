@@ -92,8 +92,9 @@ pg_trgm). Tables: `people` (`id` BIGSERIAL **PK**, `email` nullable
 last_contacted, message_count, my_response_count, notes,
 eligible, automated, google_resource_name, google_etag, google_deleted_at,
 hubspot_contact_id, hubspot_synced_at, phone_numbers, company, job_title,
-google_fields, updated_at; `CHECK` constraint `people_has_an_identifier`:
-`email IS NOT NULL OR cardinality(phone_numbers) > 0`) and `sync_state`
+google_fields, linkedin_url, updated_at; `CHECK` constraint
+`people_has_an_identifier`:
+`email IS NOT NULL OR cardinality(phone_numbers) > 0 OR linkedin_url IS NOT NULL`) and `sync_state`
 (key/sync_token/last_run_at/last_status — one row, `key='google_contacts'`),
 plus `contact_groups` (user-defined labels, replaced every sync) and
 `people_labels` (person ↔ label membership).
@@ -154,7 +155,7 @@ connects through the Cloud SQL Python Connector with pg8000
 unique (`phone_numbers`, `text[]`, already existed). A person is addressed
 by one route, `GET/PATCH /people/{ident}` and `POST /people/{ident}/sync`,
 where `{ident}` is classified by `services/identity.py::classify` in this
-order: contains `@` → email; parses as a phone (via
+order: contains `@` → email; a LinkedIn profile URL → linkedin; parses as a phone (via
 `services.imessage_export.normalize_handle`, E.164, rejects anything under
 7 digits) → phone; all digits → id; otherwise → 404. A `+` in a phone must
 be percent-encoded in the path (`%2B15550100001`), matching the existing
@@ -278,6 +279,21 @@ if currently rare, way for the mirror's population to grow.
 Measured 2026-09-28: 984 people, 449 of them adopted (email-less), 34 phone
 numbers already shared across more than one row from duplicate Google
 contacts adopted separately before this endpoint existed.
+
+### LinkedIn profile URL (piece 4, 2026-10-13)
+
+`people.linkedin_url` (UNIQUE, normal form `linkedin.com/in/<slug>`) is a third
+identifier: `people_has_an_identifier` is now email, phone, or LinkedIn URL.
+`contact_fields.derive` reads it from the Google contact's `urls`;
+`apply_person` adopts a contact whose only identifier is the URL, and drops a URL
+another row already holds on every write path (a contact left with nothing is
+counted `linkedin_conflict`). `{ident}` accepts a profile URL — the API routes are
+`{ident:path}`, so a percent-encoded URL works. `POST /people` accepts a URL-only
+contact and refuses a duplicate URL on either side (`list_url_index` is a full
+listing; `searchContacts` doesn't index `urls`). The outreach seed creates a
+Google contact (label `from-linkedin`) for every warm LinkedIn connection with
+no row, unless it may duplicate someone. LinkedIn-only people are never mirrored
+to HubSpot. Spec: `docs/superpowers/specs/2026-10-13-linkedin-identity-design.md`.
 
 ## Source of truth (spec §4.3)
 

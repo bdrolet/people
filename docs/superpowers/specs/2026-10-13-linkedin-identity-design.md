@@ -1,6 +1,6 @@
 # LinkedIn profile URL as a person identifier
 
-**Status:** design. In conversation on 2026-10-13, Ben chose:
+**Status:** implemented (PR pending). In conversation on 2026-10-13, Ben chose:
 - the source of LinkedIn-only people (they become Google Contacts);
 - the timing (the seed creates all of them);
 - §3 (the identity and data model), which he approved as presented.

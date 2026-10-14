@@ -6,7 +6,7 @@ description: >
   counts, Google Contacts/HubSpot linkage. Use for "what do we know about X",
   "show me that contact", "pull up alice@example.com". Use after
   searching-people to open a selected result, or directly when you already
-  have the email, phone, or id.
+  have the email, phone, LinkedIn profile URL, or id.
 metadata:
   depends-on: "searching-people"
 ---
@@ -42,6 +42,7 @@ in a shell double-quoted string):
 curl -s "$BASE/people/<email>" -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 curl -s "$BASE/people/%2B15550100001" -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 curl -s "$BASE/people/42" -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+curl -s "$BASE/people/linkedin.com%2Fin%2Fjane-example" -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 ```
 
 `404` = nobody matches — an unknown email/phone/id, or a person people
@@ -55,7 +56,8 @@ of the candidate ids (`GET $BASE/people/<id>`) after confirming which person
 the user means.
 
 **Response fields:** `id`, `email` (nullable — null for a phone-only
-person), `display_name`, `first_seen`, `last_seen`, `last_contacted`,
+person), `linkedin_url` (the person's normalized LinkedIn profile,
+`linkedin.com/in/<slug>`, or `null`), `display_name`, `first_seen`, `last_seen`, `last_contacted`,
 `message_count` (inbound), `my_response_count` (Ben's replies),
 `labels` (a list), `notes`, `eligible`, `automated`, `in_google_contacts`,
 `in_hubspot`, `linkedin` (null, or the linked LinkedIn connection's
