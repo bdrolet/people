@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS linkedin_imports (
     matched_by_email         INT NOT NULL,
     matched_by_name          INT NOT NULL
 );
+ALTER TABLE linkedin_imports ADD COLUMN IF NOT EXISTS matched_by_url INT NOT NULL DEFAULT 0;
 
 -- iMessage snapshot (docs/superpowers/specs/2026-09-21-imessage-snapshot-design.md §4).
 -- Upserted incrementally by scripts/import_imessage.py; message text is stored here

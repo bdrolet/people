@@ -68,6 +68,6 @@ class LinkedInSnapshot:
     messages_unmatched: int = 0
     messages_skipped: int = 0  # rows with no conversation id or an unparseable DATE
     missing_files: list[str] = field(default_factory=list)
-    matched_by_url: int = 0  # printed by scripts/import_linkedin.py; not stored in linkedin_imports
+    matched_by_url: int = 0
     matched_by_email: int = 0
     matched_by_name: int = 0

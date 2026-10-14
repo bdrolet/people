@@ -47,7 +47,8 @@ def summary(s: LinkedInSnapshot, *, dry_run: bool) -> str:
     received = [r for r in s.recommendations if r.direction == "received"]
     lines = ["DRY RUN — nothing written"] if dry_run else []
     lines += [
-        f"connections {n:,} (url-matched {s.matched_by_url:,}, email-matched {s.matched_by_email:,}, "
+        f"connections {n:,} (url-matched {s.matched_by_url:,}, "
+        f"email-matched {s.matched_by_email:,}, "
         f"name-matched {s.matched_by_name:,}, unmatched {unmatched:,})",
         f"messages {len(s.messages):,} in {s.conversations:,} conversations (me={s.me}; "
         f"by-url {s.messages_by_url:,}, by-name {s.messages_by_name:,}, "

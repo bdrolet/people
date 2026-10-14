@@ -41,17 +41,20 @@ participant in the most conversations and is never hardcoded (public repo).
 ## 3. Reading the counts
 
 ```
-connections 1,284 (url-matched 20, email-matched 37, name-matched 112, unmatched 1,135)
+connections 1,284 (url-matched 2, email-matched 37, name-matched 110, unmatched 1,135)
 messages 4,902 in 611 conversations (me=linkedin.com/in/…; by-url 4,610, by-name 180, unmatched 112, skipped 0)
 recommendations given 6 (linked 5), received 9 (linked 8)
 snapshot_at 2026-09-16T18:04:11Z
 ```
 
 - **url-matched / email-matched / name-matched** — connections soft-linked to
-  a `people` row. A connection links by exact profile URL first
-  (`match_method = 'url'`, printed as `url-matched`), then email, then name.
-  Name matches require the normalized name to be unique among both
-  people and connections; ambiguous names stay unmatched on purpose.
+  a `people` row, tried in that order. A URL match is the connection's profile
+  URL carried by exactly one person — their `people.linkedin_url` or a URL saved
+  in the `urls` of their Google contact (`match_method = 'url'`, printed as
+  `url-matched`) — the fix for a connection whose name or email doesn't line up
+  (add the URL with `editing-person`, then re-import). Name matches require the
+  normalized name to be unique among both people and connections; ambiguous
+  names and URLs stay unmatched on purpose.
 - **by-url / by-name / unmatched messages** — how each message was tied to a
   connection. Unmatched is normal for InMail and recruiters (non-connections).
   A large by-name or unmatched share suggests LinkedIn changed URL formats.

@@ -375,9 +375,11 @@ def eligible_not_in_hubspot(conn: Any, limit: int) -> list[dict]:
 
 
 def names_for_matching(conn: Any) -> list[dict]:
-    """Every row's id, email, display_name and LinkedIn URL, for scripts/import_linkedin.py's
-    soft link (URL first, then email, then name)."""
-    return conn.execute("SELECT id, email, display_name, linkedin_url FROM people").fetchall()
+    """Every row's id, email, display_name, LinkedIn URL and Google contact URLs, for
+    scripts/import_linkedin.py's soft link (URL first, then email, then name)."""
+    return conn.execute(
+        "SELECT id, email, display_name, linkedin_url, google_fields->'urls' AS urls FROM people"
+    ).fetchall()
 
 
 def rows_for_imessage_matching(conn: Any) -> list[dict]:

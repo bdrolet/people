@@ -248,6 +248,20 @@ def _infer_me(messages: list[LinkedInMessage]) -> str | None:
 _V = TypeVar("_V")
 
 
+def _unique_by_url(people_rows: list[dict]) -> dict[str, int]:
+    """normalized profile URL → person id, from each person's people.linkedin_url and
+    the `urls` on their Google contact, keeping only URLs that exactly one person carries."""
+    owners: defaultdict[str, set[int]] = defaultdict(set)
+    for r in people_rows:
+        if r.get("linkedin_url"):
+            owners[r["linkedin_url"]].add(r["id"])
+        for u in r.get("urls") or []:
+            url = normalize_profile_url(u.get("value")) if isinstance(u, dict) else None
+            if url:
+                owners[url].add(r["id"])
+    return {url: next(iter(ids)) for url, ids in owners.items() if len(ids) == 1}
+
+
 def _unique_by_name(items: Iterable[tuple[str, _V]]) -> dict[str, _V]:
     """normalized name → value, keeping only names that occur exactly once."""
     counts: Counter[str] = Counter()
@@ -331,18 +345,24 @@ def _parse_recommendations(
 
 
 def match_people(snapshot: LinkedInSnapshot, people_rows: list[dict]) -> None:
-    """Soft-link connections to people rows (§5.4): exact profile URL first
-    (linkedin-identity design §3), then exact email, then a normalized name unique
-    among people and among connections. Wrong links are worse than missing ones."""
-    people_by_url = {r["linkedin_url"]: r["id"] for r in people_rows if r.get("linkedin_url")}
+    """Soft-link connections to people rows (§5.4): a profile URL exactly one person
+    carries — their people.linkedin_url or any URL saved on their Google contact
+    (linkedin-identity design §3) — first, then exact email, then a normalized name
+    unique among people and among connections. Wrong links are worse than missing ones."""
+    people_by_url = _unique_by_url(people_rows)
     people_by_email = {normalize_email(r["email"]): r["id"] for r in people_rows if r.get("email")}
     for c in snapshot.connections:
         c.person_id = c.match_method = None
         if c.profile_url in people_by_url:
             c.person_id, c.match_method = people_by_url[c.profile_url], "url"
-        elif c.email and c.email in people_by_email:
-            c.person_id, c.match_method = people_by_email[c.email], "email"
     claimed = {c.person_id for c in snapshot.connections if c.person_id}
+    for c in snapshot.connections:
+        if c.person_id or not c.email:
+            continue
+        person_id = people_by_email.get(c.email)
+        if person_id and person_id not in claimed:
+            c.person_id, c.match_method = person_id, "email"
+            claimed.add(person_id)
 
     people_by_name = _unique_by_name((r.get("display_name") or "", r["id"]) for r in people_rows)
     connection_names = _unique_by_name((c.full_name, c.profile_url) for c in snapshot.connections)

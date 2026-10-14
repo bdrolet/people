@@ -662,6 +662,7 @@ def test_linkedin_imports_latest(monkeypatch):
             "messages": 7,
             "recommendations_given": 2,
             "recommendations_received": 1,
+            "matched_by_url": 0,
             "matched_by_email": 1,
             "matched_by_name": 1,
         },
