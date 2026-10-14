@@ -105,20 +105,31 @@ def _person(conn: Any, ident: str, state: dict[str, dict]) -> dict:
     return _resolve(conn, ident)
 
 
+def _unique(people: list[dict]) -> list[dict]:
+    """Drop repeats by id, keeping the first of each and the original order."""
+    seen: dict[Any, dict] = {}
+    for p in people:
+        seen.setdefault(p["id"], p)
+    return list(seen.values())
+
+
 def _targets(conn: Any, args: argparse.Namespace, state: dict[str, dict]) -> list[dict]:
     if args.people and args.next:
         raise CliError("give people or --next N, not both")
     if args.next:
         if args.next > MAX_PEOPLE:
             raise CliError(f"--next is capped at {MAX_PEOPLE} sessions per run")
-        return [
+        queued = [
             item["person"] for item in outreach.queue(conn, stage="to_contact", limit=args.next)
         ]
+        return _unique(queued)
     if not args.people:
         raise CliError("name at least one person, or use --next N")
     if len(args.people) > MAX_PEOPLE:
         raise CliError(f"at most {MAX_PEOPLE} people per run")
-    return [_person(conn, ident, state) for ident in args.people]
+    resolved = [_person(conn, ident, state) for ident in args.people]
+    # The same person named twice (email and name, say) must not spawn twice.
+    return _unique(resolved)
 
 
 def _doc(url: str | None) -> tuple[str | None, str]:

@@ -125,6 +125,12 @@ def test_spawn_preloads_context_starts_the_prep_and_records_the_session(run):
     }
 
 
+def test_the_same_person_named_twice_spawns_once(run):
+    code, out, _ = run("388", "jonah@example.com", "--spawn")
+    assert code == 0 and len(run.spawned) == 1
+    assert len([line for line in out.splitlines() if line.startswith("388\t")]) == 1
+
+
 def test_idle_spawns_without_a_prompt(run):
     run("388", "--spawn", "--idle")
     assert run.spawned[0]["prompt"] is None
