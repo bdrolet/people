@@ -338,7 +338,8 @@ def summary_for_person(conn: Any, person_id: int) -> dict | None:
 def recent_direct_messages(conn: Any, person_id: int, limit: int) -> list[dict]:
     """The newest `limit` messages from 1:1 chats with any handle linked to this
     person, returned oldest first. Message text is private: only local scripts
-    (scripts/outreach_sessions.py) read it, never people-api."""
+    (scripts/outreach_sessions.py) read it, for a local session's prompt and the contact
+    doc in Ben's My Drive (contact-docs spec D6); never people-api."""
     rows = conn.execute(
         """
         SELECT m.sent_at, m.from_me, m.text, m.has_attachments

@@ -160,3 +160,39 @@ def test_people_api_never_reads_message_text():
         source = path.read_text()
         assert "recent_direct_messages" not in source, path
         assert "outreach_session" not in source, path
+
+
+def test_context_block_names_the_doc_and_carries_its_content(monkeypatch):
+    url = "https://docs.google.com/document/d/doc388/edit"
+    _patch(monkeypatch, FakeRepos(row=ROW | {"doc_url": url}))
+    snap = svc.snapshot(None, 388, limit=60)
+    block = svc.context_block(
+        snap, today=date(2026, 10, 13), doc="# Outreach — Jonah Example\n\nbody"
+    )
+    assert f"- Contact doc: {url}" in block
+    assert "## Contact doc (fetched 2026-10-13)" in block and "\nbody" in block
+    assert block.index("## Contact doc") < block.index("## Message history")
+    assert "--write-doc" in block
+
+
+def test_context_block_without_a_doc(monkeypatch):
+    _patch(monkeypatch, FakeRepos())
+    block = svc.context_block(svc.snapshot(None, 388, limit=60), today=date(2026, 10, 13))
+    assert "- Contact doc: none yet (Prep a brief creates it)" in block
+    assert "## Contact doc (" not in block
+
+
+def test_reload_prompt_names_the_steps_in_order_and_forbids_drafting():
+    p = svc.RELOAD_PROMPT
+    assert "working-outreach-queue" in p and '"Reload"' in p
+    steps = [
+        "--print-context",
+        "search email",
+        "what changed",
+        "--write-doc",
+        "talking points",
+        "wait",
+    ]
+    positions = [p.index(s) for s in steps]
+    assert positions == sorted(positions)
+    assert "never draft" in p

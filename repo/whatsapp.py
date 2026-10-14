@@ -406,8 +406,9 @@ def repoint_person(conn: Any, from_id: int, to_id: int) -> int:
 def recent_direct_messages(conn: Any, person_id: int, limit: int) -> list[dict]:
     """The newest `limit` messages from direct chats with any handle linked to this
     person, returned oldest first. Local-only, and deliberately outside the reads
-    section below: message text goes into a local Claude session's prompt
-    (scripts/outreach_sessions.py) and is never served by people-api (§7)."""
+    section below: message text goes into a local Claude session's prompt and the contact
+    doc in Ben's My Drive (scripts/outreach_sessions.py, contact-docs spec D6), and is
+    never served by people-api (§7)."""
     rows = conn.execute(
         """
         SELECT m.sent_at, m.from_me, m.text, m.has_media AS has_attachments
