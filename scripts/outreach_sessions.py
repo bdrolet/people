@@ -169,7 +169,11 @@ def _one(
         short = claude_sessions.resume(transcript.stem, name, cwd=Path(cwd), prompt=prompt)
         if not short:
             return "resume failed", None
-        return f"resumed {short}", {"session_id": transcript.stem, "cwd": cwd, "name": name}
+        # Resuming a stopped session forks a new id; record the one that's now running.
+        running = claude_sessions.find_live(short, claude_sessions.live_sessions(cwd=REPO) or {})
+        if not running:
+            running = transcript.stem if transcript.stem.startswith(short) else short
+        return f"resumed {short}", {"session_id": running, "cwd": cwd, "name": name}
 
     snap = outreach_session.snapshot(conn, person["id"], limit=args.messages)
     if snap is None:
