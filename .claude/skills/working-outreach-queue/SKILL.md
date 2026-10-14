@@ -12,7 +12,7 @@ description: >
   brief, what to write, which channel. Not for job-search activity
   (logging-job-search) or the general task list (prioritizing-tasks).
 metadata:
-  depends-on: "searching-inbox-emails, searching-people, fetching-person, creating-person, anthropic-skills:chrome-browser"
+  depends-on: "searching-inbox-emails, searching-people, fetching-person, creating-person, anthropic-skills:chrome-browser, matching-writing-style"
 ---
 
 # Working the outreach queue
@@ -32,13 +32,19 @@ O=".venv/bin/python scripts/outreach.py"
 
 ## Rules
 
-- **Ben writes every message himself. Never draft one.** No brief, nudge or
-  reply text: no iMessage text, no email draft, no `email-builder`, no
-  `matching-writing-style`. The skill does the research and gives **talking
-  points**; Ben writes the note, decides whether to send it, and sends it. Why:
-  `~/src/consulting/docs/business_strategy.md` — AI-drafted warm messages are
-  detectable and get fewer replies than genuine hand-written notes, and
-  `client_funnel.md` defines a brief as "a hand-written note".
+- **Talking points by default; the message itself only when Ben asks.** Prep,
+  reload and nudge end with **talking points** — fragments and questions Ben
+  writes from — and never volunteer a draft. Why:
+  `~/src/consulting/docs/business_strategy.md` — hand-written warm notes get more
+  replies than AI-drafted ones, and `client_funnel.md` defines a brief as "a
+  hand-written note".
+- **When Ben explicitly asks for the message** ("write it for me", "draft the
+  message", "give me the text"), write it — don't refuse or argue the strategy
+  back at him; it's his call (rule changed 2026-10-14). Write in his voice with
+  `matching-writing-style`, from the talking points. LinkedIn, iMessage or
+  WhatsApp: give him the text to send. Email: dispatch `email-builder` with the
+  consulting identity; it leaves a draft. **Never send, either way**, and never
+  put a drafted message in the contact doc.
 - Briefs and email nudges go from **the consulting identity** (the first entry of
   `OUTREACH_FROM_ADDRESSES` in `~/src/people/.env`; read it with
   `grep '^OUTREACH_FROM_ADDRESSES=' ~/src/people/.env`, first comma-separated
@@ -130,8 +136,8 @@ Ben attaches; then present it and wait.
    for their company (past 3 months). Close the tabs you opened. If Chrome isn't
    connected, use web search and say so. Only what's relevant to the
    conversation.
-4. **Briefing.** Write it for Ben — research and talking points, **never a
-   drafted message** (see Rules):
+4. **Briefing.** Write it for Ben — research and talking points, not a drafted
+   message unless he asks for one (see Rules):
    - **Who they are now** — role, company, what they work on, what they care
      about outside work.
    - **History with Ben** — how they know each other, favors in both
@@ -181,8 +187,9 @@ Ben attaches; then present it and wait.
    and stop; writing again later is safe. If it prints
    `error: created <url> but could not record it (...)`, run the `outreach doc`
    command it names (`outreach doc <id> <url>`) before writing again.
-6. **Stop.** Present the briefing with the doc link and wait. Don't offer to write
-   the message. Record nothing until Ben says he sent it.
+6. **Stop.** Present the briefing with the doc link and wait. Don't volunteer a
+   draft; if Ben asks for the message, write it (see Rules). Record nothing until
+   Ben says he sent it.
 
 ## Reload
 
@@ -201,14 +208,15 @@ A session started or resumed with the reload prompt, or Ben saying "reload" /
    step 5: Who they are and History rewritten as facts changed, a Log line per
    thing that happened since (`- <YYYY-MM-DD> · replied by iMessage`), Talking
    points for the next step.
-6. **Stop.** Present what changed and the talking points, with the doc link. Never
-   draft the message.
+6. **Stop.** Present what changed and the talking points, with the doc link. Don't
+   volunteer a draft; if Ben asks for the message, write it (see Rules).
 
 ## Nudge
 
 Work the `nudges` items in `today --json`.
 
-Give Ben talking points for each nudge; he writes it (see Rules).
+Give Ben talking points for each nudge; write the nudge itself only if he asks
+(see Rules).
 
 - **`nudge 1`:** short and light, same channel. For an email brief, tell Ben
   to reply in the brief's thread (`brief.graph_message_id`) from the
