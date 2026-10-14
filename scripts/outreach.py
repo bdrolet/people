@@ -38,7 +38,7 @@ import json
 import os
 import sys
 from collections.abc import Callable
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -292,6 +292,7 @@ def cmd_today(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -
         per_day=targets.per_day,
         plan_start=targets.start,
         plan_end=targets.end,
+        fresh_since=now - timedelta(hours=outreach_today.FRESH_HOURS),
     )
     today = outreach_today.build(counts, targets, now=now)
     print(outreach_today.to_json(today) if args.json else outreach_today.render(today), file=out)

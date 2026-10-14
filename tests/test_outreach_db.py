@@ -579,3 +579,62 @@ def test_doc_url_round_trips_and_names_find_pipeline_people(conn):
     assert [r["id"] for r in named] == [pid, other]  # the person outside the pipeline is not
     assert outreach_repo.pipeline_people_named(conn, "e exa")[0]["display_name"] == "Jamie Example"
     assert outreach_repo.pipeline_people_named(conn, "outside") == []
+
+
+def test_fresh_inbound_finds_recent_messages_from_the_list_on_every_channel(conn):
+    since = TS - timedelta(hours=48)
+    jamie = _person(
+        conn, email="jamie@example.com", last_seen=TS, last_contacted=TS - timedelta(days=9)
+    )
+    pat = _person(conn, email="pat@example.com", last_seen=TS - timedelta(days=5))
+    cand = _person(conn, email="cand@example.com", last_seen=TS)
+    for pid, stage in ((jamie, "briefed"), (pat, "to_contact"), (cand, "candidate")):
+        outreach_repo.insert_contact_if_missing(conn, pid)
+        outreach_repo.update_contact(conn, pid, {"stage": stage})
+
+    conn.execute(
+        "INSERT INTO imessage_handles (handle, person_id) VALUES ('+15550100001', %s)", (pat,)
+    )
+    conn.execute(
+        "INSERT INTO imessage_chats (chat_guid, is_group, participant_handles) VALUES "
+        "('pat', FALSE, ARRAY['+15550100001']), ('grp', TRUE, ARRAY['+15550100001'])"
+    )
+    for guid, chat, from_me, at, text in (
+        ("m1", "pat", False, TS - timedelta(hours=3), "older"),
+        ("m2", "pat", False, TS - timedelta(hours=1), "are you around?"),
+        ("m3", "grp", False, TS, "group chatter"),
+        ("m4", "pat", False, TS - timedelta(days=3), "too old"),
+    ):
+        conn.execute(
+            "INSERT INTO imessage_messages (guid, chat_guid, from_me, sent_at, text) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (guid, chat, from_me, at, text),
+        )
+
+    conn.execute(
+        "INSERT INTO linkedin_connections (profile_url, full_name, person_id, snapshot_at) "
+        "VALUES ('linkedin.com/in/jamie', 'Jamie', %s, %s)",
+        (jamie, TS),
+    )
+    for i, (from_me, sender, at, content) in enumerate(
+        (
+            (False, "linkedin.com/in/jamie", TS - timedelta(hours=5), "saw your post"),
+            (True, "linkedin.com/in/ben", TS - timedelta(hours=4), "thanks!"),
+        )
+    ):
+        conn.execute(
+            "INSERT INTO linkedin_messages (conversation_id, sender_profile_url, sent_at, content, "
+            "from_me, snapshot_at) VALUES ('c1', %s, %s, %s, %s, %s)",
+            (sender, at, content, from_me, TS),
+        )
+
+    rows = outreach_repo.fresh_inbound(conn, since=since)
+    got = [(r["person_id"], r["channel"], r["text"], r["answered"]) for r in rows]
+    assert got == [
+        (jamie, "email", None, False),  # last_seen after last_contacted: unanswered
+        (pat, "imessage", "are you around?", False),  # newest 1:1 only, group and stale ignored
+        (jamie, "linkedin", "saw your post", True),  # Ben replied after it
+    ]
+    assert rows[0]["display_name"] is None and rows[0]["stage"] == "briefed"
+    # a candidate is not on the list yet; pat's email is older than the window
+    assert {r["person_id"] for r in rows} == {jamie, pat}

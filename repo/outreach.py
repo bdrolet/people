@@ -292,6 +292,81 @@ def pipeline_people_named(conn: Any, text: str) -> list[dict]:
     ).fetchall()
 
 
+# Who counts as "on the list" for the Fresh section: anyone Ben has decided to work,
+# including a declined referrer (a late reply is the freshest signal there is). Not a
+# seed candidate he hasn't chosen yet, and not someone he skipped.
+_FRESH_STAGES_EXCLUDED = "('candidate', 'skipped')"
+
+
+def fresh_inbound(conn: Any, *, since: datetime) -> list[dict]:
+    """The latest message per person and channel that someone on the list sent Ben at
+    or after `since`, newest first. 1:1 chats only. `answered` is whether Ben wrote on
+    that channel after it. Email carries no text: people stores only timestamps.
+
+    Local-only (the `outreach today` CLI): it selects iMessage, WhatsApp and LinkedIn
+    message text, which people-api never serves."""
+    return conn.execute(
+        f"""
+        WITH pipe AS (
+            SELECT c.person_id, c.stage, p.display_name, p.last_seen, p.last_contacted
+            FROM outreach_contacts c JOIN people p ON p.id = c.person_id
+            WHERE c.stage NOT IN {_FRESH_STAGES_EXCLUDED}
+        ),
+        im AS (
+            SELECT DISTINCT ON (h.person_id)
+                   h.person_id, 'imessage' AS channel, m.sent_at AS at, m.text,
+                   EXISTS (SELECT 1 FROM imessage_messages r
+                           WHERE r.chat_guid = m.chat_guid AND r.from_me
+                             AND r.sent_at > m.sent_at) AS answered
+            FROM imessage_messages m
+            JOIN imessage_chats ch ON ch.chat_guid = m.chat_guid AND NOT ch.is_group
+            JOIN imessage_handles h ON h.handle = ANY(ch.participant_handles)
+            WHERE NOT m.from_me AND NOT m.retracted AND m.sent_at >= %s
+              AND h.person_id IN (SELECT person_id FROM pipe)
+            ORDER BY h.person_id, m.sent_at DESC
+        ),
+        wa AS (
+            SELECT DISTINCT ON (h.person_id)
+                   h.person_id, 'whatsapp' AS channel, m.sent_at AS at, m.text,
+                   EXISTS (SELECT 1 FROM whatsapp_messages r
+                           WHERE r.chat_jid = m.chat_jid AND r.from_me
+                             AND r.sent_at > m.sent_at) AS answered
+            FROM whatsapp_messages m
+            JOIN whatsapp_chats ch ON ch.chat_jid = m.chat_jid AND ch.kind = 'direct'
+            JOIN whatsapp_handles h ON h.handle = ch.handle
+            WHERE NOT m.from_me AND m.sent_at >= %s
+              AND h.person_id IN (SELECT person_id FROM pipe)
+            ORDER BY h.person_id, m.sent_at DESC
+        ),
+        li AS (
+            SELECT DISTINCT ON (lc.person_id)
+                   lc.person_id, 'linkedin' AS channel, m.sent_at AS at, m.content AS text,
+                   EXISTS (SELECT 1 FROM linkedin_messages r
+                           WHERE r.conversation_id = m.conversation_id AND r.from_me
+                             AND r.sent_at > m.sent_at) AS answered
+            FROM linkedin_messages m
+            JOIN linkedin_connections lc ON lc.profile_url = m.sender_profile_url
+            WHERE NOT m.from_me AND m.sent_at >= %s
+              AND lc.person_id IN (SELECT person_id FROM pipe)
+            ORDER BY lc.person_id, m.sent_at DESC
+        ),
+        em AS (
+            SELECT person_id, 'email' AS channel, last_seen AS at, NULL::text AS text,
+                   COALESCE(last_contacted > last_seen, FALSE) AS answered
+            FROM pipe WHERE last_seen >= %s
+        ),
+        f AS (
+            SELECT * FROM im UNION ALL SELECT * FROM wa
+            UNION ALL SELECT * FROM li UNION ALL SELECT * FROM em
+        )
+        SELECT f.person_id, f.channel, f.at, f.text, f.answered, pipe.display_name, pipe.stage
+        FROM f JOIN pipe USING (person_id)
+        ORDER BY f.at DESC, f.person_id
+        """,
+        (since, since, since, since),
+    ).fetchall()
+
+
 def queue(conn: Any, *, stage: str, limit: int) -> list[dict]:
     """Contacts at `stage` (spec §7.2): Ben's saved order first (working-queue spec §6.1),
     then least recently in touch on any channel; never-contacted rows lead that part."""

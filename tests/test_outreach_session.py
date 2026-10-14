@@ -159,6 +159,7 @@ def test_people_api_never_reads_message_text():
     for path in api.rglob("*.py"):
         source = path.read_text()
         assert "recent_direct_messages" not in source, path
+        assert "fresh_inbound" not in source, path
         assert "outreach_session" not in source, path
 
 

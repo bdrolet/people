@@ -68,7 +68,15 @@ O=".venv/bin/python scripts/outreach.py"
 $O today --json
 ```
 
-Lead with `verdict` (`ON TRACK` / `ON PACE` / `BEHIND`) and the one next
+**`fresh` first.** It lists everyone on the list (any stage but candidate or
+skipped) who messaged Ben in the last 48 hours, newest first, per channel, with
+the message in one line (email has no text). An `unanswered` one is the next
+action, ahead of any brief: Ben wants to answer while it's fresh. For each, say
+who, where and what they said, and offer to reload their session
+(**Start sessions**) for talking points. Freshness is only as good as the last
+iMessage/WhatsApp/LinkedIn import; email is real time.
+
+Then lead with `verdict` (`ON TRACK` / `ON PACE` / `BEHIND`) and the one next
 action: briefs still owed (`need_today`), then overdue nudges, then closes.
 If `low_queue` is true, say so and offer a reassessment.
 

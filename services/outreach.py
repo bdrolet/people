@@ -511,13 +511,47 @@ def follow_ups(conn: Any, *, today: date) -> list[dict]:
     return [follow_up_item(r, today=today) for r in outreach_repo.follow_ups(conn, today=today)]
 
 
+FRESH_TEXT_MAX = 120
+
+
+def fresh_item(r: dict) -> dict:
+    """One `repo/outreach.py::fresh_inbound` row as JSON-shaped data: when, in New York
+    time, and the message flattened to one line. Email has no text (people keeps only
+    timestamps)."""
+    text = " ".join((r["text"] or "").split()) or None
+    if text and len(text) > FRESH_TEXT_MAX:
+        text = text[:FRESH_TEXT_MAX] + "…"
+    return {
+        "person": {"id": r["person_id"], "display_name": r["display_name"]},
+        "stage": r["stage"],
+        "channel": r["channel"],
+        "at": r["at"].astimezone(TZ).isoformat(),
+        "text": text,
+        "answered": bool(r["answered"]),
+    }
+
+
 def today_counts(
-    conn: Any, *, today: date, per_day: int, plan_start: date, plan_end: date
+    conn: Any,
+    *,
+    today: date,
+    per_day: int,
+    plan_start: date,
+    plan_end: date,
+    fresh_since: datetime | None = None,
 ) -> TodayCounts:
     """The numbers `outreach today` needs (working-queue spec §5), in New York dates. The
-    week runs Monday to today; the plan from its start to today, capped at its end."""
+    week runs Monday to today; the plan from its start to today, capped at its end. With
+    `fresh_since`, also everyone on the list who messaged Ben since then, so he can
+    answer while it's fresh."""
     week_start = today - timedelta(days=today.weekday())
+    fresh = (
+        [fresh_item(r) for r in outreach_repo.fresh_inbound(conn, since=fresh_since)]
+        if fresh_since is not None
+        else []
+    )
     return TodayCounts(
+        fresh=fresh,
         briefs_today=outreach_repo.first_briefs_between(conn, since=today, until=today),
         briefs_week=outreach_repo.first_briefs_between(conn, since=week_start, until=today),
         briefs_plan=(

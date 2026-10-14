@@ -213,3 +213,39 @@ def test_last_starts_in_one_column_whatever_the_channels():
     assert len(lines) == 2
     assert "email · imessage · linkedin · whatsapp last 2026-09-30" in lines[0]
     assert lines[0].index(" last ") == lines[1].index(" last ")
+
+
+def _fresh(**over):
+    item = {
+        "person": {"id": 7, "display_name": "Jamie Example"},
+        "stage": "briefed",
+        "channel": "imessage",
+        "at": "2026-10-14T09:00:00-04:00",
+        "text": "are you around?",
+        "answered": False,
+    }
+    return item | over
+
+
+def test_fresh_messages_lead_the_screen():
+    email = _fresh(
+        person={"id": 8, "display_name": None},
+        channel="email",
+        text=None,
+        answered=True,
+        at="2026-10-13T17:30:00-04:00",
+    )
+    t = build(_counts(fresh=[_fresh(), email]), TARGETS, now=_at(date(2026, 10, 14), 10))
+    lines = render(t).splitlines()
+    assert lines[2] == "Fresh: messaged you in the last 48h"
+    assert lines[3].startswith("  Jamie Example")
+    assert lines[3].endswith('imessage · 10-14 09:00 · briefed · unanswered · "are you around?"')
+    assert lines[4].startswith("  person 8")
+    assert lines[4].endswith("email · 10-13 17:30 · briefed · answered")
+    assert lines[5] == "" and lines[6].startswith("Briefs")
+    assert json.loads(to_json(t))["fresh"][0]["channel"] == "imessage"
+
+
+def test_no_fresh_section_when_nobody_wrote():
+    text = render(build(_counts(), TARGETS, now=_at(date(2026, 10, 14))))
+    assert text.splitlines()[2].startswith("Briefs") and "Fresh" not in text
