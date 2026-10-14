@@ -61,8 +61,8 @@ def run(monkeypatch, tmp_path):
         _run.live[f"{short}-0000-4000-8000-000000000000"] = str(cwd)
         return short
 
-    def resume(session_id, *, cwd, prompt=None):
-        resumed.append({"session_id": session_id, "cwd": cwd, "prompt": prompt})
+    def resume(session_id, name, *, cwd, prompt=None):
+        resumed.append({"session_id": session_id, "name": name, "cwd": cwd, "prompt": prompt})
         return session_id[:8]
 
     def people_named(conn, text):
@@ -150,7 +150,12 @@ def test_a_closed_session_is_resumed_from_its_transcript_cwd(run, tmp_path):
     code, out, _ = run("388", "--spawn")
     assert code == 0 and "resumed ab12cd34" in out and run.spawned == []
     assert run.resumed == [
-        {"session_id": SID, "cwd": worktree, "prompt": cli.outreach_session.RELOAD_PROMPT}
+        {
+            "session_id": SID,
+            "name": "outreach: Jonah Example",
+            "cwd": worktree,
+            "prompt": cli.outreach_session.RELOAD_PROMPT,
+        }
     ]
     assert json.loads(run.state_path.read_text())["388"]["cwd"] == str(worktree)
 
@@ -367,3 +372,18 @@ def test_state_is_saved_when_a_later_person_raises(run, monkeypatch):
         run("jonah@example.com", "ana@example.com", "--spawn")
     saved = json.loads(run.state_path.read_text())
     assert list(saved) == ["388"] and saved["388"]["session_id"].startswith("id000001")
+
+
+def test_write_doc_reads_the_sections_from_stdin(run, monkeypatch):
+    """`--sections -`: a session pipes its sections in, so it changes no file (a file it
+    writes shows up in Claude Code's diff panel)."""
+    seen = {}
+
+    def write(conn, pid, sections, *, today):
+        seen.update(pid=pid, step=sections.next_step)
+        return "updated https://docs.google.com/document/d/doc388/edit"
+
+    monkeypatch.setattr(cli.outreach_doc_write, "write", write)
+    monkeypatch.setattr("sys.stdin", io.StringIO(SECTIONS))
+    code, out, _ = run("--write-doc", "388", "--sections", "-")
+    assert code == 0 and seen == {"pid": 388, "step": "brief"} and "→ updated" in out

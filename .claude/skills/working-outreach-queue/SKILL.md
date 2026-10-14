@@ -53,14 +53,18 @@ O=".venv/bin/python scripts/outreach.py"
   Each pipeline person has one Google Doc, `Outreach — <name>` in My Drive
   `Consulting/Outreach`, linked from `outreach_contacts.doc_url`. Write it
   without asking first, and **only** with
-  `outreach-sessions --write-doc <id> --sections <file>` — never with
+  `outreach-sessions --write-doc <id> --sections -` — never with
   `editing-doc` or `creating-doc`. The script keeps Ben's notes and the log,
   rewrites the rest, regenerates Messages from the DB, and refuses rather than
   overwrite a concurrent edit it detects. It deletes Google comments on every
   write; the doc tells Ben to write in `Ben's notes` instead. Never put a drafted
   message in it.
-- **Write the sections file with the Write tool** (to your scratchpad), never a
-  heredoc or `$(…)`: background sessions block shell substitution.
+- **Pipe the sections in; don't write a file.** Use a quoted heredoc in one
+  Bash call: `outreach-sessions --write-doc <id> --sections - <<'EOF'` … `EOF`.
+  Don't use the Write or Edit tool for them: a file the session changes shows up
+  in Claude Code's diff panel when Ben attaches. Never `$(…)` — background sessions
+  block shell substitution. Only if the heredoc is blocked: Write the sections to
+  your scratchpad and pass `--sections <file>`.
 
 ## Today
 
@@ -146,10 +150,11 @@ Ben attaches; then present it and wait.
    - **Mechanics** — the best channel; for email, send from the consulting
      identity; how the brief gets recorded (email proves itself; any other
      channel is `outreach mark <id> briefed --channel <c>` after Ben confirms).
-5. **Write the doc.** With the Write tool, write `<scratchpad>/doc-<id>.md`
-   holding exactly these sections (nothing else — the script refuses other
-   headings):
-   ```markdown
+5. **Write the doc.** Pipe exactly these sections (nothing else — the script
+   refuses other headings) into `--write-doc` in one Bash call, with the
+   heredoc delimiter quoted so nothing in the text is expanded:
+   ```bash
+   outreach-sessions --write-doc <id> --sections - <<'EOF'
    ## Who they are
    <role, company, life outside work, how Ben knows them>
 
@@ -161,8 +166,8 @@ Ben attaches; then present it and wait.
 
    ## Talking points (next step: brief)
    <the talking points from step 4: fragments and questions, never a drafted message>
+   EOF
    ```
-   Then run `outreach-sessions --write-doc <id> --sections <scratchpad>/doc-<id>.md`.
    It prints `created <url>` or `updated <url>`. If it prints an error that starts
    `error: the doc changed while it was being written`, Ben is editing it: tell him,
    and stop; writing again later is safe. If it prints
@@ -184,10 +189,10 @@ A session started or resumed with the reload prompt, or Ben saying "reload" /
 4. **Next step.** `briefed` → `$O followups` says `nudge 1`, `nudge 2` or
    `close`; `to_contact` → `brief`; `replied` → `reply`; `introduced` → `intro`;
    `declined`/`skipped` → `none`.
-5. **Update the doc.** Same sections file as Prep a brief step 5: Who they are and
-   History rewritten as facts changed, a Log line per thing that happened since
-   (`- <YYYY-MM-DD> · replied by iMessage`), Talking points for the next step.
-   `outreach-sessions --write-doc <id> --sections <file>`.
+5. **Update the doc.** The same sections, piped in the same way as Prep a brief
+   step 5: Who they are and History rewritten as facts changed, a Log line per
+   thing that happened since (`- <YYYY-MM-DD> · replied by iMessage`), Talking
+   points for the next step.
 6. **Stop.** Present what changed and the talking points, with the doc link. Never
    draft the message.
 

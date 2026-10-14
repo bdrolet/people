@@ -17,7 +17,7 @@ this file under the repo's venv.
     outreach-sessions alex --spawn             # a name: session names, then pipeline names
     outreach-sessions --next 5 --spawn         # the top of the to_contact queue
     outreach-sessions --print-context 388      # the block a session boots with, doc included
-    outreach-sessions --write-doc 388 --sections /path/to/sections.md
+    outreach-sessions --write-doc 388 --sections - < sections.md   # or a file path
 
 ~/.claude/outreach-sessions.json keeps one record per person ({session_id, cwd, name}),
 never dropped when a session exits. The doc link lives in outreach_contacts.doc_url.
@@ -166,7 +166,7 @@ def _one(
         if not args.spawn:
             return "resume", None
         prompt = None if args.idle else outreach_session.RELOAD_PROMPT
-        short = claude_sessions.resume(transcript.stem, cwd=Path(cwd), prompt=prompt)
+        short = claude_sessions.resume(transcript.stem, name, cwd=Path(cwd), prompt=prompt)
         if not short:
             return "resume failed", None
         return f"resumed {short}", {"session_id": transcript.stem, "cwd": cwd, "name": name}
@@ -196,12 +196,15 @@ def _write_doc(
     conn: Any, args: argparse.Namespace, out: TextIO, state: dict[str, dict], *, today: date
 ) -> None:
     if not args.sections:
-        raise CliError("--write-doc needs --sections FILE (the session's new sections)")
+        raise CliError("--write-doc needs --sections FILE, or --sections - to read stdin")
     person = _person(conn, args.write_doc, state)
-    try:
-        text = Path(args.sections).read_text(encoding="utf-8")
-    except OSError as e:
-        raise CliError(f"cannot read {args.sections}: {e.strerror}") from e
+    if args.sections == "-":
+        text = sys.stdin.read()
+    else:
+        try:
+            text = Path(args.sections).read_text(encoding="utf-8")
+        except OSError as e:
+            raise CliError(f"cannot read {args.sections}: {e.strerror}") from e
     sections = outreach_doc.parse_sections(text)
     result = outreach_doc_write.write(conn, person["id"], sections, today=today)
     print(f"{person['id']}\t{outreach_session.session_name(person)}\t→ {result}", file=out)
@@ -277,7 +280,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--messages", type=int, default=DEFAULT_MESSAGES, help="per channel")
     p.add_argument("--print-context", metavar="PERSON", help="print one person's context block")
     p.add_argument("--write-doc", metavar="PERSON", help="create or merge the person's doc")
-    p.add_argument("--sections", metavar="FILE", help="with --write-doc: the session's sections")
+    p.add_argument(
+        "--sections", metavar="FILE", help="with --write-doc: the session's sections; - reads stdin"
+    )
     return p
 
 

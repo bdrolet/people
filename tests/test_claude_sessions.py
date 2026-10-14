@@ -49,9 +49,17 @@ def test_spawn_failure_returns_none():
 SID = "ab12cd34-0000-4000-8000-000000000001"
 
 
-def test_resume_argv_puts_the_prompt_last():
-    assert cs.resume_argv(SID) == ["claude", "--bg", "--resume", SID]
-    assert cs.resume_argv(SID, "go") == ["claude", "--bg", "--resume", SID, "go"]
+def test_resume_argv_keeps_the_name_and_puts_the_prompt_last():
+    """Without -n a resumed session is renamed after its prompt."""
+    assert cs.resume_argv(SID, "outreach: X") == [
+        "claude",
+        "--bg",
+        "--resume",
+        SID,
+        "-n",
+        "outreach: X",
+    ]
+    assert cs.resume_argv(SID, "outreach: X", "go")[-1] == "go"
 
 
 def test_resume_runs_in_cwd_and_keeps_the_id():
@@ -61,11 +69,14 @@ def test_resume_runs_in_cwd_and_keeps_the_id():
         seen.update(argv=argv, cwd=cwd)
         return _result("resumed in the background")
 
-    assert cs.resume(SID, cwd=CWD, prompt="go", runner=runner) == "ab12cd34"
-    assert seen == {"argv": ["claude", "--bg", "--resume", SID, "go"], "cwd": CWD}
+    assert cs.resume(SID, "outreach: X", cwd=CWD, prompt="go", runner=runner) == "ab12cd34"
+    assert seen == {
+        "argv": ["claude", "--bg", "--resume", SID, "-n", "outreach: X", "go"],
+        "cwd": CWD,
+    }
     ok = lambda argv, cwd: _result("backgrounded · ab12cd34 · outreach: X")  # noqa: E731
-    assert cs.resume(SID, cwd=CWD, runner=ok) == "ab12cd34"
-    assert cs.resume(SID, cwd=CWD, runner=lambda argv, cwd: _result("", 1)) is None
+    assert cs.resume(SID, "n", cwd=CWD, runner=ok) == "ab12cd34"
+    assert cs.resume(SID, "n", cwd=CWD, runner=lambda argv, cwd: _result("", 1)) is None
 
 
 def test_live_sessions_lists_running_sessions_only():

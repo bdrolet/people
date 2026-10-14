@@ -46,18 +46,19 @@ def spawn(
     return parse_session_id(result.stdout) if result.returncode == 0 else None
 
 
-def resume_argv(session_id: str, prompt: str | None = None) -> list[str]:
-    argv = ["claude", "--bg", "--resume", session_id]
+def resume_argv(session_id: str, name: str, prompt: str | None = None) -> list[str]:
+    """`-n` again on resume: without it Claude renames the session after its prompt."""
+    argv = ["claude", "--bg", "--resume", session_id, "-n", name]
     return [*argv, prompt] if prompt else argv
 
 
 def resume(
-    session_id: str, *, cwd: Path, prompt: str | None = None, runner: Runner = _run
+    session_id: str, name: str, *, cwd: Path, prompt: str | None = None, runner: Runner = _run
 ) -> str | None:
     """Bring an exited session back under its own id. `cwd` must be the directory it last
     ran in (transcript_cwd): the transcript is looked up under that directory's project.
     A resume keeps its id, so the short id stands even if no `backgrounded` line prints."""
-    result = runner(resume_argv(session_id, prompt), cwd)
+    result = runner(resume_argv(session_id, name, prompt), cwd)
     if result.returncode != 0:
         return None
     return parse_session_id(result.stdout) or session_id[:SHORT_ID]
