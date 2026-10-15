@@ -141,13 +141,16 @@ def test_prep_prompt_points_at_the_skill_procedure():
     assert "working-outreach-queue" in svc.PREP_PROMPT and "Prep a brief" in svc.PREP_PROMPT
 
 
-def test_prep_prompt_and_context_forbid_drafting_the_message(monkeypatch):
-    """Ben writes every outreach message himself (consulting business_strategy.md);
-    sessions give talking points only."""
-    assert "talking points" in svc.PREP_PROMPT and "never draft" in svc.PREP_PROMPT
+def test_prep_prompt_and_context_draft_only_on_request(monkeypatch):
+    """Talking points by default; the message only when Ben explicitly asks for it,
+    and never sent (2026-10-14 rule change)."""
+    assert "talking points" in svc.DRAFT_RULE and "explicitly asks" in svc.DRAFT_RULE
+    assert "never send" in svc.DRAFT_RULE
+    assert svc.DRAFT_RULE in svc.PREP_PROMPT and svc.DRAFT_RULE in svc.RELOAD_PROMPT
+    assert "never draft" not in svc.PREP_PROMPT.lower()
     _patch(monkeypatch, FakeRepos())
     block = svc.context_block(svc.snapshot(None, 388, limit=60), today=date(2026, 10, 13))
-    assert "Never draft the message" in block
+    assert svc.DRAFT_RULE in block and "Never draft" not in block
 
 
 def test_people_api_never_reads_message_text():
@@ -196,4 +199,4 @@ def test_reload_prompt_names_the_steps_in_order_and_forbids_drafting():
     ]
     positions = [p.index(s) for s in steps]
     assert positions == sorted(positions)
-    assert "never draft" in p
+    assert svc.DRAFT_RULE in p

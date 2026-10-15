@@ -21,10 +21,16 @@ from services import outreach
 NAME_MAX = 60
 TEXT_MAX = 300
 CHANNEL_TITLES = {"imessage": "iMessage", "whatsapp": "WhatsApp", "linkedin": "LinkedIn"}
+# Ben's rule (2026-10-14): talking points by default, the message itself only when he
+# asks for it, and never sent. One sentence, so the prompts and the context agree.
+DRAFT_RULE = (
+    "Give Ben talking points; write the message itself only when he explicitly asks for "
+    "it, and never send it."
+)
 PREP_PROMPT = (
     "Prep this outreach brief now: follow the working-outreach-queue skill's \"Prep a "
-    'brief" procedure for the person in your system prompt and give Ben talking '
-    "points — never draft the message; Ben writes it himself. Then wait for Ben."
+    f'brief" procedure for the person in your system prompt. {DRAFT_RULE} Then wait '
+    "for Ben."
 )
 RELOAD_PROMPT = (
     'Reload this outreach session: follow the working-outreach-queue skill\'s "Reload" '
@@ -32,8 +38,7 @@ RELOAD_PROMPT = (
     "`outreach-sessions --print-context <people id>` (the snapshot and the contact doc); "
     "search email since the doc's last log date; tell Ben what changed; update the doc "
     "with `outreach-sessions --write-doc`; rewrite the talking points for the next step. "
-    "Give Ben talking points — never draft the message; Ben writes it himself. Then wait "
-    "for Ben."
+    f"{DRAFT_RULE} Then wait for Ben."
 )
 
 
@@ -178,9 +183,8 @@ def context_block(snap: dict, *, today: date, doc: str | None = None) -> str:
         lines += ["", "No direct messages on file."]
     lines += [
         "",
-        "Never draft the message. Ben writes every brief, nudge and reply himself; "
-        "give him research and talking points, and record nothing until he says he "
-        "sent it. Change the contact doc only with `outreach-sessions --write-doc` "
-        "(working-outreach-queue skill). Work only this person.",
+        f"{DRAFT_RULE} Record nothing until he says he sent it. Change the contact doc "
+        "only with `outreach-sessions --write-doc` (working-outreach-queue skill), and "
+        "never put a drafted message in it. Work only this person.",
     ]
     return "\n".join(lines)
