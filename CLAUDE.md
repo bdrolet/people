@@ -142,7 +142,7 @@ scripts/
                              run does a full pass (one-time, after adoption shipped)
   fetch-env.sh               populate .env from Secret Manager + terraform.tfvars
   test-api-local.py          smoke test people-api
-  link-skills.sh             symlink searching-people/fetching-person/editing-person/creating-person/working-outreach-queue into ~/.claude/skills/,
+  link-skills.sh             symlink searching-people/fetching-person/editing-person/creating-person/working-outreach-queue/checking-linkedin-messages into ~/.claude/skills/,
                              the outreach-launcher agent into ~/.claude/agents/, outreach-sessions into ~/.local/bin/
   outreach_sessions.py      one background Claude session per outreach person: resume an exited one, or spawn
                              preloaded with the snapshot and contact doc; --write-doc creates or merges the doc
@@ -161,7 +161,7 @@ tests/                      one test module per unit
                              testing-people-handlers, verifying-pr-locally, importing-contacts,
                              searching-people, fetching-person, editing-person, creating-person,
                              importing-linkedin, importing-imessage, importing-whatsapp,
-                             working-outreach-queue
+                             working-outreach-queue, checking-linkedin-messages
 .claude/agents/             outreach-launcher (linked into ~/.claude/agents/)
 ```
 
