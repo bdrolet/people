@@ -2,11 +2,14 @@
 I/O. Placeholders are substituted with str.replace, not str.format, so braces in a
 company name cannot break rendering."""
 
+import re
+
 from services.campaign_targets import CampaignTargets
 
 DEFAULT_SUBJECT = "Production-readiness audit for {company}"
 GENERIC_OPENER = "Congratulations on the round."
 MAX_SUBJECT_LENGTH = 60
+_PLACEHOLDER = re.compile(r"\{(first_name|opening_sentence|slots_through|slots|postal_address)\}")
 
 BODY_TEMPLATE = """\
 Hi {first_name},
@@ -73,18 +76,15 @@ def render_email(
 ) -> tuple[str, str]:
     if subject is None or not valid_subject(subject, company_name):
         subject = DEFAULT_SUBJECT.replace("{company}", company_name)
-    body = BODY_TEMPLATE + "\n" + SIGNATURE.replace("{postal_address}", postal_address)
-    # Substitute caller-supplied text last-to-first so a value containing a placeholder
-    # (e.g. an opener with "{slots}") is never re-expanded.
-    body = body.replace("{slots_through}", "\x00T").replace("{slots}", "\x00S")
-    body = body.replace("{first_name}", "\x00F").replace("{opening_sentence}", "\x00O")
-    for token, text in (
-        ("\x00T", targets.slots_through),
-        ("\x00S", str(targets.slots)),
-        ("\x00F", first_name),
-        ("\x00O", opening_sentence),
-    ):
-        body = body.replace(token, text)
+    values = {
+        "first_name": first_name,
+        "opening_sentence": opening_sentence,
+        "slots_through": targets.slots_through,
+        "slots": str(targets.slots),
+        "postal_address": postal_address,
+    }
+    # One pass: no substituted value is ever re-scanned for placeholders.
+    body = _PLACEHOLDER.sub(lambda m: values[m.group(1)], BODY_TEMPLATE + "\n" + SIGNATURE)
     return subject, body
 
 

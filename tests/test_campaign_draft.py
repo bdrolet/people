@@ -1,5 +1,3 @@
-from dataclasses import replace
-
 from services.campaign_draft import (
     DEFAULT_SUBJECT,
     GENERIC_OPENER,
@@ -121,14 +119,31 @@ def test_valid_subject_rules():
     assert not valid_subject(ok + "x", "Acme")
 
 
-def test_braces_in_company_and_opener_survive():
+def test_placeholders_in_values_stay_verbatim():
     subject, body = _render(
+        first_name="{postal_address}",
         company_name="A{slots}co",
-        opening_sentence="Hi {slots} {postal_address}",
+        opening_sentence="Hi {first_name} {slots_through}",
+        postal_address="{first_name} {opening_sentence} {slots}",
     )
     assert subject == "Production-readiness audit for A{slots}co"
-    assert "Hi {slots} {postal_address}" in body
-    assert "123 Main St" in body
+    expected = (
+        SPEC_BODY.replace("{first_name}", "\x01F")
+        .replace("{opening_sentence}", "\x01O")
+        .replace("{slots_through}", "this fall")
+        .replace("{slots}", "5")
+        .replace("{postal_address}", "\x01P")
+        .replace("\x01F", "{postal_address}")
+        .replace("\x01O", "Hi {first_name} {slots_through}")
+        .replace("\x01P", "{first_name} {opening_sentence} {slots}")
+    )
+    assert body == expected
+
+
+def test_nul_sequences_in_values_stay_verbatim():
+    _, body = _render(opening_sentence="a \x00O b \x00F c")
+    assert "a \x00O b \x00F c" in body
+    assert body.startswith("Hi Sam,\n\na \x00O b \x00F c\n")
 
 
 def test_follow_up_matches_spec():
@@ -137,4 +152,3 @@ def test_follow_up_matches_spec():
 
 def test_generic_opener():
     assert GENERIC_OPENER == "Congratulations on the round."
-    assert replace(TARGETS, slots=3).slots == 3
