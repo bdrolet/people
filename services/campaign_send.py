@@ -87,22 +87,24 @@ def preflight(
 
 def restage_stale(conn: Any, *, now: datetime, stale_after_days: int) -> int:
     """Approved contacts whose latest approval is older than `stale_after_days` go back to
-    `drafted` (note `stale`) for another look. Commits each move; returns how many."""
+    `drafted` (note `stale`) for another look. Commits each move; returns how many. A
+    contact with a draft_id is left alone: its send's outcome is unknown, so it stays
+    `approved` in send's `needs_check` until Ben sends or discards the draft."""
     cutoff = now - timedelta(days=stale_after_days)
     moved = 0
     for contact in campaign_repo.contacts(conn, status="approved"):
         approved_at = campaign_repo.last_event_at(conn, contact["id"], "approved")
         if approved_at is None or approved_at >= cutoff:
             continue
-        # A fresh draft gets a fresh draft_id: the old one must not block its send.
+        if contact.get("draft_id"):
+            log.warning(
+                "contact %s: stale but draft %s may have gone out; left for a check",
+                contact["id"],
+                contact["draft_id"],
+            )
+            continue
         result = campaign.advance(
-            conn,
-            contact["id"],
-            "drafted",
-            at=now,
-            source=campaign.SOURCE,
-            note="stale",
-            changes={"draft_id": None},
+            conn, contact["id"], "drafted", at=now, source=campaign.SOURCE, note="stale"
         )
         conn.commit()
         moved += result.changed
@@ -190,9 +192,17 @@ def _reconcile(conn: Any, contact: dict, inbox: Any, *, now: datetime, follow_up
     except Exception:
         log.exception("contact %s: could not search sent mail", contact["id"])
         return False
-    # The search spans Drafts too; a draft that went out moved to Sent Items under a new
-    # id, so a hit still carrying the draft's id is the unsent draft itself.
-    hits = [h for h in hits if h.get("message_id") and h["message_id"] != contact["draft_id"]]
+    # The search spans every folder and KQL matches the subject loosely. Only an item
+    # inbox-api confirms is not a draft (`is_draft is False`; None means an inbox-api too
+    # old to say), with the exact subject and not the draft's own id, proves a send.
+    hits = [
+        h
+        for h in hits
+        if h.get("is_draft") is False
+        and h.get("subject") == contact["subject"]
+        and h.get("message_id")
+        and h["message_id"] != contact["draft_id"]
+    ]
     if not hits:
         log.warning(
             "contact %s: draft %s was never seen sent; check Outlook Drafts",
@@ -234,20 +244,24 @@ def send_batch(
     approved = campaign_repo.contacts(conn, status="approved")
     budget = targets.per_day - campaign_repo.sent_today(conn, now.astimezone(campaign.TZ).date())
     follow_up_on = campaign.follow_up_date(now, targets.follow_up_business_days)
-    sent, attempted, needs_check = 0, 0, []
+    sent, lost, attempted, needs_check = 0, 0, 0, []
+    # Pre-pass, whatever the halt or the budget: a contact with a draft_id had a send
+    # whose outcome is unknown. Reconciling only reads the mailbox; the rest go to Ben.
+    fresh = []
+    for contact in approved:
+        if not contact.get("draft_id"):
+            fresh.append(contact)
+        elif _reconcile(conn, contact, inbox, now=now, follow_up_on=follow_up_on):
+            sent += 1
+        else:
+            needs_check.append(contact["id"])
     halted = not force and _halted(conn, run_id)
-    for contact in [] if halted else approved:
+    for contact in [] if halted else fresh:
         if not force and _halted(conn, run_id):
             halted = True
             break
-        if sent >= budget:
+        if sent + lost >= budget:  # a lost send may have reached Graph: it uses a slot
             break
-        if contact.get("draft_id"):
-            if _reconcile(conn, contact, inbox, now=now, follow_up_on=follow_up_on):
-                sent += 1
-            else:
-                needs_check.append(contact["id"])
-            continue
         if not _ensure_person(conn, contact):
             continue
         if attempted:
@@ -273,6 +287,7 @@ def send_batch(
             )
             conn.rollback()
             needs_check.append(contact["id"])
+            lost += 1
             continue
         # The email is out: from here an error must surface, never be retried as unsent.
         campaign.advance(

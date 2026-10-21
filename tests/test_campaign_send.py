@@ -248,7 +248,12 @@ class FakeInbox:
     def search_sent(self, *, to, subject):
         self.searches.append((to, subject))
         return [
-            {"message_id": f"m-{d['id']}", "subject": d["subject"], "sender": FROM}
+            {
+                "message_id": f"m-{d['id']}",
+                "subject": d["subject"],
+                "sender": FROM,
+                "is_draft": False,
+            }
             for d in self.drafts
             if d["id"] in self.sent and d["to"] == [to] and d["subject"] == subject
         ]
@@ -547,12 +552,12 @@ def test_advance_failing_after_a_send_leaves_the_draft_recorded_for_reconcile(
     assert repo.rows[cid]["graph_message_id"] == "m-d1"
 
 
-def test_restage_stale_clears_the_draft_id(repo):
+def test_restage_stale_leaves_a_contact_with_a_draft_for_ben(repo):
     cid = repo.add(draft_id="d9")
     repo.insert_event(None, contact_id=cid, status="approved", at=NOW - timedelta(days=8))
-    send.restage_stale(FakeConn(), now=NOW, stale_after_days=7)
-    assert repo.rows[cid]["status"] == "drafted"
-    assert repo.rows[cid]["draft_id"] is None
+    assert send.restage_stale(FakeConn(), now=NOW, stale_after_days=7) == 0
+    assert repo.rows[cid]["status"] == "approved"
+    assert repo.rows[cid]["draft_id"] == "d9"
 
 
 # --- force and the halt ---------------------------------------------------------------------
@@ -587,3 +592,55 @@ def test_the_unsent_draft_itself_is_not_taken_as_a_sent_message(repo, people):
     result = _send(FakeConn(), repo, inbox)
     assert result.needs_check == [cid] and result.sent == 0
     assert repo.rows[cid]["status"] == "approved"
+
+
+def _hit(cid, **kw):
+    return [{"message_id": "m-sent", "subject": f"Subject {cid}", "is_draft": False, **kw}]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"is_draft": True}, {"is_draft": None}, {"subject": "Re: Subject 1"}],
+    ids=["draft", "is_draft-unknown", "other-subject"],
+)
+def test_reconcile_needs_a_confirmed_sent_item_with_the_exact_subject(repo, people, overrides):
+    cid = repo.add(draft_id="d-old")
+    inbox = FakeInbox()
+    inbox.search_sent = lambda *, to, subject: _hit(cid, **overrides)
+    result = _send(FakeConn(), repo, inbox)
+    assert result.needs_check == [cid] and result.sent == 0
+    assert repo.rows[cid]["status"] == "approved"
+
+
+def test_reconcile_accepts_a_sent_item_with_the_exact_subject(repo, people):
+    cid = repo.add(draft_id="d-old")
+    inbox = FakeInbox()
+    inbox.search_sent = lambda *, to, subject: _hit(cid)
+    result = _send(FakeConn(), repo, inbox)
+    assert result.sent == 1 and result.needs_check == []
+    assert repo.rows[cid]["status"] == "sent"
+    assert repo.rows[cid]["graph_message_id"] == "m-sent"
+
+
+def test_a_lost_send_counts_against_the_daily_cap(repo, people):
+    ids = [repo.add() for _ in range(21)]
+    inbox = FakeInbox(lost_reply_for={f"sam{ids[0]}@acme.com"})
+    result = _send(FakeConn(), repo, inbox)
+    assert len(inbox.sent) <= TARGETS.per_day
+    assert result.needs_check == [ids[0]]
+    assert result.sent == 19
+
+
+def test_needs_check_is_reported_when_halted(repo, people):
+    _bounces(repo, 3)
+    cid = repo.add(draft_id="d-old")
+    result = _send(FakeConn(), repo, FakeInbox())
+    assert result.halted is True and result.needs_check == [cid]
+
+
+def test_needs_check_is_reported_when_the_day_is_full(repo, people):
+    repo.add()
+    cid = repo.add(draft_id="d-old")
+    repo.sent_today_override = TARGETS.per_day
+    result = _send(FakeConn(), repo, FakeInbox())
+    assert result.needs_check == [cid] and result.sent == 0

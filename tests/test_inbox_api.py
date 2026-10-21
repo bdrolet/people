@@ -102,17 +102,29 @@ def test_reply_sends_to_the_named_recipients_only(monkeypatch):
     }
 
 
-def test_search_sent_queries_graph_for_the_recipient_and_subject(monkeypatch):
-    hit = {"message_id": "m1", "subject": "S", "sender": "ben@example.com", "received_at": "t"}
+def test_search_sent_queries_graph_without_inner_quotes(monkeypatch):
+    hit = {
+        "message_id": "m1",
+        "subject": "S",
+        "sender": "ben@example.com",
+        "received_at": "t",
+        "is_draft": False,
+    }
     seen = _capture(monkeypatch, {"results": [hit]})
-    assert inbox_api.search_sent(to="a@x.io", subject="S") == [hit]
+    assert inbox_api.search_sent(to="a@x.io", subject='Audit for "Acme"\nInc') == [hit]
     assert seen["url"] == "https://inbox.example.test/search"
+    # inbox-api quotes the whole query, so an inner quoted phrase is a Graph 400.
     assert seen["json"] == {
-        "query": 'to:a@x.io subject:"S"',
+        "query": "to:a@x.io subject:Audit for Acme Inc",
         "mode": "graph",
         "mailboxes": ["me"],
         "limit": 10,
     }
+
+
+def test_search_sent_reports_is_draft_as_none_when_inbox_api_omits_it(monkeypatch):
+    _capture(monkeypatch, {"results": [{"message_id": "m1", "subject": "S"}]})
+    assert inbox_api.search_sent(to="a@x.io", subject="S")[0]["is_draft"] is None
 
 
 def test_new_calls_need_the_url(monkeypatch):

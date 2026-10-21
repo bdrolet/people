@@ -61,12 +61,16 @@ def reply(message_id: str, *, body: str, to: list[str], from_address: str | None
 
 def search_sent(*, to: str, subject: str) -> list[dict]:
     """Graph search of the primary mailbox for a message to `to` with `subject`. Each hit
-    carries `message_id`, `subject`, `sender` and `received_at`."""
-    phrase = subject.replace('"', "")  # a quote inside would end the KQL phrase early
+    carries `message_id`, `subject`, `sender`, `received_at` and `is_draft` (None from an
+    inbox-api that does not report it). The search spans every folder, Drafts included,
+    and KQL matches the subject loosely: callers check `is_draft` and the exact subject."""
+    # inbox-api wraps the whole query in quotes, so an inner quoted phrase is a Graph 400.
+    words = " ".join(subject.replace('"', "").split())
     payload = {
-        "query": f'to:{to} subject:"{phrase}"',
+        "query": f"to:{to} subject:{words}",
         "mode": "graph",
         "mailboxes": ["me"],
         "limit": 10,
     }
-    return _post("/search", payload).get("results", [])
+    results = _post("/search", payload).get("results", [])
+    return [{**r, "is_draft": r.get("is_draft")} for r in results]
