@@ -490,6 +490,48 @@ def test_add_contact_domain_colleague_in_outreach_is_warm(repo, people):
     assert repo.companies[co]["status"] == "warm"
 
 
+@pytest.mark.parametrize("status", ["opted_out", "closed"])
+def test_add_contact_at_a_stopped_company_is_opted_out(repo, people, status):
+    co = _company(repo, status=status)
+    row, kind = svc.add_contact(FakeConn(), _fields(co), run_id=2)
+    assert kind == "opted_out" and row["status"] == "opted_out"
+    assert repo.events[-1] == {
+        "contact_id": row["id"],
+        "company_id": co,
+        "status": "opted_out",
+        "at": repo.events[-1]["at"],
+        "source": "cli",
+        "note": "company opted out",
+    }
+    assert repo.companies[co]["status"] == status
+
+
+@pytest.mark.parametrize("status", ["opted_out", "closed"])
+def test_warm_contact_never_reopens_a_stopped_company(repo, people, status):
+    co = _company(repo, status=status)
+    people.by_email["cto@acme.com"] = {"id": 7, "message_count": 3, "my_response_count": 1}
+    row, kind = svc.add_contact(FakeConn(), _fields(co), run_id=2)
+    assert kind == "opted_out" and row["status"] == "opted_out"
+    assert repo.companies[co]["status"] == status
+    assert not [e for e in repo.events if e["status"] == "warm"]
+
+
+@pytest.mark.parametrize("status", ["new", "below_bar", "active"])
+def test_warm_contact_flips_an_open_company(repo, people, status):
+    co = _company(repo, status=status)
+    people.by_email["cto@acme.com"] = {"id": 7, "message_count": 3, "my_response_count": 1}
+    _, kind = svc.add_contact(FakeConn(), _fields(co), run_id=2)
+    assert kind == "skipped_warm" and repo.companies[co]["status"] == "warm"
+
+
+def test_warm_contact_at_a_warm_company_adds_no_company_event(repo, people):
+    co = _company(repo, status="warm")
+    people.by_email["cto@acme.com"] = {"id": 7, "message_count": 3, "my_response_count": 1}
+    _, kind = svc.add_contact(FakeConn(), _fields(co), run_id=2)
+    assert kind == "skipped_warm"
+    assert not [e for e in repo.events if e["contact_id"] is None]
+
+
 def test_add_contact_twice_returns_existing(repo, people):
     co = _company(repo)
     first, _ = svc.add_contact(FakeConn(), _fields(co), run_id=2)
@@ -543,6 +585,14 @@ def test_opt_out_company_unknown_raises(repo):
         "Not interested in this right now",
         "unsubscribe me please",
         "No, thanks.",
+        "No thank you",
+        "No thankyou",
+        "no, not for us",
+        "No - not interested",
+        "No need",
+        "Hi Ben,\n\nNot interested.",
+        "Thanks for reaching out.\n\nNo thanks.",
+        "Good morning Ben\nunsubscribe",
     ],
 )
 def test_is_opt_out_true(body):
@@ -560,6 +610,12 @@ def test_is_opt_out_true(body):
         "   \n  ",
         "Notice: I'm out of office",
         None,
+        "No worries, happy to chat",
+        "No rush on this",
+        "No doubt you're busy",
+        "Hi Ben,\n\nHappy to talk, send the intake",
+        "Thanks for reaching out.\n\nSounds great.\n\nNo thanks to the newsletter though",
+        "Hi Ben,\nHello again\nSounds good\nNo",
     ],
 )
 def test_is_opt_out_false(body):

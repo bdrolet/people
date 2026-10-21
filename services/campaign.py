@@ -57,6 +57,9 @@ _REACHED: dict[str, set[str]] = {
     "booked": _PRE_SEND | {"sent", "followed_up", "replied", "booked"},
 }
 
+_WARMABLE_COMPANY = frozenset({"new", "below_bar", "active"})
+_STOPPED_COMPANY = frozenset({"opted_out", "closed"})
+
 TERMINAL = frozenset(s for s, targets in _ALLOWED.items() if not targets)
 
 
@@ -199,23 +202,35 @@ def _existing_contact(conn: Any, company_id: int, email: str | None) -> dict | N
 
 def add_contact(conn: Any, fields: dict, *, run_id: int) -> tuple[dict, str]:
     """Insert a buyer behind the warm guard. Returns the row and "candidate",
-    "skipped_warm" or "existing" (already recorded for this company; left untouched)."""
+    "skipped_warm", "opted_out" (the company is opted out or closed, so the contact is
+    never sendable) or "existing" (already recorded for this company; left untouched)."""
     company_id, email = fields["company_id"], fields.get("email")
     existing = _existing_contact(conn, company_id, email)
     if existing:
         return existing, "existing"
-    status = "skipped_warm" if _is_warm(conn, email, fields.get("linkedin_url")) else "candidate"
+    company = _company(conn, company_id)
+    if company["status"] in _STOPPED_COMPANY:
+        status, note = "opted_out", "company opted out"
+    elif _is_warm(conn, email, fields.get("linkedin_url")):
+        status, note = "skipped_warm", None
+    else:
+        status, note = "candidate", None
     row = campaign_repo.insert_contact_if_missing(
         conn, {**fields, "status": status, "run_id": run_id}
     )
     if row is None:  # lost a race with a concurrent add
         return _existing_contact(conn, company_id, email), "existing"
     campaign_repo.insert_event(
-        conn, contact_id=row["id"], company_id=company_id, status=status, at=_now(), source=SOURCE
+        conn,
+        contact_id=row["id"],
+        company_id=company_id,
+        status=status,
+        at=_now(),
+        source=SOURCE,
+        note=note,
     )
     if status == "skipped_warm":
-        company = _company(conn, company_id)
-        if company["status"] != "warm":
+        if company["status"] in _WARMABLE_COMPANY:
             campaign_repo.update_company(conn, company_id, {"status": "warm"})
             _company_event(conn, company_id, "warm", f"warm contact {row['id']}")
     return row, status
@@ -326,25 +341,39 @@ def opt_out_company(
 # --- opt-out phrases ------------------------------------------------------------------------
 
 _EDGE_PUNCT = re.compile(r"^[\W_]+|[\W_]+$")
-# "no" opens ordinary replies ("No problem, send me the intake"), so it counts only as the
-# whole line or followed by punctuation ("No, thanks"); the other phrases may also be
-# followed by a space ("Not interested in this", "Unsubscribe me").
-_PUNCTUATION_ONLY = frozenset({"no"})
+_GREETING = re.compile(r"^(hi|hello|hey|dear|good (morning|afternoon|evening))\b.*$", re.I)
+# A missed opt-out emails someone who said no; a false one only loses a lead. So a bare
+# "no" followed by a space counts unless the next word makes it a harmless opener
+# ("No problem, send me the intake").
+_HARMLESS_AFTER_NO = frozenset({"problem", "problems", "worries", "worry", "rush", "doubt"})
 
 
-def is_opt_out(body: str | None) -> bool:
-    """True when the first non-empty line is an opt-out phrase or starts with one."""
-    first = next((ln for ln in (body or "").splitlines() if ln.strip()), "")
-    line = _EDGE_PUNCT.sub("", first.strip()).lower()
+def _line_opts_out(raw: str) -> bool:
+    line = _EDGE_PUNCT.sub("", raw.strip()).lower()
     if not line:
         return False
     for phrase in OPT_OUT_PHRASES:
         if line == phrase:
             return True
-        if line.startswith(phrase) and len(line) > len(phrase):
-            nxt = line[len(phrase)]
-            if (nxt == " " and phrase not in _PUNCTUATION_ONLY) or (
-                not nxt.isalnum() and not nxt.isspace() and nxt != "_"
-            ):
+        if not line.startswith(phrase) or len(line) == len(phrase):
+            continue
+        rest = line[len(phrase) :]
+        nxt = rest[0]
+        if nxt == " ":
+            if phrase != "no":
                 return True
+            words = rest.split()
+            if not words or words[0].strip(".,;:!?") not in _HARMLESS_AFTER_NO:
+                return True
+        elif not nxt.isalnum() and nxt != "_":
+            return True
     return False
+
+
+def is_opt_out(body: str | None) -> bool:
+    """True when one of the first two non-empty lines (after one leading greeting line)
+    is an opt-out phrase or starts with one."""
+    lines = [ln.strip() for ln in (body or "").splitlines() if ln.strip()]
+    if lines and _GREETING.match(lines[0]):
+        lines = lines[1:]
+    return any(_line_opts_out(ln) for ln in lines[:2])
