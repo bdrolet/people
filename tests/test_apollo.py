@@ -73,7 +73,9 @@ def test_unset_key_raises_unavailable(monkeypatch):
 
 
 def test_forbidden_surfaces_as_http_status_error(monkeypatch):
-    monkeypatch.setenv("APOLLO_API_KEY", "k")
+    monkeypatch.setenv("APOLLO_API_KEY", "SECRETKEY")
     _fake_post(monkeypatch, {"error": "no"}, status=403)
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(httpx.HTTPStatusError) as ei:
         apollo.people_search("acme.com", [])
+    assert "SECRETKEY" not in str(ei.value) and "api_key" not in str(ei.value)
+    assert "x-api-key" not in str(ei.value).lower()

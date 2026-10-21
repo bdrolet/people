@@ -92,3 +92,51 @@ def test_accept_all_beats_unknown_and_invalid_is_dropped():
     hu = FakeHunter({"cy@acme.com": "invalid"}, found={"email": "cy@acme.com", "score": 50})
     out = resolve_email({"full_name": "Cy Tee"}, COMPANY, apollo=FakeApollo(), hunter=hu)
     assert out == (None, "unknown", None)
+
+
+def test_multi_word_name_uses_first_and_last_token():
+    hu = FakeHunter({"mary.smith@x.com": "valid"}, pattern="{first}.{last}")
+    out = resolve_email(
+        {"full_name": "Mary Ann Smith"}, {"domain": "x.com"}, apollo=FakeApollo(), hunter=hu
+    )
+    assert out == ("mary.smith@x.com", "valid", "hunter")
+    assert hu.verified == ["mary.smith@x.com"]
+
+
+def test_single_name_skips_find_and_last_patterns():
+    class H(FakeHunter):
+        def find(self, *a):
+            raise AssertionError("find must not be called")
+
+    hu = H({"cher@x.com": "valid"}, pattern="{first}.{last}")
+    assert resolve_email(
+        {"full_name": "Cher"}, {"domain": "x.com"}, apollo=FakeApollo(), hunter=hu
+    ) == (
+        None,
+        "unknown",
+        None,
+    )
+    assert hu.verified == []
+    hu = H({"cher@x.com": "valid"}, pattern="{first}")
+    out = resolve_email({"full_name": "Cher"}, {"domain": "x.com"}, apollo=FakeApollo(), hunter=hu)
+    assert out == ("cher@x.com", "valid", "hunter")
+
+
+def test_accents_and_punctuation_are_normalized():
+    hu = FakeHunter({"jobrien@x.com": "valid"}, pattern="{f}{last}")
+    out = resolve_email(
+        {"full_name": "José O'Brien"}, {"domain": "x.com"}, apollo=FakeApollo(), hunter=hu
+    )
+    assert out == ("jobrien@x.com", "valid", "hunter")
+
+
+def test_malformed_candidates_are_never_verified():
+    hu = FakeHunter({}, found={"email": "a b@x.com", "score": 1})
+    out = resolve_email(
+        {"full_name": "Cy Tee", "email": "bad@@x.com"},
+        {"domain": "x.com"},
+        apollo=FakeApollo(),
+        hunter=hu,
+    )
+    assert out == (None, "unknown", None)
+    assert hu.verified == []

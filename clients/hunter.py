@@ -23,7 +23,7 @@ def _get(path: str, params: dict) -> dict:
     key = os.environ.get("HUNTER_API_KEY", "").strip()
     if not key:
         raise HunterUnavailable("HUNTER_API_KEY unset")
-    resp = httpx.get(f"{_BASE}{path}", params={**params, "api_key": key}, timeout=TIMEOUT_S)
+    resp = httpx.get(f"{_BASE}{path}", params=params, headers={"X-API-KEY": key}, timeout=TIMEOUT_S)
     resp.raise_for_status()
     return resp.json().get("data") or {}
 
