@@ -529,8 +529,9 @@ END $$;
 
 -- Funded-founder campaign (docs/superpowers/specs/2026-10-21-funded-founder-campaign-design.md
 -- §7.1, in the consulting repo). Deliberately separate from the referral outreach_* tables:
--- a second pipeline beside it. Rows here are never exported with outreach_*; they rebuild
--- from the campaign ledgers. services/campaign.py is the only writer of status data;
+-- a second pipeline beside it. Rows here are never exported with outreach_*. These tables are
+-- not exported or rebuilt from anywhere else; back them up before any DELETE FROM people
+-- (rebuild runbook, CLAUDE.md). services/campaign.py is the only writer of status data;
 -- campaign_events is append-only and every count in `campaign report` derives from it.
 CREATE TABLE IF NOT EXISTS campaign_runs (
     id            BIGSERIAL PRIMARY KEY,
@@ -596,7 +597,10 @@ CREATE TABLE IF NOT EXISTS campaign_events (
     id               BIGSERIAL PRIMARY KEY,
     contact_id       BIGINT REFERENCES campaign_contacts(id) ON DELETE CASCADE,
     company_id       BIGINT REFERENCES campaign_companies(id) ON DELETE CASCADE,
-    status           TEXT NOT NULL,
+    status           TEXT NOT NULL
+                     CHECK (status IN ('new','below_bar','warm','active','opted_out','closed',
+                                       'candidate','unverified','skipped_warm','drafted','approved',
+                                       'skipped','sent','followed_up','replied','bounced','booked')),
     at               TIMESTAMPTZ NOT NULL DEFAULT now(),
     source           TEXT NOT NULL CHECK (source IN ('cli','event','page')),
     graph_message_id TEXT,                   -- the message that proved it (reply, bounce), when one did

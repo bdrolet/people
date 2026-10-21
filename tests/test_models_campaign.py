@@ -25,6 +25,9 @@ def test_tuples_match_check_constraints():
     assert campaign.CONTACT_STATUSES == _check_set("campaign_contacts", "status")
     assert campaign.VERIFICATIONS == _check_set("campaign_contacts", "verification")
     assert campaign.EMAIL_SOURCES == _check_set("campaign_contacts", "email_source")
+    assert set(campaign.COMPANY_STATUSES) | set(campaign.CONTACT_STATUSES) == set(
+        _check_set("campaign_events", "status")
+    )
     assert campaign.EVENT_SOURCES == _check_set("campaign_events", "source")
 
 
