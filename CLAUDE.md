@@ -32,7 +32,7 @@ This overrides the default "commit or push only when asked" behavior for code ch
 | | |
 |---|---|
 | **GCP project** | `bens-project-462804`, `us-central1` |
-| **Events CF** | `people-process` — Pub/Sub trigger on the inbox-owned `email-events` topic (data source), entry point `process` in `main.py`; handles `email_classified` and `email_sent`, ignores everything else |
+| **Events CF** | `people-process` — Pub/Sub trigger on the inbox-owned `email-events` topic (data source), entry point `process` in `main.py`; handles `email_classified`, `email_sent` and `email_bounced`, ignores everything else |
 | **Sync CF** | `people-sync` — HTTP trigger, entry point `sync`; POST with `Authorization: Bearer <people-sync-token>`; Cloud Scheduler `people-sync` at `0 4 * * *` America/New_York (before inbox's 5 AM sweep) — Google Contacts incremental sync (**adopts** an email-less contact with a usable phone number or a LinkedIn profile URL, `email IS NULL`; counts the rest `skipped`), then HubSpot reconcile |
 | **API** | `people-api` — Cloud Run FastAPI service (`api/`); auth is Cloud Run IAM — `roles/run.invoker` granted per caller in `terraform/api.tf`; callers send `gcloud auth print-identity-token`; image in Artifact Registry repo `people`, deployed by `.github/workflows/deploy-api.yml`; `https://people-api.drolet.cloud` (Cloud Run domain mapping in `terraform/api.tf`; the CNAME lives in `~/src/infra` `cloudflare/drolet-cloud.tf`); the raw run.app URL is `terraform output -raw people_api_url` |
 | **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people` (incl. editable-contact-field columns `phone_numbers`, `company`, `job_title`, `google_fields`, and the identifier `linkedin_url` — see the source-of-truth table below), `sync_state`, `contact_groups`, `people_labels`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`, `imessage_handles`, `imessage_chats`, `imessage_messages`, `imessage_imports`, `whatsapp_handles`, `whatsapp_chats`, `whatsapp_chat_members`, `whatsapp_messages`, `whatsapp_imports`, `outreach_contacts`, `outreach_opportunities`, `outreach_events`; schema in `repo/schema.sql` |
@@ -50,7 +50,7 @@ token are env vars or Secret Manager secrets, never hardcoded.
 ## Code layout
 
 ```
-main.py                     CF entry points: process (Pub/Sub → email_classified/email_sent)
+main.py                     CF entry points: process (Pub/Sub → email_classified/email_sent/email_bounced)
                              and sync (HTTP, bearer-auth, nightly)
 models/
   events.py                 EmailClassifiedEvent / EmailSentEvent TypedDicts — mirror inbox's payload
@@ -121,6 +121,7 @@ services/
 handlers/
   email_classified.py       ingest → eligible? → Google + HubSpot side effects → log_email
   email_sent.py             per-recipient ingest (To+Cc, Bcc excluded) → side effects
+  email_bounced.py          failed recipients → campaign contact `bounced` + people email_bounced_at
   sync.py                   nightly: google_contacts_sync.run_sync, then hubspot_mirror.reconcile
 api/
   main.py                   FastAPI app, /health, OTel request-metrics middleware

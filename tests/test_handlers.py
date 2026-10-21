@@ -3,12 +3,13 @@ from datetime import UTC, datetime
 import pytest
 
 import clients.db as db
+import services.campaign as campaign
 import services.google_contacts_sync as gsync
 import services.hubspot_mirror as mirror
 import services.ingest as ingest
 import services.outreach as outreach
 import services.outreach_sync as outreach_sync
-from handlers import email_classified, email_sent, sync
+from handlers import email_bounced, email_classified, email_sent, sync
 from models.types import IngestResult
 from services.outreach_sync import SyncResult
 
@@ -46,6 +47,9 @@ def calls(monkeypatch):
     monkeypatch.setattr(
         outreach_sync, "sync_events", lambda c, ids, **kw: log.append(("sync", list(ids)))
     )
+    monkeypatch.setattr(campaign, "confirm_sent_from_event", lambda c, **kw: 0)
+    monkeypatch.setattr(campaign, "record_inbound_from_event", lambda c, **kw: None)
+    monkeypatch.setattr(campaign, "record_bounce_from_event", lambda c, **kw: 0)
     return log, conn
 
 
@@ -242,6 +246,103 @@ def test_classified_advances_a_reply(monkeypatch, calls, category, automated, ex
     assert advanced == expected
     if expected:
         assert log.index("advance") < log.index("commit")
+
+
+# --- funded-founder campaign ----------------------------------------------------------------
+
+
+def test_sent_confirms_the_campaign_send_inside_the_transaction(monkeypatch, calls):
+    log, _ = calls
+    monkeypatch.setenv("OUTREACH_FROM_ADDRESSES", "ben@consulting.example.com")
+    _outbound_rows(monkeypatch)
+    seen = {}
+
+    def confirm(c, **kw):
+        seen.update(kw)
+        log.append("confirm")
+        return 1
+
+    monkeypatch.setattr(campaign, "confirm_sent_from_event", confirm)
+    email_sent.handle(_sent())
+    assert seen == {
+        "to": ["bob@x.com", "me@x.com"],
+        "from_address": "Ben@Consulting.Example.com ",
+        "graph_message_id": "g1",
+        "at": datetime(2026, 10, 13, 15, 0, tzinfo=UTC),
+    }
+    assert log.index("confirm") < log.index("commit")
+
+
+def test_classified_records_campaign_inbound_even_ignored_and_automated(monkeypatch, calls):
+    log, _ = calls
+    row = {"id": 5, "email": "alice@x.com", "eligible": False, "automated": True}
+    monkeypatch.setattr(
+        ingest, "record_inbound", lambda conn, **kw: IngestResult(row=row, newly_eligible=False)
+    )
+    seen = {}
+
+    def inbound(c, **kw):
+        seen.update(kw)
+        log.append("inbound")
+        return "opted_out"
+
+    monkeypatch.setattr(campaign, "record_inbound_from_event", inbound)
+    email_classified.handle(_event("ignore") | {"body": "No", "graph_message_id": "gm1"})
+    assert seen == {
+        "sender": "alice@x.com",
+        "body": "No",
+        "category": "ignore",
+        "graph_message_id": "gm1",
+        "at": datetime(2026, 9, 3, 12, 0, tzinfo=UTC),
+    }
+    assert log.index("inbound") < log.index("commit")
+
+
+def test_classified_campaign_inbound_tolerates_a_missing_body(monkeypatch, calls):
+    row = {"id": 5, "email": "alice@x.com", "eligible": False}
+    monkeypatch.setattr(
+        ingest, "record_inbound", lambda conn, **kw: IngestResult(row=row, newly_eligible=False)
+    )
+    seen = {}
+    monkeypatch.setattr(campaign, "record_inbound_from_event", lambda c, **kw: seen.update(kw))
+    email_classified.handle(_event() | {"body": None})
+    assert seen["body"] == "" and seen["graph_message_id"] == "m1"
+
+
+def _bounced():
+    return {
+        "event": "email_bounced",
+        "message_id": "ndr1",
+        "graph_message_id": "gndr1",
+        "conversation_id": "conv1",
+        "received_at": "2026-10-21T16:00:00Z",
+        "failed_recipients": ["cto@acme.com", "nobody@else.com"],
+        "status": "5.1.1",
+        "diagnostic": "user unknown",
+        "original_subject": "Hello",
+        "original_graph_message_id": "g1",
+    }
+
+
+def test_bounced_records_and_commits(monkeypatch, calls):
+    log, conn = calls
+    seen = {}
+
+    def bounce(c, **kw):
+        seen.update(kw)
+        log.append("bounce")
+        return 1
+
+    monkeypatch.setattr(campaign, "record_bounce_from_event", bounce)
+    email_bounced.handle(_bounced())
+    assert seen == {
+        "failed_recipients": ["cto@acme.com", "nobody@else.com"],
+        "graph_message_id": "gndr1",
+        "at": datetime(2026, 10, 21, 16, 0, tzinfo=UTC),
+        "status": "5.1.1",
+        "diagnostic": "user unknown",
+    }
+    assert log == ["bounce", "commit"] and conn.commits == 1
 
 
 def test_sync_handler_runs_google_hubspot_then_the_asana_backstop(monkeypatch):

@@ -4,7 +4,7 @@ import json
 import pytest
 
 import main
-from handlers import email_classified, email_sent
+from handlers import email_bounced, email_classified, email_sent
 from handlers import sync as sync_handler
 
 
@@ -25,6 +25,9 @@ def seen(monkeypatch):
         email_classified, "handle", lambda e: log.append(("classified", e["message_id"]))
     )
     monkeypatch.setattr(email_sent, "handle", lambda e: log.append(("sent", e["graph_message_id"])))
+    monkeypatch.setattr(
+        email_bounced, "handle", lambda e: log.append(("bounced", e["graph_message_id"]))
+    )
     return log
 
 
@@ -36,6 +39,11 @@ def test_process_routes_classified(seen):
 def test_process_routes_sent(seen):
     main.process(Event({"event": "email_sent", "graph_message_id": "g1"}))
     assert seen == [("sent", "g1")]
+
+
+def test_process_routes_bounced(seen):
+    main.process(Event({"event": "email_bounced", "graph_message_id": "n1"}))
+    assert seen == [("bounced", "n1")]
 
 
 def test_process_ignores_unknown(seen):

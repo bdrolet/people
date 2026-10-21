@@ -30,6 +30,7 @@ class FakeRepo:
         self.events: list[dict] = []
         self.outreach_by_domain: dict[str, list[dict]] = {}
         self.locked: list[int] = []
+        self.people_bounced: list[tuple[str, datetime]] = []
 
     # runs
     def latest_run(self, conn):
@@ -115,6 +116,9 @@ class FakeRepo:
 
     def people_in_outreach_by_domain(self, conn, domain):
         return self.outreach_by_domain.get(domain, [])
+
+    def set_people_bounced(self, conn, email, at):
+        self.people_bounced.append((email, at))
 
 
 @pytest.fixture
@@ -620,3 +624,219 @@ def test_is_opt_out_true(body):
 )
 def test_is_opt_out_false(body):
     assert svc.is_opt_out(body) is False
+
+
+# --- inbox events ---------------------------------------------------------------------------
+
+CAMPAIGN_SENDER = "ben@consulting.example.com"
+
+
+@pytest.fixture
+def sender(monkeypatch):
+    monkeypatch.delenv("CAMPAIGN_FROM_ADDRESS", raising=False)
+    monkeypatch.setenv("OUTREACH_FROM_ADDRESSES", f"{CAMPAIGN_SENDER},ben@alias.example.com")
+    return CAMPAIGN_SENDER
+
+
+def test_campaign_from_address_defaults_to_the_brief_sender(sender):
+    assert svc.campaign_from_address() == sender
+
+
+def test_campaign_from_address_env_override(sender, monkeypatch):
+    monkeypatch.setenv("CAMPAIGN_FROM_ADDRESS", "campaign@example.com")
+    assert svc.campaign_from_address() == "campaign@example.com"
+
+
+def test_reply_from_a_colleague_marks_the_sent_contact_replied(repo):
+    co = _company(repo)
+    cid = _contact(repo, co, "sent")
+    conn = FakeConn()
+    got = svc.record_inbound_from_event(
+        conn,
+        sender="Colleague@Acme.com",
+        body="Looping in our CTO, who owns this.",
+        category="respond",
+        graph_message_id="r1",
+        at=TS,
+    )
+    assert got == "replied"
+    assert repo.contacts[cid]["status"] == "replied" and repo.contacts[cid]["replied_at"] == TS
+    assert repo.events[-1]["status"] == "replied"
+    assert repo.events[-1]["source"] == "event"
+    assert repo.events[-1]["graph_message_id"] == "r1"
+    assert conn.commits == 0
+
+
+def test_domain_fallback_picks_the_most_recent_send(repo):
+    co = _company(repo)
+    older = _contact(repo, co, "followed_up", "a@acme.com")
+    newer = _contact(repo, co, "sent", "b@acme.com")
+    _contact(repo, co, "drafted", "c@acme.com")
+    repo.contacts[older]["sent_at"] = TS - timedelta(days=9)
+    repo.contacts[newer]["sent_at"] = TS - timedelta(days=1)
+    got = svc.record_inbound_from_event(
+        FakeConn(),
+        sender="x@acme.com",
+        body="Sure",
+        category="respond",
+        graph_message_id="r1",
+        at=TS,
+    )
+    assert got == "replied"
+    assert repo.contacts[newer]["status"] == "replied"
+    assert repo.contacts[older]["status"] == "followed_up"
+
+
+def test_ignored_no_opts_the_company_out(repo):
+    co = _company(repo)
+    cid = _contact(repo, co, "sent")
+    other = _contact(repo, co, "drafted", "ceo@acme.com")
+    got = svc.record_inbound_from_event(
+        FakeConn(),
+        sender="cto@acme.com",
+        body="No",
+        category="ignore",
+        graph_message_id="r1",
+        at=TS,
+    )
+    assert got == "opted_out"
+    assert repo.contacts[cid]["status"] == "opted_out"
+    assert repo.contacts[other]["status"] == "opted_out"
+    assert repo.companies[co]["status"] == "opted_out"
+    assert repo.events[-1]["note"] == "reply from cto@acme.com"
+
+
+def test_ignored_mail_that_is_not_an_opt_out_writes_nothing(repo):
+    co = _company(repo)
+    cid = _contact(repo, co, "sent")
+    got = svc.record_inbound_from_event(
+        FakeConn(),
+        sender="cto@acme.com",
+        body="I am out of the office until Monday.",
+        category="ignore",
+        graph_message_id="r1",
+        at=TS,
+    )
+    assert got is None and repo.contacts[cid]["status"] == "sent" and repo.events == []
+
+
+def test_unknown_sender_writes_nothing(repo):
+    co = _company(repo)
+    _contact(repo, co, "sent")
+    events = len(repo.events)
+    got = svc.record_inbound_from_event(
+        FakeConn(),
+        sender="someone@elsewhere.com",
+        body="No",
+        category="respond",
+        graph_message_id="r1",
+        at=TS,
+    )
+    assert got is None and len(repo.events) == events
+
+
+def test_domain_with_no_sent_contact_writes_nothing(repo):
+    co = _company(repo)
+    _contact(repo, co, "drafted")
+    events = len(repo.events)
+    got = svc.record_inbound_from_event(
+        FakeConn(),
+        sender="x@acme.com",
+        body="Thanks",
+        category="respond",
+        graph_message_id="r1",
+        at=TS,
+    )
+    assert got is None and len(repo.events) == events
+
+
+def test_reply_on_a_bounced_contact_is_skipped(repo):
+    co = _company(repo)
+    cid = _contact(repo, co, "bounced")
+    got = svc.record_inbound_from_event(
+        FakeConn(),
+        sender="cto@acme.com",
+        body="Sure",
+        category="respond",
+        graph_message_id="r1",
+        at=TS,
+    )
+    assert got is None and repo.contacts[cid]["status"] == "bounced" and repo.events == []
+
+
+def test_confirm_sent_ignores_another_sender(repo, sender):
+    co = _company(repo)
+    cid = _contact(repo, co, "approved")
+    n = svc.confirm_sent_from_event(
+        FakeConn(),
+        to=["cto@acme.com"],
+        from_address="ben@alias.example.com",
+        graph_message_id="g1",
+        at=TS,
+    )
+    assert n == 0 and repo.contacts[cid]["status"] == "approved"
+
+
+def test_confirm_sent_advances_an_approved_contact(repo, sender):
+    co = _company(repo)
+    cid = _contact(repo, co, "approved")
+    n = svc.confirm_sent_from_event(
+        FakeConn(),
+        to=["CTO@acme.com"],
+        from_address=" Ben@Consulting.Example.com",
+        graph_message_id="g1",
+        at=TS,
+    )
+    assert n == 1
+    row = repo.contacts[cid]
+    assert row["status"] == "sent" and row["graph_message_id"] == "g1" and row["sent_at"] == TS
+    assert repo.events[-1]["source"] == "event" and repo.events[-1]["status"] == "sent"
+
+
+def test_confirm_sent_fills_a_missing_message_id(repo, sender):
+    co = _company(repo)
+    cid = _contact(repo, co, "sent")
+    kept = _contact(repo, co, "sent", "ceo@acme.com")
+    repo.contacts[kept]["graph_message_id"] = "g0"
+    events = len(repo.events)
+    n = svc.confirm_sent_from_event(
+        FakeConn(),
+        to=["cto@acme.com", "ceo@acme.com", "x@nowhere.com"],
+        from_address=sender,
+        graph_message_id="g1",
+        at=TS,
+    )
+    assert n == 1
+    assert repo.contacts[cid]["graph_message_id"] == "g1"
+    assert repo.contacts[kept]["graph_message_id"] == "g0"
+    assert len(repo.events) == events and repo.contacts[cid]["status"] == "sent"
+
+
+def test_bounce_with_one_known_recipient(repo):
+    co = _company(repo)
+    cid = _contact(repo, co, "sent")
+    n = svc.record_bounce_from_event(
+        FakeConn(),
+        failed_recipients=["CTO@acme.com", "nobody@else.com"],
+        graph_message_id="n1",
+        at=TS,
+        status="5.1.1",
+        diagnostic="user unknown",
+    )
+    assert n == 1
+    assert repo.contacts[cid]["status"] == "bounced"
+    assert repo.events[-1]["source"] == "event" and repo.events[-1]["note"] == "5.1.1 user unknown"
+    assert repo.people_bounced == [("cto@acme.com", TS), ("nobody@else.com", TS)]
+
+
+def test_late_bounce_on_an_opted_out_contact_is_skipped(repo):
+    co = _company(repo)
+    cid = _contact(repo, co, "opted_out")
+    n = svc.record_bounce_from_event(
+        FakeConn(),
+        failed_recipients=["cto@acme.com"],
+        graph_message_id="n1",
+        at=TS,
+    )
+    assert n == 0 and repo.contacts[cid]["status"] == "opted_out" and repo.events == []
+    assert repo.people_bounced == [("cto@acme.com", TS)]

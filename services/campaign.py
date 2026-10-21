@@ -3,6 +3,8 @@ status data on the campaign_* tables; handlers and the CLI call it, never
 repo/campaign.py directly. Every write function takes an open connection and leaves
 committing to the caller, so the event handlers keep it inside their durable transaction."""
 
+import logging
+import os
 import re
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
@@ -12,7 +14,10 @@ from models.campaign import CONTACT_STATUSES, OPT_OUT_PHRASES, Advance
 from repo import campaign as campaign_repo
 from repo import outreach as outreach_repo
 from repo import people as people_repo
+from services import outreach
 from services.linkedin_export import normalize_profile_url
+
+logger = logging.getLogger(__name__)
 
 TZ = ZoneInfo("America/New_York")
 # The default when a caller does not name the date; send passes targets.follow_up_business_days.
@@ -377,3 +382,145 @@ def is_opt_out(body: str | None) -> bool:
     if lines and _GREETING.match(lines[0]):
         lines = lines[1:]
     return any(_line_opts_out(ln) for ln in lines[:2])
+
+
+# --- inbox events ---------------------------------------------------------------------------
+
+EVENT_SOURCE = "event"
+_AWAITING_REPLY = ("sent", "followed_up")
+_EPOCH = datetime.min.replace(tzinfo=UTC)
+
+
+def campaign_from_address() -> str | None:
+    """The identity campaign mail goes out from: CAMPAIGN_FROM_ADDRESS when set, else the
+    referral brief sender (the first OUTREACH_FROM_ADDRESSES entry)."""
+    override = os.environ.get("CAMPAIGN_FROM_ADDRESS", "").strip()
+    return override or outreach.brief_from_address()
+
+
+def _norm(address: str | None) -> str:
+    return (address or "").strip().lower()
+
+
+def confirm_sent_from_event(
+    conn: Any, *, to: list[str], from_address: str, graph_message_id: str, at: datetime
+) -> int:
+    """An `email_sent` from the campaign sender confirms the send: an `approved` contact
+    (the CLI crashed between send and record) moves to `sent`; a `sent` one gets its
+    `graph_message_id` when it has none. Returns how many contacts were touched."""
+    campaign_sender = _norm(campaign_from_address())
+    if not campaign_sender or _norm(from_address) != campaign_sender:
+        return 0
+    touched = 0
+    for address in dict.fromkeys(_norm(a) for a in to or []):
+        if not address:
+            continue
+        contact = campaign_repo.get_contact_by_email(conn, address)
+        if contact is None or contact["status"] not in ("approved", "sent"):
+            continue
+        if contact["status"] == "approved":
+            try:
+                done = advance(
+                    conn,
+                    contact["id"],
+                    "sent",
+                    at=at,
+                    source=EVENT_SOURCE,
+                    graph_message_id=graph_message_id,
+                )
+            except InvalidTransition as exc:
+                logger.warning("campaign contact %s: sent skipped: %s", contact["id"], exc)
+                continue
+            touched += done.changed
+        elif not contact.get("graph_message_id") and graph_message_id:
+            campaign_repo.update_contact(
+                conn, contact["id"], {"graph_message_id": graph_message_id}
+            )
+            touched += 1
+    return touched
+
+
+def _inbound_contact(conn: Any, sender: str) -> dict | None:
+    """The sender's own contact, else the most recently emailed open contact at their domain
+    (a colleague answering for the person written to)."""
+    contact = campaign_repo.get_contact_by_email(conn, sender)
+    if contact is not None:
+        return contact
+    domain = _domain(sender)
+    if domain is None:
+        return None
+    waiting = [
+        c for c in campaign_repo.contacts_by_domain(conn, domain) if c["status"] in _AWAITING_REPLY
+    ]
+    if not waiting:
+        return None
+    return max(waiting, key=lambda c: (c.get("sent_at") or _EPOCH, c["id"]))
+
+
+def record_inbound_from_event(
+    conn: Any, *, sender: str, body: str, category: str, graph_message_id: str, at: datetime
+) -> str | None:
+    """Spec: an opt-out phrase stops the company whatever inbox filed the mail as (an
+    `ignore` "No" still counts); any other non-ignore mail proves `replied`. Returns
+    "opted_out", "replied" or None; a sender with no campaign contact writes nothing."""
+    sender = _norm(sender)
+    contact = _inbound_contact(conn, sender)
+    if contact is None:
+        return None
+    if is_opt_out(body):
+        opt_out_company(
+            conn, contact["company_id"], at=at, source=EVENT_SOURCE, note=f"reply from {sender}"
+        )
+        return "opted_out"
+    if category == "ignore":
+        return None
+    try:
+        done = advance(
+            conn,
+            contact["id"],
+            "replied",
+            at=at,
+            source=EVENT_SOURCE,
+            graph_message_id=graph_message_id,
+        )
+    except InvalidTransition as exc:
+        logger.info("campaign contact %s: reply skipped: %s", contact["id"], exc)
+        return None
+    return "replied" if done.changed else None
+
+
+def record_bounce_from_event(
+    conn: Any,
+    *,
+    failed_recipients: list[str],
+    graph_message_id: str,
+    at: datetime,
+    status: str | None = None,
+    diagnostic: str | None = None,
+) -> int:
+    """Each failed address: its campaign contact (if any) → `bounced`, and its people row
+    stamped `email_bounced_at` either way. Returns how many contacts moved."""
+    note = " ".join(part for part in (status, diagnostic) if part) or None
+    moved = 0
+    for address in dict.fromkeys(_norm(a) for a in failed_recipients or []):
+        if not address:
+            continue
+        campaign_repo.set_people_bounced(conn, address, at)
+        contact = campaign_repo.get_contact_by_email(conn, address)
+        if contact is None:
+            continue
+        try:
+            done = advance(
+                conn,
+                contact["id"],
+                "bounced",
+                at=at,
+                source=EVENT_SOURCE,
+                graph_message_id=graph_message_id,
+                note=note,
+            )
+        except InvalidTransition as exc:
+            logger.info("campaign contact %s: bounce skipped: %s", contact["id"], exc)
+            continue
+        moved += done.changed
+    return moved
