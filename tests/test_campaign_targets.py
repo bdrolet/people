@@ -42,7 +42,7 @@ def test_missing_file(tmp_path):
 
 
 def test_bad_toml(tmp_path):
-    with pytest.raises(TargetsError):
+    with pytest.raises(TargetsError, match="campaign_targets.toml"):
         load_targets(_write(tmp_path, "[fit\nthreshold = 6"))
 
 
@@ -89,3 +89,15 @@ def test_slots_through_must_be_text(tmp_path):
     text = GOOD.replace('slots_through = "this fall"', "slots_through = 3")
     with pytest.raises(TargetsError, match="slots_through"):
         load_targets(_write(tmp_path, text))
+
+
+def test_blank_slots_through(tmp_path):
+    text = GOOD.replace('"this fall"', '"  "')
+    with pytest.raises(TargetsError, match="non-empty text"):
+        load_targets(_write(tmp_path, text))
+
+
+def test_targets_error_is_shared_with_outreach():
+    from services import campaign_targets, outreach_targets
+
+    assert campaign_targets.TargetsError is outreach_targets.TargetsError
