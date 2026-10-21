@@ -45,10 +45,18 @@ def _e(value) -> str:
     return html_lib.escape("" if value is None else str(value), quote=True)
 
 
+LINKEDIN_PREFIXES = ("https://www.linkedin.com/", "https://linkedin.com/")
+
+
+def _safe_linkedin(url) -> bool:
+    """Only https LinkedIn URLs become links; scraped text could be javascript: or data:."""
+    return isinstance(url, str) and url.lower().startswith(LINKEDIN_PREFIXES)
+
+
 def _who(contact: dict) -> str:
     name = _e(contact.get("full_name"))
     url = contact.get("linkedin_url")
-    if url:
+    if _safe_linkedin(url):
         name = f'<a href="{_e(url)}" target="_blank" rel="noopener noreferrer">{name}</a>'
     title = contact.get("title")
     return f"{name}, {_e(title)}" if title else name
@@ -66,7 +74,11 @@ def _company_line(company: dict) -> str:
 def _drafted_row(entry: dict) -> str:
     contact, company = entry["contact"], entry["company"]
     cid = int(contact["id"])
-    badges = "".join(f'<span class="badge">{_e(flag)}</span>' for flag in entry.get("flags", []))
+    flags = ["generic opener"] if contact.get("opener_generic") else []
+    for flag in entry.get("flags") or []:
+        if flag not in flags:
+            flags.append(flag)
+    badges = "".join(f'<span class="badge">{_e(flag)}</span>' for flag in flags)
     body = contact.get("body") or ""
     return f"""<div class="row">
 <div>{_company_line(company)}{badges}</div>

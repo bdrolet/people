@@ -132,6 +132,56 @@ def test_no_external_urls_other_than_linkedin():
     urls = re.findall(r"https?://[^\s\"'<>]+", html)
     assert urls
     assert all(u.startswith("https://www.linkedin.com/") for u in urls)
+    hrefs = re.findall(r'href="([^"]*)"', html)
+    assert hrefs
+    assert all(h.startswith(("https://www.linkedin.com/", "https://linkedin.com/")) for h in hrefs)
+
+
+def _row_with_url(url):
+    entry = _entry(7)
+    entry["contact"]["linkedin_url"] = url
+    return _page(drafted=[entry], parked={})
+
+
+def test_javascript_linkedin_url_is_not_linked():
+    html = _row_with_url("javascript:alert(1)")
+    assert "<a" not in html
+    assert "Person 7" in html
+
+
+def test_http_linkedin_url_is_not_linked():
+    html = _row_with_url("http://www.linkedin.com/in/x")
+    assert "<a" not in html
+
+
+def test_https_linkedin_url_is_linked():
+    assert '<a href="https://www.linkedin.com/in/x"' in _row_with_url(
+        "https://www.linkedin.com/in/x"
+    )
+    assert '<a href="https://linkedin.com/in/y"' in _row_with_url("https://linkedin.com/in/y")
+    assert "<a" in _row_with_url("HTTPS://WWW.LINKEDIN.COM/in/z")
+
+
+def test_generic_opener_badge_from_contact_without_flags():
+    entry = _entry(7)
+    entry["contact"]["opener_generic"] = True
+    entry["flags"] = []
+    html = _page(drafted=[entry], parked={})
+    assert html.count('<span class="badge">generic opener</span>') == 1
+
+
+def test_fact_check_badge_from_flags():
+    html = _page(drafted=[_entry(7, flags=["fact check regenerated"])], parked={})
+    assert html.count('<span class="badge">fact check regenerated</span>') == 1
+    assert "generic opener" not in html
+
+
+def test_both_badges_once_each():
+    entry = _entry(7, flags=["generic opener", "fact check regenerated"])
+    assert entry["contact"]["opener_generic"] is True
+    html = _page(drafted=[entry], parked={})
+    assert html.count('<span class="badge">generic opener</span>') == 1
+    assert html.count('<span class="badge">fact check regenerated</span>') == 1
 
 
 def test_parse_approvals_unchanged_body_is_none():
