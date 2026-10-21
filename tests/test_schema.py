@@ -695,3 +695,47 @@ def test_google_writers_round_trip_linkedin_url(conn):
         linkedin_url="linkedin.com/in/bob-example",
     )
     assert people_repo.get(conn, "b@example.com")["linkedin_url"] == "linkedin.com/in/bob-example"
+
+
+def test_campaign_tables_and_constraints(conn):
+    conn.execute(SCHEMA.read_text())  # twice: idempotent with the campaign block
+    run_id = conn.execute("INSERT INTO campaign_runs (notes) VALUES ('t') RETURNING id").fetchone()[
+        0
+    ]
+    company_id = conn.execute(
+        "INSERT INTO campaign_companies (domain, name, round, run_id) "
+        "VALUES ('acme.com', 'Acme', 'seed', %s) RETURNING id",
+        (run_id,),
+    ).fetchone()[0]
+    contact_id = conn.execute(
+        "INSERT INTO campaign_contacts (company_id, full_name, email, run_id) "
+        "VALUES (%s, 'Jo Founder', 'jo@acme.com', %s) RETURNING id",
+        (company_id, run_id),
+    ).fetchone()[0]
+    conn.execute(
+        "INSERT INTO campaign_events (contact_id, status, source) VALUES (%s, 'candidate', 'cli')",
+        (contact_id,),
+    )
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        conn.execute("INSERT INTO campaign_companies (domain, name) VALUES ('Acme.com', 'Acme 2')")
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        conn.execute(
+            "INSERT INTO campaign_contacts (company_id, full_name, email) "
+            "VALUES (%s, 'Jo again', 'JO@acme.com')",
+            (company_id,),
+        )
+    with pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute("INSERT INTO campaign_events (status, source) VALUES ('sent', 'cli')")
+    with pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute(
+            "INSERT INTO campaign_events (contact_id, status, source) VALUES (%s, 'sent', 'bogus')",
+            (contact_id,),
+        )
+
+
+def test_people_has_email_bounced_at(conn):
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'people' AND column_name = 'email_bounced_at'"
+    ).fetchone()
+    assert row is not None

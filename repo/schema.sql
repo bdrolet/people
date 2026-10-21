@@ -526,3 +526,85 @@ DO $$ BEGIN
             CHECK (email IS NOT NULL OR cardinality(phone_numbers) > 0 OR linkedin_url IS NOT NULL);
     END IF;
 END $$;
+
+-- Funded-founder campaign (docs/superpowers/specs/2026-10-21-funded-founder-campaign-design.md
+-- §7.1, in the consulting repo). Deliberately separate from the referral outreach_* tables:
+-- a second pipeline beside it. Rows here are never exported with outreach_*; they rebuild
+-- from the campaign ledgers. services/campaign.py is the only writer of status data;
+-- campaign_events is append-only and every count in `campaign report` derives from it.
+CREATE TABLE IF NOT EXISTS campaign_runs (
+    id            BIGSERIAL PRIMARY KEY,
+    ran_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    lookback_from DATE,
+    lookback_to   DATE,
+    counts        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    notes         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS campaign_companies (
+    id                   BIGSERIAL PRIMARY KEY,
+    domain               TEXT NOT NULL,
+    name                 TEXT NOT NULL,
+    round                TEXT CHECK (round IN ('seed','a','b','other')),
+    amount               BIGINT,             -- announced amount, USD
+    announced_on         DATE,
+    source_url           TEXT,
+    product_summary      TEXT,
+    announcement_excerpt TEXT,
+    hq_country           TEXT,
+    fit_score            INTEGER,
+    fit_notes            TEXT,
+    status               TEXT NOT NULL DEFAULT 'new'
+                         CHECK (status IN ('new','below_bar','warm','active','opted_out','closed')),
+    run_id               BIGINT REFERENCES campaign_runs(id) ON DELETE SET NULL,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS campaign_companies_domain_key ON campaign_companies (lower(domain));
+
+CREATE TABLE IF NOT EXISTS campaign_contacts (
+    id               BIGSERIAL PRIMARY KEY,
+    company_id       BIGINT NOT NULL REFERENCES campaign_companies(id) ON DELETE CASCADE,
+    person_id        BIGINT REFERENCES people(id) ON DELETE SET NULL,  -- NULL until the people row exists (on approval)
+    full_name        TEXT NOT NULL,
+    title            TEXT,
+    linkedin_url     TEXT,
+    email            TEXT,
+    email_source     TEXT CHECK (email_source IN ('apollo','hunter','manual')),
+    verification     TEXT CHECK (verification IN ('valid','accept_all','unknown','invalid')),
+    status           TEXT NOT NULL DEFAULT 'candidate'
+                     CHECK (status IN ('candidate','unverified','skipped_warm','drafted','approved',
+                                       'skipped','sent','followed_up','replied','opted_out',
+                                       'bounced','booked')),
+    subject          TEXT,
+    body             TEXT,
+    opener_generic   BOOLEAN NOT NULL DEFAULT false,
+    draft_id         TEXT,
+    graph_message_id TEXT,
+    sent_at          TIMESTAMPTZ,
+    follow_up_on     DATE,
+    replied_at       TIMESTAMPTZ,
+    run_id           BIGINT REFERENCES campaign_runs(id) ON DELETE SET NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS campaign_contacts_company_email_key
+    ON campaign_contacts (company_id, lower(email));
+CREATE INDEX IF NOT EXISTS campaign_contacts_status_idx ON campaign_contacts (status, follow_up_on);
+
+CREATE TABLE IF NOT EXISTS campaign_events (
+    id               BIGSERIAL PRIMARY KEY,
+    contact_id       BIGINT REFERENCES campaign_contacts(id) ON DELETE CASCADE,
+    company_id       BIGINT REFERENCES campaign_companies(id) ON DELETE CASCADE,
+    status           TEXT NOT NULL,
+    at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+    source           TEXT NOT NULL CHECK (source IN ('cli','event','page')),
+    graph_message_id TEXT,                   -- the message that proved it (reply, bounce), when one did
+    note             TEXT,                   -- free text, never sent anywhere
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (contact_id IS NOT NULL OR company_id IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS campaign_events_status_at_idx ON campaign_events (status, at);
+
+-- A hard bounce (inbox non-delivery report, spec §10.2) marks the address, not the contact.
+ALTER TABLE people ADD COLUMN IF NOT EXISTS email_bounced_at TIMESTAMPTZ;
