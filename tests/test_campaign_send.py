@@ -213,11 +213,19 @@ class FakeRepo:
 
 
 class FakeInbox:
-    def __init__(self, fail_send_for: set[str] = frozenset(), return_id: bool = True):
+    def __init__(
+        self,
+        fail_send_for: set[str] = frozenset(),
+        return_id: bool = True,
+        lost_reply_for: set[str] = frozenset(),
+    ):
         self.drafts: list[dict] = []
         self.sent: list[str] = []
         self.fail_send_for = fail_send_for
         self.return_id = return_id
+        # Graph accepts the send but the response never arrives (read timeout, late 5xx).
+        self.lost_reply_for = set(lost_reply_for)
+        self.searches: list[tuple[str, str]] = []
 
     def create_draft(self, to, subject, body="", from_address=None):
         draft_id = f"d{len(self.drafts) + 1}"
@@ -232,7 +240,18 @@ class FakeInbox:
             raise RuntimeError("graph 503")
         assert from_address == FROM
         self.sent.append(draft_id)
+        if to in self.lost_reply_for:
+            self.lost_reply_for.discard(to)
+            raise RuntimeError("read timeout")
         return {"status": "sent", "id": f"m-{draft_id}"} if self.return_id else {"status": "sent"}
+
+    def search_sent(self, *, to, subject):
+        self.searches.append((to, subject))
+        return [
+            {"message_id": f"m-{d['id']}", "subject": d["subject"], "sender": FROM}
+            for d in self.drafts
+            if d["id"] in self.sent and d["to"] == [to] and d["subject"] == subject
+        ]
 
 
 @pytest.fixture
@@ -262,7 +281,7 @@ def people(monkeypatch):
     return state
 
 
-def _send(conn, repo, inbox, now=NOW):
+def _send(conn, repo, inbox, now=NOW, force=False):
     return send.send_batch(
         conn,
         now=now,
@@ -272,6 +291,7 @@ def _send(conn, repo, inbox, now=NOW):
         inbox=inbox,
         pause_s=3.0,
         sleep=lambda s: None,
+        force=force,
     )
 
 
@@ -425,7 +445,8 @@ def test_a_failed_send_leaves_the_contact_approved_and_continues(repo, people):
     assert repo.rows[bad]["person_id"] is not None  # the people row is kept
     assert repo.rows[good]["status"] == "sent"
     assert conn.rollbacks == 1
-    assert result == send.SendResult(sent=1, remaining=1, halted=False)
+    assert repo.rows[bad]["draft_id"] == "d1"  # recorded before the send was tried
+    assert result == send.SendResult(sent=1, remaining=1, halted=False, needs_check=[bad])
 
 
 def test_three_bounces_in_the_run_halt_before_any_send(repo, people):
@@ -472,3 +493,97 @@ def test_writes_the_run_counts(repo, people):
     counts = repo.counts[1]
     assert counts["sent"] == 1 and counts["drafted"] == 1 and counts["approved"] == 0
     assert set(counts) == set(CONTACT_STATUSES)
+
+
+# --- unknown send outcomes ------------------------------------------------------------------
+
+
+def test_a_send_accepted_but_unanswered_is_reconciled_not_resent(repo, people):
+    cid = repo.add()
+    inbox = FakeInbox(lost_reply_for={f"sam{cid}@acme.com"})
+    first = _send(FakeConn(), repo, inbox)
+    assert first == send.SendResult(sent=0, remaining=1, halted=False, needs_check=[cid])
+    assert repo.rows[cid]["status"] == "approved"
+    assert repo.rows[cid]["draft_id"] == "d1"
+
+    second = _send(FakeConn(), repo, inbox)
+    assert len(inbox.drafts) == 1 and inbox.sent == ["d1"]  # never sent twice
+    assert inbox.searches == [(f"sam{cid}@acme.com", f"Subject {cid}")]
+    assert second == send.SendResult(sent=1, remaining=0, halted=False)
+    row = repo.rows[cid]
+    assert (row["status"], row["graph_message_id"]) == ("sent", "m-d1")
+    assert row["follow_up_on"] == date(2026, 10, 28)
+    assert repo.sent_today(None, date(2026, 10, 21)) == 1
+
+
+def test_a_draft_with_no_sent_message_is_reported_and_left_alone(repo, people):
+    cid = repo.add(draft_id="d-old")
+    inbox = FakeInbox()
+    result = _send(FakeConn(), repo, inbox)
+    assert result == send.SendResult(sent=0, remaining=1, halted=False, needs_check=[cid])
+    assert inbox.drafts == [] and inbox.sent == []
+    assert repo.rows[cid]["status"] == "approved"
+
+
+def test_advance_failing_after_a_send_leaves_the_draft_recorded_for_reconcile(
+    repo, people, monkeypatch
+):
+    cid = repo.add()
+    inbox = FakeInbox()
+    real_advance = campaign_svc.advance
+
+    def broken(*a, **kw):
+        raise RuntimeError("connection lost")
+
+    monkeypatch.setattr(campaign_svc, "advance", broken)
+    with pytest.raises(RuntimeError):
+        _send(FakeConn(), repo, inbox)
+    assert repo.rows[cid]["draft_id"] == "d1" and repo.rows[cid]["status"] == "approved"
+
+    monkeypatch.setattr(campaign_svc, "advance", real_advance)
+    result = _send(FakeConn(), repo, inbox)
+    assert inbox.sent == ["d1"]
+    assert result.sent == 1 and repo.rows[cid]["status"] == "sent"
+    assert repo.rows[cid]["graph_message_id"] == "m-d1"
+
+
+def test_restage_stale_clears_the_draft_id(repo):
+    cid = repo.add(draft_id="d9")
+    repo.insert_event(None, contact_id=cid, status="approved", at=NOW - timedelta(days=8))
+    send.restage_stale(FakeConn(), now=NOW, stale_after_days=7)
+    assert repo.rows[cid]["status"] == "drafted"
+    assert repo.rows[cid]["draft_id"] is None
+
+
+# --- force and the halt ---------------------------------------------------------------------
+
+
+def _bounces(repo, n):
+    for _ in range(n):
+        cid = repo.add(status="bounced")
+        repo.insert_event(None, contact_id=cid, status="bounced", at=NOW - timedelta(hours=1))
+
+
+def test_force_sends_past_the_bounce_halt(repo, people):
+    _bounces(repo, 3)
+    cid = repo.add()
+    result = _send(FakeConn(), repo, FakeInbox(), force=True)
+    assert result == send.SendResult(sent=1, remaining=0, halted=False)
+    assert repo.rows[cid]["status"] == "sent"
+
+
+def test_a_halted_run_reports_halted_even_when_the_day_is_full(repo, people):
+    _bounces(repo, 3)
+    repo.add()
+    repo.sent_today_override = TARGETS.per_day
+    assert _send(FakeConn(), repo, FakeInbox()).halted is True
+
+
+def test_the_unsent_draft_itself_is_not_taken_as_a_sent_message(repo, people):
+    """Graph's /messages search spans Drafts; a sent draft leaves Drafts with a new id."""
+    cid = repo.add(draft_id="d-old")
+    inbox = FakeInbox()
+    inbox.search_sent = lambda *, to, subject: [{"message_id": "d-old", "subject": subject}]
+    result = _send(FakeConn(), repo, inbox)
+    assert result.needs_check == [cid] and result.sent == 0
+    assert repo.rows[cid]["status"] == "approved"

@@ -7,7 +7,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -37,6 +37,8 @@ class SendResult:
     sent: int
     remaining: int
     halted: bool
+    # Approved contacts whose draft may or may not have gone out: Ben checks Outlook Drafts.
+    needs_check: list[int] = field(default_factory=list)
 
 
 # --- preflight ------------------------------------------------------------------------------
@@ -92,8 +94,15 @@ def restage_stale(conn: Any, *, now: datetime, stale_after_days: int) -> int:
         approved_at = campaign_repo.last_event_at(conn, contact["id"], "approved")
         if approved_at is None or approved_at >= cutoff:
             continue
+        # A fresh draft gets a fresh draft_id: the old one must not block its send.
         result = campaign.advance(
-            conn, contact["id"], "drafted", at=now, source=campaign.SOURCE, note="stale"
+            conn,
+            contact["id"],
+            "drafted",
+            at=now,
+            source=campaign.SOURCE,
+            note="stale",
+            changes={"draft_id": None},
         )
         conn.commit()
         moved += result.changed
@@ -172,6 +181,39 @@ def _halted(conn: Any, run_id: int | None) -> bool:
     return run_id is not None and campaign_repo.bounced_count_for_run(conn, run_id) > MAX_BOUNCES
 
 
+def _reconcile(conn: Any, contact: dict, inbox: Any, *, now: datetime, follow_up_on) -> bool:
+    """An approved contact with a draft_id had a send whose outcome is unknown. Never
+    send it again: if Graph shows the message went out, record the send; otherwise leave
+    it for Ben. True when it was recorded as sent."""
+    try:
+        hits = inbox.search_sent(to=contact["email"], subject=contact["subject"])
+    except Exception:
+        log.exception("contact %s: could not search sent mail", contact["id"])
+        return False
+    # The search spans Drafts too; a draft that went out moved to Sent Items under a new
+    # id, so a hit still carrying the draft's id is the unsent draft itself.
+    hits = [h for h in hits if h.get("message_id") and h["message_id"] != contact["draft_id"]]
+    if not hits:
+        log.warning(
+            "contact %s: draft %s was never seen sent; check Outlook Drafts",
+            contact["id"],
+            contact["draft_id"],
+        )
+        return False
+    campaign.advance(
+        conn,
+        contact["id"],
+        "sent",
+        at=now,
+        source=campaign.SOURCE,
+        graph_message_id=hits[0].get("message_id"),
+        note="reconciled",
+        changes={"follow_up_on": follow_up_on},
+    )
+    conn.commit()
+    return True
+
+
 def send_batch(
     conn: Any,
     *,
@@ -182,33 +224,55 @@ def send_batch(
     inbox: Any = inbox_api,
     pause_s: float = 3.0,
     sleep: Callable[[float], None] = time.sleep,
+    force: bool = False,
 ) -> SendResult:
     """Send approved contacts, oldest first, up to today's cap. `postal_address` is
-    already in each rendered body; preflight checks it is set."""
+    already in each rendered body; preflight checks it is set. `force` ignores the
+    bounce halt (`campaign resume`)."""
     run = campaign_repo.latest_run(conn)
     run_id = run["id"] if run else None
     approved = campaign_repo.contacts(conn, status="approved")
     budget = targets.per_day - campaign_repo.sent_today(conn, now.astimezone(campaign.TZ).date())
-    sent, halted = 0, False
     follow_up_on = campaign.follow_up_date(now, targets.follow_up_business_days)
-    for contact in approved:
-        if sent >= budget:
-            break
-        if _halted(conn, run_id):
+    sent, attempted, needs_check = 0, 0, []
+    halted = not force and _halted(conn, run_id)
+    for contact in [] if halted else approved:
+        if not force and _halted(conn, run_id):
             halted = True
             break
+        if sent >= budget:
+            break
+        if contact.get("draft_id"):
+            if _reconcile(conn, contact, inbox, now=now, follow_up_on=follow_up_on):
+                sent += 1
+            else:
+                needs_check.append(contact["id"])
+            continue
         if not _ensure_person(conn, contact):
             continue
-        if sent:
+        if attempted:
             sleep(pause_s)
+        attempted += 1
         try:
             draft = inbox.create_draft(
                 [contact["email"]], contact["subject"], contact["body"], from_address=from_address
             )
+        except Exception:
+            log.exception("contact %s: draft failed; left approved", contact["id"])
+            conn.rollback()
+            continue
+        # Recorded before sending: if the send's outcome is lost, the next batch
+        # reconciles this draft instead of writing and sending a second email.
+        campaign_repo.update_contact(conn, contact["id"], {"draft_id": draft["id"]})
+        conn.commit()
+        try:
             receipt = inbox.send_draft(draft["id"], from_address=from_address)
         except Exception:
-            log.exception("contact %s: send failed; left approved", contact["id"])
+            log.exception(
+                "contact %s: send of draft %s failed or was lost", contact["id"], draft["id"]
+            )
             conn.rollback()
+            needs_check.append(contact["id"])
             continue
         # The email is out: from here an error must surface, never be retried as unsent.
         campaign.advance(
@@ -218,7 +282,7 @@ def send_batch(
             at=now,
             source=campaign.SOURCE,
             graph_message_id=receipt.get("id"),
-            changes={"draft_id": draft["id"], "follow_up_on": follow_up_on},
+            changes={"follow_up_on": follow_up_on},
         )
         conn.commit()
         sent += 1
@@ -227,4 +291,6 @@ def send_batch(
             conn, run_id, campaign_repo.status_counts_for_run(conn, run_id)
         )
         conn.commit()
-    return SendResult(sent=sent, remaining=len(approved) - sent, halted=halted)
+    return SendResult(
+        sent=sent, remaining=len(approved) - sent, halted=halted, needs_check=needs_check
+    )
