@@ -214,3 +214,13 @@ def test_set_people_bounced():
     assert "UPDATE people SET email_bounced_at = COALESCE(email_bounced_at, %s)" in sql
     assert "WHERE lower(email) = lower(%s)" in sql
     assert params == (TS, "A@x.io")
+
+
+def test_people_in_outreach_by_domain_joins_on_the_lower_cased_domain():
+    conn = FakeConn([[{"id": 7, "email": "ceo@acme.com"}]])
+    rows = campaign.people_in_outreach_by_domain(conn, "Acme.com")
+    assert rows == [{"id": 7, "email": "ceo@acme.com"}]
+    sql, params = conn.calls[0]
+    assert "FROM people p JOIN outreach_contacts o ON o.person_id = p.id" in sql
+    assert "WHERE lower(split_part(p.email, '@', 2)) = %s" in sql
+    assert params == ("acme.com",)

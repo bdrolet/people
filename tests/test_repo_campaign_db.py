@@ -94,3 +94,22 @@ def test_lock_contact_returns_the_row(conn, seeded):
     with conn.transaction():
         row = campaign.lock_contact(conn, seeded["ca"]["id"])
     assert row["email"] == "ann@a.io"
+
+
+def _person(conn, email):
+    return conn.execute(
+        "INSERT INTO people (email, first_seen) VALUES (%s, %s) RETURNING id", (email, TUESDAY)
+    ).fetchone()["id"]
+
+
+def test_people_in_outreach_by_domain(conn):
+    in_pipeline = _person(conn, "ceo@acme.com")
+    _person(conn, "cfo@acme.com")  # same domain, not in outreach
+    elsewhere = _person(conn, "x@other.com")
+    for pid in (in_pipeline, elsewhere):
+        conn.execute(
+            "INSERT INTO outreach_contacts (person_id, stage) VALUES (%s, 'candidate')", (pid,)
+        )
+    rows = campaign.people_in_outreach_by_domain(conn, "ACME.com")
+    assert [(r["id"], r["email"]) for r in rows] == [(in_pipeline, "ceo@acme.com")]
+    assert campaign.people_in_outreach_by_domain(conn, "nobody.io") == []

@@ -331,3 +331,16 @@ def set_people_bounced(conn: Any, email: str, at: datetime) -> None:
         """,
         (at, email),
     )
+
+
+def people_in_outreach_by_domain(conn: Any, domain: str) -> list[dict]:
+    """People at `domain` who are in the referral pipeline (the warm guard's domain rule)."""
+    return conn.execute(
+        """
+        SELECT p.id, p.email, p.display_name, o.stage
+        FROM people p JOIN outreach_contacts o ON o.person_id = p.id
+        WHERE lower(split_part(p.email, '@', 2)) = %s
+        ORDER BY p.id
+        """,
+        ((domain or "").strip().lower(),),
+    ).fetchall()
