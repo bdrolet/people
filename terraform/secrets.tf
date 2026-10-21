@@ -29,6 +29,21 @@ resource "google_secret_manager_secret" "google_contacts_refresh_token" {
   }
 }
 
+# Campaign lead-sourcing keys (CLI-only); values added by hand with gcloud.
+resource "google_secret_manager_secret" "apollo_api_key" {
+  secret_id = "apollo-api-key"
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret" "hunter_api_key" {
+  secret_id = "hunter-api-key"
+  replication {
+    auto {}
+  }
+}
+
 resource "random_password" "people_db_password" {
   length  = 64
   special = false
