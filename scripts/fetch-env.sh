@@ -38,4 +38,5 @@ grep -q '^TASKS_API_URL=.' .env || sed -i '' 's|^TASKS_API_URL=.*|TASKS_API_URL=
 CONSULTING_DOCS="$HOME/src/consulting/docs"
 [ -f "$CONSULTING_DOCS/outreach_targets.toml" ] && echo "OUTREACH_TARGETS=$CONSULTING_DOCS/outreach_targets.toml" >> .env
 [ -f "$CONSULTING_DOCS/client_funnel_floors.toml" ] && echo "OUTREACH_FLOORS=$CONSULTING_DOCS/client_funnel_floors.toml" >> .env
+[ -f "$CONSULTING_DOCS/campaign_targets.toml" ] && echo "CAMPAIGN_TARGETS=$CONSULTING_DOCS/campaign_targets.toml" >> .env
 echo ".env written"
