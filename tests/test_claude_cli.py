@@ -44,5 +44,29 @@ def test_timeout_raises():
     def runner(argv, text):
         raise subprocess.TimeoutExpired(argv, 1)
 
-    with pytest.raises(claude_cli.ClaudeCliError):
+    with pytest.raises(claude_cli.ClaudeCliError, match="timed out"):
         claude_cli.prompt("t", runner=runner)
+
+
+def test_default_runner_passes_subprocess_options(monkeypatch):
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen.update(argv=argv, **kwargs)
+        return _result("out")
+
+    monkeypatch.setattr(claude_cli.subprocess, "run", fake_run)
+    assert claude_cli.prompt("x", timeout_s=7) == "out"
+    assert seen["timeout"] == 7
+    assert seen["input"] == "x"
+    assert seen["capture_output"] is True
+    assert seen["text"] is True
+
+
+def test_missing_binary_raises_cli_error(monkeypatch):
+    def fake_run(argv, **kwargs):
+        raise FileNotFoundError("claude")
+
+    monkeypatch.setattr(claude_cli.subprocess, "run", fake_run)
+    with pytest.raises(claude_cli.ClaudeCliError):
+        claude_cli.prompt("x")

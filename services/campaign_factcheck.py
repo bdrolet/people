@@ -2,6 +2,7 @@
 in a separate `claude -p` call that shares no context with the writer."""
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -37,16 +38,28 @@ class FactCheck:
     raw: str
 
 
-def _parse(raw: str) -> dict | None:
-    start = raw.find("{")
-    while start != -1:
+def _objects(raw: str) -> list[dict]:
+    """Every top-level JSON object in `raw`, in order."""
+    found = []
+    decoder = json.JSONDecoder()
+    pos = raw.find("{")
+    while pos != -1:
         try:
-            obj, _ = json.JSONDecoder().raw_decode(raw, start)
+            obj, end = decoder.raw_decode(raw, pos)
         except ValueError:
-            start = raw.find("{", start + 1)
+            pos = raw.find("{", pos + 1)
             continue
-        return obj if isinstance(obj, dict) else None
-    return None
+        found.append(obj)
+        pos = raw.find("{", end)
+    return found
+
+
+def _render(opening_sentence: str, excerpt: str) -> str:
+    vals = {
+        "excerpt": excerpt.replace("</excerpt>", "< /excerpt>"),
+        "sentence": opening_sentence.replace("</sentence>", "< /sentence>"),
+    }
+    return re.sub(r"\{(excerpt|sentence)\}", lambda m: vals[m.group(1)], PROMPT)
 
 
 def check(
@@ -55,9 +68,12 @@ def check(
     *,
     prompt_fn: Callable[[str], str] = claude_cli.prompt,
 ) -> FactCheck:
-    text = PROMPT.replace("{excerpt}", excerpt).replace("{sentence}", opening_sentence)
-    raw = prompt_fn(text)
-    obj = _parse(raw)
+    raw = prompt_fn(_render(opening_sentence, excerpt))
+    objects = _objects(raw)
+    first_brace = raw.find("{")
+    if len(objects) > 1 or (objects and "[" in raw[:first_brace]):
+        return FactCheck(False, ["ambiguous"], raw)
+    obj = objects[0] if objects else None
     claims = obj.get("unsupported_claims") if obj else None
     if obj is None or not isinstance(obj.get("supported"), bool) or not isinstance(claims, list):
         return FactCheck(False, ["unparseable"], raw)

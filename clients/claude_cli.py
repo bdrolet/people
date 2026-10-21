@@ -32,6 +32,8 @@ def prompt(
             result = _run(argv, text, timeout_s)
         else:
             result = runner(argv, text)
+    except OSError as exc:
+        raise ClaudeCliError(f"could not run claude: {exc}") from exc
     except subprocess.TimeoutExpired as exc:
         raise ClaudeCliError(f"claude -p timed out after {timeout_s}s") from exc
     if result.returncode != 0:
