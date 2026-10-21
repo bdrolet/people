@@ -2,6 +2,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 
+from models.campaign import CONTACT_STATUSES
 from repo import campaign
 
 
@@ -224,3 +225,30 @@ def test_people_in_outreach_by_domain_joins_on_the_lower_cased_domain():
     assert "FROM people p JOIN outreach_contacts o ON o.person_id = p.id" in sql
     assert "WHERE lower(split_part(p.email, '@', 2)) = %s" in sql
     assert params == ("acme.com",)
+
+
+def test_last_event_at_takes_the_latest_of_the_status():
+    conn = FakeConn([[{"at": TS}]])
+    assert campaign.last_event_at(conn, 4, "approved") == TS
+    sql, params = conn.calls[0]
+    assert sql == (
+        "SELECT max(at) AS at FROM campaign_events WHERE contact_id = %s AND status = %s"
+    )
+    assert params == (4, "approved")
+
+
+def test_bounced_count_for_run_joins_the_runs_contacts():
+    conn = FakeConn([[{"n": 3}]])
+    assert campaign.bounced_count_for_run(conn, 9) == 3
+    sql, params = conn.calls[0]
+    assert "JOIN campaign_contacts c ON c.id = e.contact_id" in sql
+    assert "c.run_id = %s AND e.status = 'bounced'" in sql
+    assert params == (9,)
+
+
+def test_status_counts_for_run_fills_every_status():
+    conn = FakeConn([[{"status": "sent", "n": 2}, {"status": "approved", "n": 1}]])
+    counts = campaign.status_counts_for_run(conn, 9)
+    assert counts["sent"] == 2 and counts["approved"] == 1 and counts["bounced"] == 0
+    assert set(counts) == set(CONTACT_STATUSES)
+    assert conn.calls[0][1] == (9,)

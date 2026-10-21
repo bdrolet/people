@@ -113,3 +113,21 @@ def test_people_in_outreach_by_domain(conn):
     rows = campaign.people_in_outreach_by_domain(conn, "ACME.com")
     assert [(r["id"], r["email"]) for r in rows] == [(in_pipeline, "ceo@acme.com")]
     assert campaign.people_in_outreach_by_domain(conn, "nobody.io") == []
+
+
+def test_run_helpers_count_bounces_and_statuses_of_the_runs_contacts(conn, seeded):
+    run = campaign.latest_run(conn)
+    other = campaign.insert_run(
+        conn, ran_at=TUESDAY, lookback_from=date(2026, 10, 1), lookback_to=date(2026, 10, 19)
+    )
+    campaign.update_contact(conn, seeded["ca"]["id"], {"run_id": run["id"], "status": "bounced"})
+    campaign.update_contact(conn, seeded["cb"]["id"], {"run_id": other["id"], "status": "bounced"})
+    for c in (seeded["ca"], seeded["cb"]):
+        campaign.insert_event(
+            conn, contact_id=c["id"], company_id=None, status="bounced", at=TUESDAY, source="cli"
+        )
+    assert campaign.bounced_count_for_run(conn, run["id"]) == 1
+    counts = campaign.status_counts_for_run(conn, run["id"])
+    assert counts["bounced"] == 1 and counts["candidate"] == 0
+    assert campaign.last_event_at(conn, seeded["ca"]["id"], "sent") == SUNDAY_ET
+    assert campaign.last_event_at(conn, seeded["ca"]["id"], "approved") is None

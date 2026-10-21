@@ -26,3 +26,6 @@ python-dotenv>=1.0.0
 
 # Phone-number normalization (iMessage snapshot)
 phonenumbers>=8.13
+
+# Campaign send preflight (SPF/DMARC/DKIM TXT lookups)
+dnspython>=2.6

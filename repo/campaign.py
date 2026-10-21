@@ -281,6 +281,39 @@ def sent_today(conn: Any, on: date, tz: str = TZ) -> int:
     return row["n"]
 
 
+def last_event_at(conn: Any, contact_id: int, status: str) -> datetime | None:
+    """When the contact last moved to `status`, or None if it never did."""
+    row = conn.execute(
+        "SELECT max(at) AS at FROM campaign_events WHERE contact_id = %s AND status = %s",
+        (contact_id, status),
+    ).fetchone()
+    return row["at"] if row else None
+
+
+def bounced_count_for_run(conn: Any, run_id: int) -> int:
+    """Bounce events on the run's contacts (the send halt reads this)."""
+    row = conn.execute(
+        """
+        SELECT count(*) AS n FROM campaign_events e
+        JOIN campaign_contacts c ON c.id = e.contact_id
+        WHERE c.run_id = %s AND e.status = 'bounced'
+        """,
+        (run_id,),
+    ).fetchone()
+    return row["n"]
+
+
+def status_counts_for_run(conn: Any, run_id: int) -> dict[str, int]:
+    """One int per contact status (zeros included) for the run's contacts."""
+    rows = conn.execute(
+        "SELECT status, count(*) AS n FROM campaign_contacts WHERE run_id = %s GROUP BY status",
+        (run_id,),
+    ).fetchall()
+    counts = dict.fromkeys(CONTACT_STATUSES, 0)
+    counts.update({r["status"]: r["n"] for r in rows})
+    return counts
+
+
 def counts_by_week(conn: Any, since: date | None, until: date | None) -> list[dict]:
     """One dict per ISO week in America/New_York (`week` is the Monday), oldest first: `companies_found`
     (companies by created_at), `above_bar` (company events at `active`) and one key per
