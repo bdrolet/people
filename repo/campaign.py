@@ -8,6 +8,8 @@ from typing import Any
 
 from models.campaign import CONTACT_STATUSES
 
+TZ = "America/New_York"  # the zone the campaign counts days and weeks in
+
 _RUN_COLUMNS = "id, ran_at, lookback_from, lookback_to, counts, notes"
 _COMPANY_COLUMNS = """
     id, domain, name, round, amount, announced_on, source_url, product_summary,
@@ -268,7 +270,7 @@ def insert_event(
     return row["id"]
 
 
-def sent_today(conn: Any, on: date, tz: str) -> int:
+def sent_today(conn: Any, on: date, tz: str = TZ) -> int:
     row = conn.execute(
         """
         SELECT count(*) AS n FROM campaign_events
@@ -280,17 +282,17 @@ def sent_today(conn: Any, on: date, tz: str) -> int:
 
 
 def counts_by_week(conn: Any, since: date | None, until: date | None) -> list[dict]:
-    """One dict per ISO week (`week` is the Monday), oldest first: `companies_found`
+    """One dict per ISO week in America/New_York (`week` is the Monday), oldest first: `companies_found`
     (companies by created_at), `above_bar` (company events at `active`) and one key per
-    contact status (contact events). `since`/`until` bound the event/creation date."""
+    contact status (contact events). `since`/`until` bound the event/creation date, inclusive, in the same zone."""
 
     def bounds(column: str) -> tuple[str, list]:
         conditions, params = [], []
         if since is not None:
-            conditions.append(f"{column}::date >= %s")
+            conditions.append(f"({column} AT TIME ZONE '{TZ}')::date >= %s")
             params.append(since)
         if until is not None:
-            conditions.append(f"{column}::date <= %s")
+            conditions.append(f"({column} AT TIME ZONE '{TZ}')::date <= %s")
             params.append(until)
         return "".join(f" AND {c}" for c in conditions), params
 
@@ -299,15 +301,15 @@ def counts_by_week(conn: Any, since: date | None, until: date | None) -> list[di
     contact_list = ", ".join(f"'{s}'" for s in CONTACT_STATUSES)
     rows = conn.execute(
         f"""
-        SELECT date_trunc('week', created_at)::date AS week, 'companies_found' AS kind,
+        SELECT date_trunc('week', created_at AT TIME ZONE '{TZ}')::date AS week, 'companies_found' AS kind,
                count(*) AS n
         FROM campaign_companies WHERE true{co_sql} GROUP BY 1
         UNION ALL
-        SELECT date_trunc('week', at)::date, 'above_bar', count(*)
+        SELECT date_trunc('week', at AT TIME ZONE '{TZ}')::date, 'above_bar', count(*)
         FROM campaign_events
         WHERE company_id IS NOT NULL AND status = 'active'{ev_sql} GROUP BY 1
         UNION ALL
-        SELECT date_trunc('week', at)::date, status, count(*)
+        SELECT date_trunc('week', at AT TIME ZONE '{TZ}')::date, status, count(*)
         FROM campaign_events
         WHERE contact_id IS NOT NULL AND status IN ({contact_list}){ev_sql} GROUP BY 1, 2
         """,
