@@ -302,7 +302,7 @@ def test_contact_draft_on_a_valid_unverified_contact_succeeds(monkeypatch, run, 
     code, out, _ = run("contact", "draft", "5", "--opener", "Congrats on the Series A.")
     assert code == 0 and "drafted 5" in out
     adv = store.advances[0]
-    assert adv["status"] == "drafted" and adv["source"] == "cli" and adv["note"] is None
+    assert adv["status"] == "drafted" and adv["source"] == "cli" and adv.get("note") is None
     assert adv["changes"]["opener_generic"] is False
     assert "Congrats on the Series A." in adv["changes"]["body"]
     assert "1 Main St, Springfield" in adv["changes"]["body"]
@@ -329,11 +329,13 @@ def test_a_fact_check_error_exits_2(monkeypatch, run, store):
     assert code == 2 and "claude exited 1" in err
 
 
-def test_a_draft_after_a_failed_check_is_noted_regenerated(monkeypatch, run, store):
+def test_a_draft_after_a_failed_check_is_annotated_regenerated(monkeypatch, run, store):
     store.notes[5] = "fact check failed (prompt 2026-10-21): Series B"
     monkeypatch.setattr(cli.campaign_factcheck, "check", lambda o, e: FactCheck(True, [], "{}"))
     assert run("contact", "draft", "5", "--opener", "Congrats on the Series A.")[0] == 0
-    assert "regenerated" in store.advances[0]["note"]
+    # The move itself carries no note (it counts as drafted); the badge rides an annotation.
+    assert store.advances[0]["status"] == "drafted" and store.advances[0].get("note") is None
+    assert store.notes[5].startswith("fact check regenerated")
 
 
 def test_generic_skips_the_check_and_sets_opener_generic(monkeypatch, run, store):
@@ -354,6 +356,32 @@ def test_draft_without_an_excerpt_needs_generic(run, store):
     store.companies[1]["announcement_excerpt"] = None
     code, _, err = run("contact", "draft", "5", "--opener", "Congrats.")
     assert code == 1 and "excerpt" in err
+
+
+def test_a_failed_then_regenerated_redraft_of_a_drafted_row_keeps_the_badge(
+    monkeypatch, run, store
+):
+    store.contacts[5]["status"] = "drafted"
+    annotations = []
+    real_annotate = cli.campaign.annotate
+
+    def annotate(c, cid, **kw):
+        annotations.append(kw["note"])
+        return real_annotate(c, cid, **kw)
+
+    monkeypatch.setattr(cli.campaign, "annotate", annotate)
+    monkeypatch.setattr(
+        cli.campaign_factcheck, "check", lambda o, e: FactCheck(False, ["Series B"], "{}")
+    )
+    assert run("contact", "draft", "5", "--opener", "Congrats on the Series B.")[0] == 2
+    monkeypatch.setattr(cli.campaign_factcheck, "check", lambda o, e: FactCheck(True, [], "{}"))
+    assert run("contact", "draft", "5", "--opener", "Congrats on the Series A.")[0] == 0
+    assert store.contacts[5]["status"] == "drafted"
+    assert "Congrats on the Series A." in store.contacts[5]["body"]
+    assert annotations[0].startswith("fact check failed")
+    assert annotations[1].startswith("fact check regenerated")
+    drafted, _ = cli.review_entries(run.conn, TARGETS.threshold)
+    assert drafted[0]["flags"] == ["fact check regenerated"]
 
 
 # --- review and send ------------------------------------------------------------------------
@@ -441,6 +469,36 @@ def test_resume_forces_the_send(monkeypatch, run):
     calls = _fake_send(monkeypatch)
     assert run("resume")[0] == 0
     assert calls[-1][1]["force"] is True
+
+
+def test_a_token_minter_failure_fails_preflight_and_sends_nothing(monkeypatch, run):
+    import subprocess
+
+    records = {
+        "drolet.ai": ["v=spf1 -all"],
+        "_dmarc.drolet.ai": ["v=DMARC1; p=quarantine"],
+        "selector1._domainkey.drolet.ai": ["v=DKIM1; p=x"],
+    }
+    monkeypatch.setattr(cli.campaign_send, "_txt", lambda r, name: records.get(name, []))
+    monkeypatch.setattr(cli.campaign_send, "restage_stale", lambda c, *, now, stale_after_days: 0)
+
+    def mint(base):
+        raise subprocess.CalledProcessError(1, ["gcloud"])
+
+    monkeypatch.setattr(cli.gcp_auth, "id_token_for", mint)
+
+    def send_batch(c, **kw):
+        raise AssertionError("must not send")
+
+    monkeypatch.setattr(cli.campaign_send, "send_batch", send_batch)
+    code, _, err = run("send")
+    assert code == 1 and "inbox-api is not reachable" in err
+
+
+def test_usage_error_exits_1(run, capsys):
+    code, _, _ = run("contact", "draft")
+    assert code == 1
+    assert "usage:" in capsys.readouterr().err
 
 
 def test_inbox_reachable_counts_any_response(monkeypatch):

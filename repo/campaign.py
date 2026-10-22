@@ -323,10 +323,19 @@ def status_counts_for_run(conn: Any, run_id: int) -> dict[str, int]:
     return counts
 
 
+# Events that annotate a contact at its current status (services.campaign.annotate) rather
+# than move it: the fact check's outcome and the follow-up's send outcome. They must not
+# count as status changes. `follow-up: sending` is the note on the move to followed_up itself.
+ANNOTATION_FILTER = (
+    "(note IS NULL OR NOT (note LIKE 'fact check%%'"
+    " OR (note LIKE 'follow-up:%%' AND note <> 'follow-up: sending')))"
+)
+
+
 def counts_by_week(conn: Any, since: date | None, until: date | None) -> list[dict]:
     """One dict per ISO week in America/New_York (`week` is the Monday), oldest first: `companies_found`
     (companies by created_at), `above_bar` (company events at `active`) and one key per
-    contact status (contact events). `since`/`until` bound the event/creation date, inclusive, in the same zone."""
+    contact status (contact events, annotations excluded). `since`/`until` bound the event/creation date, inclusive, in the same zone."""
 
     def bounds(column: str) -> tuple[str, list]:
         conditions, params = [], []
@@ -353,7 +362,8 @@ def counts_by_week(conn: Any, since: date | None, until: date | None) -> list[di
         UNION ALL
         SELECT date_trunc('week', at AT TIME ZONE '{TZ}')::date, status, count(*)
         FROM campaign_events
-        WHERE contact_id IS NOT NULL AND status IN ({contact_list}){ev_sql} GROUP BY 1, 2
+        WHERE contact_id IS NOT NULL AND status IN ({contact_list})
+          AND {ANNOTATION_FILTER}{ev_sql} GROUP BY 1, 2
         """,
         tuple(co_params + ev_params + ev_params),
     ).fetchall()

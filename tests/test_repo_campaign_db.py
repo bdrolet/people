@@ -72,6 +72,23 @@ def test_counts_by_week_buckets_in_new_york(conn, seeded):
     assert weeks[WEEK_B]["bounced"] == 0
 
 
+def test_counts_by_week_skips_annotations(conn, seeded):
+    ca = seeded["ca"]["id"]
+    for status, note in [
+        ("drafted", None),
+        ("drafted", "fact check failed (prompt 2026-10-21): Series B"),
+        ("drafted", "fact check regenerated (prompt 2026-10-21)"),
+        ("followed_up", "follow-up: sending"),
+        ("followed_up", "follow-up: sent (reply)"),
+        ("followed_up", "follow-up: FAILED HTTPError: x; check Sent Items"),
+    ]:
+        campaign.insert_event(
+            conn, contact_id=ca, company_id=None, status=status, at=TUESDAY, source="cli", note=note
+        )
+    week = {r["week"]: r for r in campaign.counts_by_week(conn, None, None)}[WEEK_B]
+    assert week["drafted"] == 1 and week["followed_up"] == 1
+
+
 def test_counts_by_week_bounds_apply_in_new_york(conn, seeded):
     # 2026-10-18 is the ET date of the Sunday-night event (10-19 in UTC).
     only_a = campaign.counts_by_week(conn, None, date(2026, 10, 18))

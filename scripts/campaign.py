@@ -138,13 +138,13 @@ def _run_id(conn: Any) -> int:
 
 def inbox_reachable() -> bool:
     """Any HTTP response from inbox-api's base URL (a 401/403/404 included) proves it is
-    up; only an unset URL, a connection error or a timeout is unreachable."""
+    up; an unset URL, no token, a connection error or a timeout is unreachable."""
     try:
         base = inbox_api._base()
         token = gcp_auth.id_token_for(base)
         httpx.get(base, headers={"Authorization": f"Bearer {token}"}, timeout=inbox_api.TIMEOUT_S)
-    except (inbox_api.InboxApiUnavailable, httpx.TransportError) as e:
-        log.warning("inbox-api unreachable: %s", e)
+    except Exception as e:  # a token minter failure (gcloud missing or erroring) included
+        log.warning("inbox-api unreachable: %s: %s", type(e).__name__, e)
         return False
     return True
 
@@ -314,8 +314,9 @@ def cmd_contact_verify(conn: Any, args: argparse.Namespace, out: TextIO, now: da
 
 
 def _fact_check(conn: Any, contact: dict, opener: str, excerpt: str, now: datetime) -> str | None:
-    """The drafted event's note, or FactCheckFailed after recording the failure (committed,
-    so the retry knows it is a regeneration)."""
+    """The regeneration note to annotate after drafting (None on a first pass), or
+    FactCheckFailed after annotating the failure (committed, so the retry knows it is a
+    regeneration). Both are annotations: repo.campaign.counts_by_week skips them."""
     try:
         result = campaign_factcheck.check(opener, excerpt)
         claims = None if result.ok else result.unsupported
@@ -362,11 +363,11 @@ def cmd_contact_draft(conn: Any, args: argparse.Namespace, out: TextIO, now: dat
         postal_address=postal,
     )
     changes = {"subject": subject, "body": body, "opener_generic": args.generic}
-    res = campaign.advance(
-        conn, contact["id"], "drafted", at=now, source="cli", note=note, changes=changes
-    )
+    res = campaign.advance(conn, contact["id"], "drafted", at=now, source="cli", changes=changes)
     if not res.changed:  # a re-draft of a drafted row: advance is a no-op, so write the text
         campaign_repo.update_contact(conn, contact["id"], changes)
+    if note:  # after the move, so it is the latest note the review page reads
+        campaign.annotate(conn, contact["id"], at=now, source="cli", note=note)
     conn.commit()
     print(f"drafted {contact['id']}: {subject}", file=out)
 
@@ -598,7 +599,10 @@ def main_with(
     err: TextIO = sys.stderr,
     now: datetime | None = None,
 ) -> int:
-    args = build_parser().parse_args(argv)
+    try:
+        args = build_parser().parse_args(argv)
+    except SystemExit as e:  # argparse has printed usage; 2 is reserved for the fact check
+        return 0 if e.code == 0 else 1
     now = now or datetime.now(UTC)
     otel.setup_telemetry("people-campaign-local")
     try:

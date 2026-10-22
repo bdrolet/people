@@ -202,6 +202,17 @@ def test_counts_by_week_pivots_rows_into_one_dict_per_week():
     assert params.count(date(2026, 10, 1)) >= 1 and params.count(date(2026, 10, 31)) >= 1
 
 
+def test_counts_by_week_leaves_annotations_out_of_the_status_columns():
+    conn = FakeConn([[]])
+    campaign.counts_by_week(conn, None, None)
+    sql = conn.calls[0][0]
+    assert campaign.ANNOTATION_FILTER in sql
+    assert "note LIKE 'fact check%%'" in campaign.ANNOTATION_FILTER
+    assert "note LIKE 'follow-up:%%'" in campaign.ANNOTATION_FILTER
+    # The follow-up's own move to followed_up carries this note: it is a status change.
+    assert "note <> 'follow-up: sending'" in campaign.ANNOTATION_FILTER
+
+
 def test_counts_by_week_without_bounds_has_no_date_filter():
     conn = FakeConn([[]])
     assert campaign.counts_by_week(conn, None, None) == []
