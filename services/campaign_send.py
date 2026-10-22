@@ -39,7 +39,8 @@ class SendResult:
     halted: bool
     # Approved contacts whose draft may or may not have gone out: Ben checks Outlook Drafts.
     needs_check: list[int] = field(default_factory=list)
-    # Approved contacts the gate stopped at send time, with the reason (never sent).
+    # Contacts the gate stopped at send time, with the reason (never sent); an approved one
+    # is moved to `skipped` so it is listed once and leaves `remaining`.
     skipped: list[tuple[int, str]] = field(default_factory=list)
 
 
@@ -241,6 +242,18 @@ def _gate(conn: Any, contact_id: int) -> str | None:
     return campaign.sendable(conn, row, company, allowed=("approved",))
 
 
+def _skip(conn: Any, contact_id: int, reason: str, *, now: datetime) -> None:
+    """Park a gate-stopped approval at `skipped` (note: the reason). A contact no longer
+    `approved` (opted out meanwhile) is left where it is."""
+    try:
+        campaign.advance(conn, contact_id, "skipped", at=now, source=campaign.SOURCE, note=reason)
+    except (campaign.InvalidTransition, campaign.NotFound) as e:
+        log.info("contact %s: left as is: %s", contact_id, e)
+        conn.rollback()
+        return
+    conn.commit()
+
+
 def send_batch(
     conn: Any,
     *,
@@ -286,6 +299,7 @@ def send_batch(
         if reason is not None:
             log.warning("contact %s: not sent: %s", contact["id"], reason)
             conn.rollback()
+            _skip(conn, contact["id"], reason, now=now)
             skipped.append((contact["id"], reason))
             continue
         if attempted:
@@ -332,7 +346,7 @@ def send_batch(
         conn.commit()
     return SendResult(
         sent=sent,
-        remaining=len(approved) - sent,
+        remaining=len(approved) - sent - len(skipped),
         halted=halted,
         needs_check=needs_check,
         skipped=skipped,

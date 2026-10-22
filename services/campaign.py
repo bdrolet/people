@@ -208,12 +208,17 @@ def _domain(email: str | None) -> str | None:
 
 
 def _is_warm(
-    conn: Any, email: str | None, linkedin_url: str | None, *, domain: str | None = None
+    conn: Any,
+    email: str | None,
+    linkedin_url: str | None,
+    *,
+    domain: str | None = None,
+    history: bool = True,
 ) -> bool:
     """Spec global constraint: two-way history, or anyone in the referral pipeline. The
     domain rule uses the email's domain, else `domain` (the company's) when there is no
-    email yet."""
-    if email:
+    email yet. `history=False` drops the two-way-history rule (see `sendable`)."""
+    if email and history:
         person = people_repo.get(conn, email)
         if person and person["message_count"] > 0 and person["my_response_count"] > 0:
             return True
@@ -241,15 +246,20 @@ def _flip_company_warm(conn: Any, company: dict, contact_id: int) -> None:
         _company_event(conn, company["id"], "warm", f"warm contact {contact_id}")
 
 
-def sendable(conn: Any, contact: dict, company: dict, *, allowed: tuple[str, ...]) -> str | None:
+def sendable(
+    conn: Any, contact: dict, company: dict, *, allowed: tuple[str, ...], history: bool = True
+) -> str | None:
     """The one gate before drafting, sending or following up: None when the contact may be
-    emailed, else a short reason. `allowed` is the contact statuses the caller accepts."""
+    emailed, else a short reason. `allowed` is the contact statuses the caller accepts.
+    `history=False` (follow-ups) skips the two-way-history rule: after the campaign's own
+    send, any auto-reply makes both counters non-zero, and an out-of-office is no reply."""
     if company["status"] != "active":
         return f"company {company['status']}"
     if contact["status"] not in allowed:
         return f"contact {contact['status']}"
     email = contact.get("email")
-    if _is_warm(conn, email, contact.get("linkedin_url"), domain=company.get("domain")):
+    linkedin_url = contact.get("linkedin_url")
+    if _is_warm(conn, email, linkedin_url, domain=company.get("domain"), history=history):
         return "warm"
     if email and campaign_repo.email_bounced_at(conn, email) is not None:
         return "bounced address"

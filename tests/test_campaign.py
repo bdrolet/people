@@ -647,6 +647,23 @@ def test_sendable_runs_the_warm_guard_on_the_current_email(repo, people):
     assert _gate(repo, cid) == "warm"
 
 
+def test_sendable_without_history_ignores_two_way_counts(repo, people):
+    co = _company(repo)
+    cid = _contact(repo, co, "sent", "found@acme.com")
+    people.by_email["found@acme.com"] = {"id": 7, "message_count": 1, "my_response_count": 1}
+    assert _gate(repo, cid, allowed=("sent",)) == "warm"
+    contact, company = repo.contacts[cid], repo.companies[co]
+    assert svc.sendable(FakeConn(), contact, company, allowed=("sent",), history=False) is None
+
+
+def test_sendable_without_history_keeps_the_referral_rules(repo, people):
+    co = _company(repo)
+    cid = _contact(repo, co, "sent", "found@acme.com")
+    repo.outreach_by_domain["acme.com"] = [{"id": 12, "email": "ceo@acme.com"}]
+    contact, company = repo.contacts[cid], repo.companies[co]
+    assert svc.sendable(FakeConn(), contact, company, allowed=("sent",), history=False) == "warm"
+
+
 def test_sendable_refuses_a_bounced_address(repo, people):
     co = _company(repo)
     cid = _contact(repo, co, "approved", "Gone@acme.com")

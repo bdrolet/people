@@ -102,7 +102,7 @@ def run(
         reason = (
             "company gone"
             if company is None
-            else campaign.sendable(conn, contact, company, allowed=("sent",))
+            else campaign.sendable(conn, contact, company, allowed=("sent",), history=False)
         )
         if reason is not None:
             log.warning("contact %s: follow-up skipped: %s", contact["id"], reason)

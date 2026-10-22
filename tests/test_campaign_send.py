@@ -692,7 +692,28 @@ def test_a_contact_whose_address_bounced_is_not_sent(repo, people):
     result = _send(FakeConn(), repo, inbox)
     assert [d["to"] for d in inbox.drafts] == [[f"sam{fine}@acme.com"]]
     assert result.skipped == [(gone, "bounced address")]
-    assert repo.rows[gone]["status"] == "approved" and result.sent == 1
+    assert result.sent == 1
+
+
+def test_a_gate_stopped_approval_becomes_skipped_and_leaves_remaining(repo, people):
+    gone, waiting = repo.add(), repo.add()
+    repo.bounced_at[f"sam{gone}@acme.com"] = NOW
+    repo.sent_today_override = 19  # one slot left: the gated contact must not take it
+    result = _send(FakeConn(), repo, FakeInbox())
+    assert repo.rows[gone]["status"] == "skipped"
+    moves = [e for e in repo.events if e["contact_id"] == gone]
+    assert moves[-1]["status"] == "skipped" and moves[-1]["note"] == "bounced address"
+    assert result.skipped == [(gone, "bounced address")]
+    assert result.sent == 1 and result.remaining == 0
+    assert repo.rows[waiting]["status"] == "sent"
+
+
+def test_a_gate_stopped_contact_is_listed_once(repo, people):
+    gone = repo.add()
+    repo.bounced_at[f"sam{gone}@acme.com"] = NOW
+    assert _send(FakeConn(), repo, FakeInbox()).skipped == [(gone, "bounced address")]
+    again = _send(FakeConn(), repo, FakeInbox())
+    assert again.skipped == [] and again.remaining == 0
 
 
 def test_a_contact_found_warm_after_approval_is_not_sent(repo, people):

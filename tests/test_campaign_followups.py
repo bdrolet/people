@@ -1,4 +1,5 @@
 from datetime import UTC, date, datetime
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -138,6 +139,22 @@ def repo(monkeypatch):
     monkeypatch.setattr(campaign_svc, "campaign_repo", fake)
     monkeypatch.setattr(campaign_svc.people_repo, "get", lambda conn, email: None)
     return fake
+
+
+@pytest.fixture
+def people(monkeypatch):
+    """People rows by email and by LinkedIn URL, and who is in the referral pipeline."""
+    state = SimpleNamespace(by_email={}, by_linkedin={}, in_outreach=set())
+    monkeypatch.setattr(campaign_svc.people_repo, "get", lambda c, e: state.by_email.get(e))
+    monkeypatch.setattr(
+        campaign_svc.people_repo, "get_by_linkedin_url", lambda c, u: state.by_linkedin.get(u)
+    )
+    monkeypatch.setattr(
+        campaign_svc.outreach_repo,
+        "get_contact",
+        lambda c, pid: {"person_id": pid} if pid in state.in_outreach else None,
+    )
+    return state
 
 
 def _run(conn, inbox, sleeps=None, budget=None):
@@ -448,3 +465,23 @@ def test_a_stopped_company_gets_no_follow_up(repo):
     inbox = FakeInbox()
     result = _run(FakeConn(), inbox)
     assert inbox.replies == [] and result.skipped == 1 and result.sent == 0
+
+
+def test_an_auto_reply_does_not_make_a_sent_contact_warm(repo, people):
+    cid = repo.add(linkedin_url="https://www.linkedin.com/in/sam1/")
+    # The campaign's own send and an out-of-office (filed ignore) set both counters.
+    people.by_email[f"sam{cid}@acme.com"] = {"id": 7, "message_count": 1, "my_response_count": 1}
+    inbox = FakeInbox()
+    result = _run(FakeConn(), inbox)
+    assert result.sent == 1 and result.skipped == 0
+    assert repo.rows[cid]["status"] == "followed_up"
+
+
+def test_a_sent_contact_in_the_referral_pipeline_gets_no_follow_up(repo, people):
+    cid = repo.add(linkedin_url="https://www.linkedin.com/in/sam1/")
+    people.by_linkedin["linkedin.com/in/sam1"] = {"id": 11}
+    people.in_outreach.add(11)
+    inbox = FakeInbox()
+    result = _run(FakeConn(), inbox)
+    assert inbox.replies == [] and result.skipped == 1
+    assert repo.rows[cid]["status"] == "sent"
