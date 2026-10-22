@@ -145,7 +145,10 @@ def add_company(conn: Any, fields: dict, *, run_id: int) -> tuple[dict, bool]:
         fields.update(status="below_bar", fit_notes="non-US")
     row = campaign_repo.insert_company_if_missing(conn, fields)
     if row is None:
-        return campaign_repo.get_company_by_domain(conn, fields["domain"]), False
+        existing = campaign_repo.get_company_by_domain(conn, fields["domain"])
+        if existing is None:  # the conflict proved it exists; only a concurrent delete gets here
+            raise NotFound(f"no campaign company {fields['domain']}")
+        return existing, False
     if non_us:
         _company_event(conn, row["id"], "below_bar", "non-US")
     return row, True
@@ -230,7 +233,10 @@ def add_contact(conn: Any, fields: dict, *, run_id: int) -> tuple[dict, str]:
         conn, {**fields, "status": status, "run_id": run_id}
     )
     if row is None:  # lost a race with a concurrent add
-        return _existing_contact(conn, company_id, email), "existing"
+        existing = _existing_contact(conn, company_id, email)
+        if existing is None:  # the conflict proved it exists; only a concurrent delete gets here
+            raise NotFound(f"no campaign contact for {email}")
+        return existing, "existing"
     campaign_repo.insert_event(
         conn,
         contact_id=row["id"],
@@ -427,11 +433,12 @@ def _norm(address: str | None) -> str:
 
 
 def confirm_sent_from_event(
-    conn: Any, *, to: list[str], from_address: str, graph_message_id: str, at: datetime
+    conn: Any, *, to: list[str], from_address: str, graph_message_id: str | None, at: datetime
 ) -> int:
     """An `email_sent` from the campaign sender confirms the send: an `approved` contact
     (the CLI crashed between send and record) moves to `sent`; a `sent` one gets its
-    `graph_message_id` when it has none. Returns how many contacts were touched."""
+    `graph_message_id` when it has none (the id may be None). Returns how many contacts were
+    touched."""
     campaign_sender = _norm(campaign_from_address())
     if not campaign_sender or _norm(from_address) != campaign_sender:
         return 0
@@ -497,11 +504,12 @@ def _reply_contact(conn: Any, sender: str) -> dict | None:
 
 
 def record_inbound_from_event(
-    conn: Any, *, sender: str, body: str, category: str, graph_message_id: str, at: datetime
+    conn: Any, *, sender: str, body: str, category: str, graph_message_id: str | None, at: datetime
 ) -> str | None:
     """Spec: an opt-out phrase stops the company whatever inbox filed the mail as (an
     `ignore` "No" still counts); any other non-ignore mail proves `replied`. Returns
-    "opted_out", "replied" or None; a sender with no campaign contact writes nothing."""
+    "opted_out", "replied" or None; a sender with no campaign contact writes nothing.
+    `graph_message_id` may be None."""
     sender = _norm(sender)
     if is_opt_out(body):
         company_id = _opt_out_company_id(conn, sender)
@@ -533,13 +541,14 @@ def record_bounce_from_event(
     conn: Any,
     *,
     failed_recipients: list[str],
-    graph_message_id: str,
+    graph_message_id: str | None,
     at: datetime,
     status: str | None = None,
     diagnostic: str | None = None,
 ) -> int:
     """Each failed address: its campaign contact (if any) → `bounced`, and its people row
-    stamped `email_bounced_at` either way. Returns how many contacts moved."""
+    stamped `email_bounced_at` either way. `graph_message_id` may be None. Returns how many
+    contacts moved."""
     note = " ".join(part for part in (status, diagnostic) if part) or None
     moved = 0
     for address in dict.fromkeys(_norm(a) for a in failed_recipients or []):

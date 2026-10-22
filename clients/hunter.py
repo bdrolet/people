@@ -42,4 +42,5 @@ def find(domain: str, first_name: str, last_name: str) -> dict | None:
 
 
 def verify(email: str) -> str:
-    return _STATUS.get(_get("/email-verifier", {"email": email}).get("status"), "unknown")
+    status = _get("/email-verifier", {"email": email}).get("status")
+    return _STATUS.get(status, "unknown") if isinstance(status, str) else "unknown"
