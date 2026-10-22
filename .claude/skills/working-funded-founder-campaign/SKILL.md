@@ -104,13 +104,18 @@ order; the CEO at seed or when none of those is listed. At most two people
 per company (the technical buyer and, at seed or when the buyer cannot be
 verified, the CEO).
 
-Apollo first (the key comes from `.env`, loaded by the one-liner itself):
+The Apollo API is not available on the free plan (verified 2026-10-22: HTTP 403),
+so find the buyer on LinkedIn through Chrome (CTO / VP Engineering / Head of
+Engineering, CEO at seed), optionally cross-checking in the Apollo web UI by
+hand. Call `contact add` with `--linkedin` and no `--email`; `contact verify`
+then finds and verifies the address through Hunter.
+
+If a paid Apollo plan is ever added, this finds people by title:
 
 ```bash
 .venv/bin/python -c "from dotenv import load_dotenv; load_dotenv(); from clients import apollo; print(apollo.people_search('acme.health', ['CTO','VP Engineering','Head of Engineering']))"
 ```
 
-If Apollo returns nothing or is unavailable, use LinkedIn through Chrome.
 Then add each person with what you have:
 
 ```bash

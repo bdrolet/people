@@ -1,3 +1,9 @@
+import logging
+
+import httpx
+import pytest
+
+from clients.apollo import ApolloUnavailable
 from services.campaign_verify import resolve_email
 
 COMPANY = {"domain": "acme.com"}
@@ -140,3 +146,64 @@ def test_malformed_candidates_are_never_verified():
     )
     assert out == (None, "unknown", None)
     assert hu.verified == []
+
+
+def _status_error(code: int) -> httpx.HTTPStatusError:
+    req = httpx.Request("POST", "https://api.apollo.io/api/v1/mixed_people/search")
+    return httpx.HTTPStatusError(f"{code}", request=req, response=httpx.Response(code, request=req))
+
+
+class RaisingApollo:
+    def __init__(self, exc: Exception):
+        self.exc = exc
+
+    def enrich(self, linkedin_url, email):
+        raise self.exc
+
+    def people_search(self, domain, titles):
+        raise self.exc
+
+
+class FindHunter(FakeHunter):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.find_calls = 0
+
+    def find(self, domain, first, last):
+        self.find_calls += 1
+        return self.found
+
+
+@pytest.mark.parametrize("code", [401, 403])
+@pytest.mark.parametrize(
+    "contact",
+    [{"full_name": "Cy Tee"}, {"full_name": "Cy Tee", "linkedin_url": "https://li/in/cy"}],
+)
+def test_apollo_plan_error_falls_through_to_hunter(code, contact, caplog):
+    hu = FindHunter({"cy@acme.com": "valid"}, found={"email": "cy@acme.com", "score": 90})
+    with caplog.at_level(logging.WARNING):
+        out = resolve_email(contact, COMPANY, apollo=RaisingApollo(_status_error(code)), hunter=hu)
+    assert out == ("cy@acme.com", "valid", "hunter")
+    assert hu.find_calls == 1
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+
+
+def test_apollo_unavailable_falls_through_to_hunter():
+    hu = FindHunter({"cy@acme.com": "valid"}, found={"email": "cy@acme.com", "score": 90})
+    ap = RaisingApollo(ApolloUnavailable("no key"))
+    assert resolve_email({"full_name": "Cy Tee"}, COMPANY, apollo=ap, hunter=hu) == (
+        "cy@acme.com",
+        "valid",
+        "hunter",
+    )
+
+
+@pytest.mark.parametrize("code", [429, 500])
+def test_apollo_other_http_errors_propagate(code):
+    with pytest.raises(httpx.HTTPStatusError):
+        resolve_email(
+            {"full_name": "Cy Tee"},
+            COMPANY,
+            apollo=RaisingApollo(_status_error(code)),
+            hunter=FindHunter(),
+        )

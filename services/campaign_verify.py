@@ -1,8 +1,15 @@
 """Find and verify a contact's email for the funded-founder campaign. Clients are
 injected (the apollo and hunter modules) so tests need no network."""
 
+import logging
 import re
 import unicodedata
+
+import httpx
+
+from clients.apollo import ApolloUnavailable
+
+log = logging.getLogger(__name__)
 
 _RANK = {"valid": 2, "accept_all": 1, "unknown": 0}
 
@@ -51,7 +58,19 @@ def _candidates(contact: dict, company: dict, first: str, last: str, apollo, hun
     if contact.get("email"):
         yield contact["email"], "manual"
     else:
-        email = _apollo_email(contact, company, name, apollo)
+        try:
+            email = _apollo_email(contact, company, name, apollo)
+        except ApolloUnavailable:
+            log.warning("Apollo is unavailable (no key); continuing with Hunter")
+            email = None
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code not in (401, 403):
+                raise  # 5xx/429 are outages, not plan limits
+            log.warning(
+                "Apollo is unavailable on this plan/key (HTTP %s); continuing with Hunter",
+                e.response.status_code,
+            )
+            email = None
         if email:
             yield email, "apollo"
     found = hunter.find(company["domain"], first, last) if last else None
