@@ -794,3 +794,76 @@ def test_followups_get_what_is_left_of_the_daily_cap(monkeypatch, run, store):
     code, out, _ = run("followups")
     assert code == 0 and seen["budget"] == 15
     assert "remaining 2" in out
+
+
+def _hunter_status(code: int):
+    import httpx
+
+    req = httpx.Request("GET", "https://api.hunter.io/v2/email-finder")
+    return httpx.HTTPStatusError(str(code), request=req, response=httpx.Response(code, request=req))
+
+
+def _two_contacts(store):
+    store.contacts[5].update(email=None, verification=None)
+    store.contacts[6] = {**store.contacts[5], "id": 6, "full_name": "Sam Roe"}
+
+
+def test_verify_all_parks_a_contact_hunter_rejects_and_continues(monkeypatch, run, store):
+    _two_contacts(store)
+
+    def resolve(contact, company, *, apollo, hunter):
+        if contact["id"] == 5:
+            raise _hunter_status(400)
+        return "sam@acme.com", "valid", "hunter"
+
+    monkeypatch.setattr(cli.campaign_verify, "resolve_email", resolve)
+    code, out, _ = run("contact", "verify", "--all")
+    assert code == 0
+    assert "5 - error " in out and "400" in out
+    assert store.contacts[5]["status"] == "unverified"
+    adv = store.advances[0]
+    assert adv["id"] == 5 and adv["status"] == "unverified"
+    assert adv["note"].startswith("verify failed: ") and "400" in adv["note"]
+    assert store.contacts[6]["email"] == "sam@acme.com"
+    assert store.contacts[6]["verification"] == "valid"
+
+
+def test_verify_all_parks_a_contact_on_value_error(monkeypatch, run, store):
+    _two_contacts(store)
+
+    def resolve(contact, company, *, apollo, hunter):
+        if contact["id"] == 5:
+            raise ValueError("bad name")
+        return "sam@acme.com", "valid", "hunter"
+
+    monkeypatch.setattr(cli.campaign_verify, "resolve_email", resolve)
+    code, out, _ = run("contact", "verify", "--all")
+    assert code == 0 and "5 - error bad name" in out
+    assert store.advances[0]["note"] == "verify failed: bad name"
+    assert store.contacts[6]["verification"] == "valid"
+
+
+def test_verify_error_on_an_unverified_contact_only_logs(monkeypatch, run, store):
+    store.contacts[5].update(status="unverified", email="jane@acme.com")
+
+    def resolve(contact, company, *, apollo, hunter):
+        raise _hunter_status(422)
+
+    monkeypatch.setattr(cli.campaign_verify, "resolve_email", resolve)
+    code, out, _ = run("contact", "verify", "5")
+    assert code == 0 and "5 jane@acme.com error " in out
+    assert store.advances == []
+
+
+@pytest.mark.parametrize("code", [401, 403, 429, 500])
+def test_verify_all_aborts_on_key_quota_and_outage_errors(monkeypatch, run, store, code):
+    _two_contacts(store)
+
+    def resolve(contact, company, *, apollo, hunter):
+        raise _hunter_status(code)
+
+    monkeypatch.setattr(cli.campaign_verify, "resolve_email", resolve)
+    result = run("contact", "verify", "--all")
+    assert result[0] == 1
+    assert store.advances == [] and store.updates == []
+    assert store.contacts[6]["verification"] is None
