@@ -57,9 +57,11 @@ whole asset.
 | +14 days | `follow_up_on` | Nudge 2: different channel if available, graceful exit |
 | +21 days | `follow_up_on` | Propose close: `outreach mark <person> declined` |
 
-Every date is counted from `briefed_at`, not from the last nudge, so a late
-nudge does not push the schedule back. A reply clears `follow_up_on`, as in
-phase 1.
+Every date is counted from `briefed_at`, so an on-time nudge does not push
+the schedule back, but is never sooner than 7 days after the last nudge, so a
+late nudge is not followed at once by the next (amended 2026-10-22: a nudge 1
+sent at brief + 25 days left nudge 2 overdue the moment it was recorded). A
+reply clears `follow_up_on`, as in phase 1.
 
 ### 3.2 Data
 

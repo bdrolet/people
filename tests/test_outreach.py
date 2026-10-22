@@ -605,9 +605,17 @@ def _briefed(repo, pid=1, at=BRIEF, channel="email"):
 def test_nudge_due_date_counts_from_the_brief_in_new_york():
     # 02:00 UTC on 10-07 is still 10-06 in New York.
     brief = datetime(2026, 10, 7, 2, 0, tzinfo=UTC)
-    assert svc.nudge_due_date(brief, 1) == date(2026, 10, 20)
-    assert svc.nudge_due_date(brief, 2) == date(2026, 10, 27)
-    assert svc.nudge_due_date(brief, 5) == date(2026, 10, 27)
+    on_time = datetime(2026, 10, 13, 15, 0, tzinfo=UTC)
+    assert svc.nudge_due_date(brief, 1, on_time) == date(2026, 10, 20)
+    assert svc.nudge_due_date(brief, 2, on_time) == date(2026, 10, 27)
+    assert svc.nudge_due_date(brief, 5, on_time) == date(2026, 10, 27)
+
+
+def test_nudge_due_date_is_at_least_a_week_after_the_last_nudge():
+    brief = datetime(2026, 9, 24, 18, 0, tzinfo=UTC)
+    late = datetime(2026, 10, 19, 23, 0, tzinfo=UTC)  # 19:00 New York
+    assert svc.nudge_due_date(brief, 1, late) == date(2026, 10, 26)
+    assert svc.nudge_due_date(brief, 2, late) == date(2026, 10, 26)
 
 
 def test_nudge_records_the_event_and_moves_the_follow_up(repo):
@@ -642,16 +650,22 @@ def test_nudge_records_the_event_and_moves_the_follow_up(repo):
 def test_nudge_due_dates_stop_at_twenty_one_days(repo, n, due, label):
     _briefed(repo)
     for i in range(n):
-        svc.nudge(None, 1, at=BRIEF + timedelta(days=8 + i), channel="imessage", source="cli")
+        svc.nudge(None, 1, at=BRIEF + timedelta(days=3 * i + 1), channel="imessage", source="cli")
     assert repo.contacts[1]["nudge_count"] == n
     assert repo.contacts[1]["follow_up_on"] == due
     assert svc.otel.outreach_nudges.calls[-1][1]["n"] == label
 
 
-def test_a_late_nudge_does_not_push_the_schedule_back(repo):
+def test_an_on_time_nudge_does_not_push_the_schedule_back(repo):
+    _briefed(repo)
+    svc.nudge(None, 1, at=BRIEF + timedelta(days=7), channel="email", source="cli")
+    assert repo.contacts[1]["follow_up_on"] == date(2026, 10, 20)
+
+
+def test_a_late_nudge_waits_a_week_before_the_next(repo):
     _briefed(repo)
     svc.nudge(None, 1, at=BRIEF + timedelta(days=12), channel="email", source="cli")
-    assert repo.contacts[1]["follow_up_on"] == date(2026, 10, 20)
+    assert repo.contacts[1]["follow_up_on"] == date(2026, 10, 25)
 
 
 def test_a_nudge_within_a_day_of_the_brief_is_ignored(repo):
