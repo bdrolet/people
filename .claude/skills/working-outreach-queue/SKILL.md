@@ -41,7 +41,8 @@ O=".venv/bin/python scripts/outreach.py"
 - **When Ben explicitly asks for the message** ("write it for me", "draft the
   message", "give me the text"), write it — don't refuse or argue the strategy
   back at him; it's his call (rule changed 2026-10-14). Write in his voice with
-  `matching-writing-style`, from the talking points. LinkedIn, iMessage or
+  `matching-writing-style`, from the talking points. LinkedIn: stage it with
+  `staging-linkedin-message` (clipboard + message box open). iMessage or
   WhatsApp: give him the text to send. Email: dispatch `email-builder` with the
   consulting identity; it leaves a draft. **Never send, either way**, and never
   put a drafted message in the contact doc.
