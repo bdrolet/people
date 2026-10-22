@@ -183,6 +183,19 @@ def _halted(conn: Any, run_id: int | None) -> bool:
     return run_id is not None and campaign_repo.bounced_count_for_run(conn, run_id) > MAX_BOUNCES
 
 
+def confirmed_sent_hit(hit: dict, contact: dict) -> bool:
+    """Whether a `search_sent` hit proves the contact's first email went out. The search
+    spans every folder and KQL matches the subject loosely. Only an item inbox-api
+    confirms is not a draft (`is_draft is False`; None means an inbox-api too old to
+    say), with the exact subject and not the draft's own id, proves a send."""
+    return (
+        hit.get("is_draft") is False
+        and hit.get("subject") == contact["subject"]
+        and bool(hit.get("message_id"))
+        and hit["message_id"] != contact.get("draft_id")
+    )
+
+
 def _reconcile(conn: Any, contact: dict, inbox: Any, *, now: datetime, follow_up_on) -> bool:
     """An approved contact with a draft_id had a send whose outcome is unknown. Never
     send it again: if Graph shows the message went out, record the send; otherwise leave
@@ -192,17 +205,7 @@ def _reconcile(conn: Any, contact: dict, inbox: Any, *, now: datetime, follow_up
     except Exception:
         log.exception("contact %s: could not search sent mail", contact["id"])
         return False
-    # The search spans every folder and KQL matches the subject loosely. Only an item
-    # inbox-api confirms is not a draft (`is_draft is False`; None means an inbox-api too
-    # old to say), with the exact subject and not the draft's own id, proves a send.
-    hits = [
-        h
-        for h in hits
-        if h.get("is_draft") is False
-        and h.get("subject") == contact["subject"]
-        and h.get("message_id")
-        and h["message_id"] != contact["draft_id"]
-    ]
+    hits = [h for h in hits if confirmed_sent_hit(h, contact)]
     if not hits:
         log.warning(
             "contact %s: draft %s was never seen sent; check Outlook Drafts",
