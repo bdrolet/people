@@ -18,6 +18,7 @@ GOOGLE_REFRESH_TOKEN=$(secret google-contacts-refresh-token 2>/dev/null || echo 
 HUBSPOT_TOKEN=$(secret hubspot-token)
 APOLLO_API_KEY=$(secret apollo-api-key 2>/dev/null || echo "")
 HUNTER_API_KEY=$(secret hunter-api-key 2>/dev/null || echo "")
+CAMPAIGN_POSTAL_ADDRESS=$(secret campaign-postal-address 2>/dev/null || echo "")
 HUBSPOT_OWNER_ID=$(tfvar hubspot_owner_id)
 HUBSPOT_MAX_CONTACTS=$(tfvar hubspot_max_contacts)
 HUBSPOT_WRITES_ENABLED=$(tfvar hubspot_writes_enabled)

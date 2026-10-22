@@ -35,13 +35,22 @@ This overrides the default "commit or push only when asked" behavior for code ch
 | **Events CF** | `people-process` — Pub/Sub trigger on the inbox-owned `email-events` topic (data source), entry point `process` in `main.py`; handles `email_classified`, `email_sent` and `email_bounced`, ignores everything else |
 | **Sync CF** | `people-sync` — HTTP trigger, entry point `sync`; POST with `Authorization: Bearer <people-sync-token>`; Cloud Scheduler `people-sync` at `0 4 * * *` America/New_York (before inbox's 5 AM sweep) — Google Contacts incremental sync (**adopts** an email-less contact with a usable phone number or a LinkedIn profile URL, `email IS NULL`; counts the rest `skipped`), then HubSpot reconcile |
 | **API** | `people-api` — Cloud Run FastAPI service (`api/`); auth is Cloud Run IAM — `roles/run.invoker` granted per caller in `terraform/api.tf`; callers send `gcloud auth print-identity-token`; image in Artifact Registry repo `people`, deployed by `.github/workflows/deploy-api.yml`; `https://people-api.drolet.cloud` (Cloud Run domain mapping in `terraform/api.tf`; the CNAME lives in `~/src/infra` `cloudflare/drolet-cloud.tf`); the raw run.app URL is `terraform output -raw people_api_url` |
-| **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people` (incl. editable-contact-field columns `phone_numbers`, `company`, `job_title`, `google_fields`, and the identifier `linkedin_url` — see the source-of-truth table below), `sync_state`, `contact_groups`, `people_labels`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`, `imessage_handles`, `imessage_chats`, `imessage_messages`, `imessage_imports`, `whatsapp_handles`, `whatsapp_chats`, `whatsapp_chat_members`, `whatsapp_messages`, `whatsapp_imports`, `outreach_contacts`, `outreach_opportunities`, `outreach_events`; schema in `repo/schema.sql` |
+| **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people` (incl. editable-contact-field columns `phone_numbers`, `company`, `job_title`, `google_fields`, and the identifier `linkedin_url` — see the source-of-truth table below), `sync_state`, `contact_groups`, `people_labels`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`, `imessage_handles`, `imessage_chats`, `imessage_messages`, `imessage_imports`, `whatsapp_handles`, `whatsapp_chats`, `whatsapp_chat_members`, `whatsapp_messages`, `whatsapp_imports`, `outreach_contacts`, `outreach_opportunities`, `outreach_events`, `campaign_companies`, `campaign_contacts`, `campaign_runs`, `campaign_events`; schema in `repo/schema.sql` |
 | **Google Contacts** | People API v1 via `clients/google_contacts.py` — OAuth refresh-token creds, scope `https://www.googleapis.com/auth/contacts`; reuses schedule's OAuth client (`google-calendar-client-id`/`-secret`, data sources), a people-owned refresh token (`google-contacts-refresh-token`) |
 | **HubSpot** | `clients/hubspot.py` (ported from inbox) — contacts search/create/update/archive, email engagement create; bounded mirror, see §HubSpot below |
 | **Local Graph import** | `clients/graph_local.py` — device-code MSAL auth for `scripts/import_contacts.py` only; people's Cloud Functions never call Graph |
 | **Referral outreach** | `services/outreach.py` stage machine over `outreach_*`; `email_sent` from `OUTREACH_FROM_ADDRESSES` proves *briefed*, `email_classified` proves *replied*; one completed Asana task per countable stage event via `clients/tasks_api.py` (Cloud Run IAM, `TASKS_API_URL`); CLI `scripts/outreach.py`, seed `scripts/outreach_seed.py`; follow-ups are `nudge` events on a `briefed` contact (+7/+14 days from the brief, propose close at +21); `outreach today` checks pace against `OUTREACH_TARGETS` (private TOML); skill `working-outreach-queue`; one machine-maintained Google Doc per pipeline person (`Outreach — <name>`, My Drive `Consulting/Outreach`, link in `outreach_contacts.doc_url`) written only by `outreach-sessions --write-doc` via docs-api (`clients/docs_api.py`, `DOCS_API_URL`); `outreach-sessions` resumes a person's exited session (`claude --bg --resume`) or spawns a fresh one from the doc |
+| **Funded-founder campaign** | Cold email to technical buyers at freshly funded digital health companies. Tables `campaign_*`; `services/campaign.py` is the only writer (stage machine), with `campaign_verify/factcheck/draft/review/send/followups/report/targets.py` around it; CLI `scripts/campaign.py` (run, company, contact, review, send, resume, followups, weekly, bounced, optout, booked, report); skill `working-funded-founder-campaign`; `CAMPAIGN_TARGETS` private TOML in the consulting repo (`campaign_targets.toml`); env `CAMPAIGN_FROM_ADDRESS`, `CAMPAIGN_POSTAL_ADDRESS`, `APOLLO_API_KEY`, `HUNTER_API_KEY`; Apollo and Hunter clients (`clients/apollo.py`, `clients/hunter.py`) are CLI-only; `handlers/email_bounced.py` consumes inbox `email_bounced` events. One-time setup below. |
 | **Observability** | OTel → Grafana Cloud OTLP; metrics prefixed `people_` (outreach instruments are `people.outreach_*`) |
 | **Infra** | `terraform/` — GCS backend `bens-project-462804-tf-state`, state prefix `people` |
+
+**Funded-founder campaign one-time setup:**
+
+- Secret Manager: add versions by hand for `apollo-api-key` and `hunter-api-key` (resources are declared in terraform) and a `campaign-postal-address` secret; `scripts/fetch-env.sh` reads all three into `.env`.
+- `CAMPAIGN_POSTAL_ADDRESS` in `.env` (sends refuse without it).
+- Google contact group `consulting-campaign`: created on first use (by `person_create` labels), or by hand.
+- Inbox PR #68 merged and deployed (reply `to`, draft send `id`, `email_bounced`, search `is_draft`).
+- Schema migration: `.venv/bin/python scripts/migrate_db.py`.
 
 Repo is **public**. Nothing personal is committed: the HubSpot owner id, the
 automated-sender domains, the own-address list, the contact cap, and every
@@ -58,6 +67,7 @@ models/
   imessage.py               IMessageHandle/Chat/Message/Batch dataclasses
   whatsapp.py               WhatsAppHandle/Chat/ChatMember/Message/Batch dataclasses
   outreach.py               stage/channel/source/lost-reason tuples, Advance, CohortCounts, FunnelCounts
+  campaign.py               campaign company/contact statuses, rounds, Advance
   types.py                  IngestResult dataclass
 clients/
   db.py                     Cloud SQL connector (pg8000) / local psycopg3
@@ -71,6 +81,9 @@ clients/
   inbox_api.py              create_draft (empty body) — CLI-only (scripts/outreach.py draft), so the
                              Graph rule still holds: Cloud Functions never use it
   claude_sessions.py        `claude --bg` spawn / resume, running sessions, transcript lookup, per-person records — CLI-only (outreach-sessions)
+  apollo.py                 Apollo people search / enrich — CLI-only (scripts/campaign.py)
+  hunter.py                 Hunter email finder / verifier — CLI-only (scripts/campaign.py)
+  claude_cli.py             `claude -p` prompt wrapper for the fact check — CLI-only
   docs_api.py               docs-api: get / create / replace a doc, filing-catalog folder lookup — CLI-only (outreach-sessions)
   otel.py                   OTel setup + counters (people.* instruments)
 repo/
@@ -82,6 +95,7 @@ repo/
   imessage.py               imessage_* snapshot: upserts, stats recompute, API read queries
   whatsapp.py               whatsapp_* snapshot: upserts, stats recompute, audit and re-point,
                              API read queries
+  campaign.py               every SQL statement on campaign_*: companies, contacts, events, runs, reports
   outreach.py               every SQL statement on outreach_*: writes, queue, follow-ups, report counts,
                              population, Asana-sync and seed sources — decides nothing
 services/
@@ -96,6 +110,8 @@ services/
   outreach_sync.py          Asana task payloads, sync_events / sync_pending (durable first, retried nightly)
   outreach_report.py        pure: floors TOML, stage_verdicts, render
   outreach_seed.py          pure: warm-pool bars over raw rows → SeedPlan; unlinked LinkedIn rows → link / in_google / possible_duplicate / create
+  campaign.py               the only campaign_* writer: add_company/add_contact (warm guard), score, advance (transition table), opt-out
+  campaign_*.py             targets, verify, factcheck, draft, review (page), send (preflight, batch, halt), followups, report
   person_lookup.py          resolve an email / LinkedIn URL / phone / id to one people row for scripts
   eligibility.py            is_automated / inbound_eligible (spec §5) — pure functions over env
   ingest.py                 record_inbound / record_outbound — counters + eligibility, shared by
@@ -143,7 +159,7 @@ scripts/
                              run does a full pass (one-time, after adoption shipped)
   fetch-env.sh               populate .env from Secret Manager + terraform.tfvars
   test-api-local.py          smoke test people-api
-  link-skills.sh             symlink searching-people/fetching-person/editing-person/creating-person/working-outreach-queue/checking-linkedin-messages into ~/.claude/skills/,
+  link-skills.sh             symlink searching-people/fetching-person/editing-person/creating-person/working-outreach-queue/working-funded-founder-campaign/checking-linkedin-messages into ~/.claude/skills/,
                              the outreach-launcher agent into ~/.claude/agents/, outreach-sessions into ~/.local/bin/
   outreach_sessions.py      one background Claude session per outreach person: resume an exited one, or spawn
                              preloaded with the snapshot and contact doc; --write-doc creates or merges the doc
@@ -152,6 +168,7 @@ scripts/
   import_linkedin.py        load a LinkedIn export snapshot — --dry-run, --me
   import_imessage.py        import chat.db into the imessage_* tables — --full, --dry-run, --db
   import_whatsapp.py        import ChatStorage.sqlite into the whatsapp_* tables — --full, --dry-run, --db
+  campaign.py               funded-founder campaign CLI: run, company, contact, review, send, resume, followups, weekly, bounced, optout, booked, report
   outreach.py               referral outreach CLI: today, queue, decide, rank, mark, nudge, intro, conversation, lost, lead, doc, draft, followups, report, sync-asana
   outreach_seed.py          propose outreach candidates, link or create LinkedIn-only people — --dry-run
 terraform/                  main, variables, secrets, cloudsql, pubsub, cloud_functions, iam, api, scheduler
@@ -162,7 +179,7 @@ tests/                      one test module per unit
                              testing-people-handlers, verifying-pr-locally, importing-contacts,
                              searching-people, fetching-person, editing-person, creating-person,
                              importing-linkedin, importing-imessage, importing-whatsapp,
-                             working-outreach-queue, checking-linkedin-messages
+                             working-outreach-queue, working-funded-founder-campaign, checking-linkedin-messages
 .claude/agents/             outreach-launcher (linked into ~/.claude/agents/)
 ```
 
