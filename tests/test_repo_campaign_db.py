@@ -131,3 +131,43 @@ def test_run_helpers_count_bounces_and_statuses_of_the_runs_contacts(conn, seede
     assert counts["bounced"] == 1 and counts["candidate"] == 0
     assert campaign.last_event_at(conn, seeded["ca"]["id"], "sent") == SUNDAY_ET
     assert campaign.last_event_at(conn, seeded["ca"]["id"], "approved") is None
+
+
+def test_attention_contacts(conn, seeded):
+    co = seeded["a"]["id"]
+
+    def contact(name, status, draft_id=None, notes=()):
+        c = campaign.insert_contact_if_missing(
+            conn, {"company_id": co, "full_name": name, "email": f"{name}@a.io"}
+        )
+        campaign.update_contact(conn, c["id"], {"status": status, "draft_id": draft_id})
+        for i, note in enumerate(notes):
+            campaign.insert_event(
+                conn,
+                contact_id=c["id"],
+                company_id=None,
+                status=status,
+                at=datetime(2026, 10, 20, 12, i, tzinfo=UTC),
+                source="cli",
+                note=note,
+            )
+        return c["id"]
+
+    unknown = contact("unknown", "approved", "d1")
+    contact("clean", "approved")
+    sending = contact("sending", "followed_up", None, ["follow-up: sending"])
+    failed = contact("failed", "followed_up", None, ["follow-up: FAILED: 500"])
+    contact("fine", "followed_up", None, ["follow-up: FAILED: 500", "follow-up: sent"])
+    rows = campaign.attention_contacts(conn)
+    assert [r["id"] for r in rows] == [unknown, sending, failed]
+    assert rows[0]["draft_id"] == "d1" and rows[0]["company_name"] == "A"
+    assert rows[1]["last_note"] == "follow-up: sending"
+    assert set(rows[0]) == {
+        "id",
+        "email",
+        "full_name",
+        "company_name",
+        "status",
+        "draft_id",
+        "last_note",
+    }

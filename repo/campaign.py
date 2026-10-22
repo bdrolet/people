@@ -355,6 +355,27 @@ def counts_by_week(conn: Any, since: date | None, until: date | None) -> list[di
     return [weeks[w] for w in sorted(weeks)]
 
 
+def attention_contacts(conn: Any) -> list[dict]:
+    """Contacts to look at by hand: approved with a draft_id (send outcome unknown), and
+    followed_up whose latest event note is `follow-up: sending` or starts `follow-up: FAILED`."""
+    return conn.execute(
+        """
+        SELECT c.id, c.email, c.full_name, co.name AS company_name, c.status, c.draft_id,
+               e.note AS last_note
+        FROM campaign_contacts c
+        JOIN campaign_companies co ON co.id = c.company_id
+        LEFT JOIN LATERAL (
+            SELECT note FROM campaign_events
+            WHERE contact_id = c.id ORDER BY at DESC, id DESC LIMIT 1
+        ) e ON true
+        WHERE (c.status = 'approved' AND c.draft_id IS NOT NULL)
+           OR (c.status = 'followed_up'
+               AND (e.note = 'follow-up: sending' OR e.note LIKE 'follow-up: FAILED%%'))
+        ORDER BY c.id
+        """
+    ).fetchall()
+
+
 def set_people_bounced(conn: Any, email: str, at: datetime) -> None:
     """Mark the address (not the contact) as hard-bounced; the first bounce time stays."""
     conn.execute(

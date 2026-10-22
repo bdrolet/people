@@ -252,3 +252,14 @@ def test_status_counts_for_run_fills_every_status():
     assert counts["sent"] == 2 and counts["approved"] == 1 and counts["bounced"] == 0
     assert set(counts) == set(CONTACT_STATUSES)
     assert conn.calls[0][1] == (9,)
+
+
+def test_attention_contacts_selects_unknown_sends_and_interrupted_follow_ups():
+    conn = FakeConn([[{"id": 1}]])
+    assert campaign.attention_contacts(conn) == [{"id": 1}]
+    sql, params = conn.calls[0]
+    assert "JOIN campaign_companies co ON co.id = c.company_id" in sql
+    assert "ORDER BY at DESC, id DESC LIMIT 1" in sql
+    assert "c.status = 'approved' AND c.draft_id IS NOT NULL" in sql
+    assert "e.note = 'follow-up: sending'" in sql and "LIKE 'follow-up: FAILED%%'" in sql
+    assert params is None
