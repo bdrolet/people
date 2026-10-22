@@ -440,11 +440,26 @@ def confirm_sent_from_event(
     return touched
 
 
-def _inbound_contact(conn: Any, sender: str) -> dict | None:
-    """The sender's own contact, else the most recently emailed open contact at their domain
-    (a colleague answering for the person written to)."""
+def _opt_out_company_id(conn: Any, sender: str) -> int | None:
+    """The company an opt-out stops: the sender's own contact, else any contact at their
+    domain, whatever its status. A missed opt-out is a legal problem (spec §5.7), so this
+    does not wait for a contact still awaiting a reply."""
     contact = campaign_repo.get_contact_by_email(conn, sender)
     if contact is not None:
+        return contact["company_id"]
+    domain = _domain(sender)
+    if domain is None:
+        return None
+    at_domain = campaign_repo.contacts_by_domain(conn, domain)
+    return at_domain[0]["company_id"] if at_domain else None
+
+
+def _reply_contact(conn: Any, sender: str) -> dict | None:
+    """The contact a reply answers: the sender's own contact when it awaits a reply, else
+    the most recently emailed contact awaiting one at their domain (a colleague answering
+    for the person written to, or a not-yet-emailed contact writing first)."""
+    contact = campaign_repo.get_contact_by_email(conn, sender)
+    if contact is not None and contact["status"] in _AWAITING_REPLY:
         return contact
     domain = _domain(sender)
     if domain is None:
@@ -464,15 +479,16 @@ def record_inbound_from_event(
     `ignore` "No" still counts); any other non-ignore mail proves `replied`. Returns
     "opted_out", "replied" or None; a sender with no campaign contact writes nothing."""
     sender = _norm(sender)
-    contact = _inbound_contact(conn, sender)
-    if contact is None:
-        return None
     if is_opt_out(body):
-        opt_out_company(
-            conn, contact["company_id"], at=at, source=EVENT_SOURCE, note=f"reply from {sender}"
-        )
+        company_id = _opt_out_company_id(conn, sender)
+        if company_id is None:
+            return None
+        opt_out_company(conn, company_id, at=at, source=EVENT_SOURCE, note=f"reply from {sender}")
         return "opted_out"
     if category == "ignore":
+        return None
+    contact = _reply_contact(conn, sender)
+    if contact is None:
         return None
     try:
         done = advance(

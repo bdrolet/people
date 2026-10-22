@@ -840,3 +840,50 @@ def test_late_bounce_on_an_opted_out_contact_is_skipped(repo):
     )
     assert n == 0 and repo.contacts[cid]["status"] == "opted_out" and repo.events == []
     assert repo.people_bounced == [("cto@acme.com", TS)]
+
+
+def test_colleague_opt_out_after_a_reply_still_stops_the_company(repo):
+    co = _company(repo)
+    cto = _contact(repo, co, "replied")
+    got = svc.record_inbound_from_event(
+        FakeConn(),
+        sender="ceo@acme.com",
+        body="No thanks, not interested.",
+        category="respond",
+        graph_message_id="r2",
+        at=TS,
+    )
+    assert got == "opted_out"
+    assert repo.companies[co]["status"] == "opted_out"
+    assert repo.contacts[cto]["status"] == "opted_out"
+
+
+def test_opt_out_resolves_the_company_from_a_terminal_contact(repo):
+    co = _company(repo)
+    _contact(repo, co, "bounced")
+    got = svc.record_inbound_from_event(
+        FakeConn(),
+        sender="ops@acme.com",
+        body="Unsubscribe",
+        category="ignore",
+        graph_message_id="r2",
+        at=TS,
+    )
+    assert got == "opted_out" and repo.companies[co]["status"] == "opted_out"
+
+
+def test_reply_from_a_drafted_contact_falls_through_to_the_sent_one(repo):
+    co = _company(repo)
+    cto = _contact(repo, co, "sent", "cto@acme.com")
+    ceo = _contact(repo, co, "drafted", "ceo@acme.com")
+    got = svc.record_inbound_from_event(
+        FakeConn(),
+        sender="ceo@acme.com",
+        body="Sure, let's talk.",
+        category="respond",
+        graph_message_id="r3",
+        at=TS,
+    )
+    assert got == "replied"
+    assert repo.contacts[cto]["status"] == "replied"
+    assert repo.contacts[ceo]["status"] == "drafted"
