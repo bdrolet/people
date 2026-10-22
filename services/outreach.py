@@ -619,12 +619,15 @@ def counts(
 NUDGE_LABELS = ("1", "2", "3+")
 
 
-def nudge_due_date(briefed_at: datetime, nudge_count: int) -> date:
-    """Working-queue spec §3.1: due dates count from the brief, never from the last nudge,
-    so a late nudge does not push the schedule back. +14 after nudge 1, +21 after 2 or more."""
-    return briefed_at.astimezone(TZ).date() + timedelta(
+def nudge_due_date(briefed_at: datetime, nudge_count: int, last_nudged_at: datetime) -> date:
+    """Working-queue spec §3.1: due dates count from the brief (+14 after nudge 1, +21
+    after 2 or more), so an early or on-time nudge does not push the schedule back, but
+    never sooner than a week after the last nudge, so a late one is not followed at once
+    by the next."""
+    from_brief = briefed_at.astimezone(TZ).date() + timedelta(
         days=FOLLOW_UP_DAYS * (min(nudge_count, 2) + 1)
     )
+    return max(from_brief, follow_up_date(last_nudged_at))
 
 
 def nudge(
@@ -654,14 +657,14 @@ def nudge(
     ):
         return None
     n = int(row["nudge_count"] or 0) + 1
-    last = row["last_nudged_at"]
+    last = max(at, row["last_nudged_at"]) if row["last_nudged_at"] else at
     outreach_repo.update_contact(
         conn,
         person_id,
         {
             "nudge_count": n,
-            "last_nudged_at": max(at, last) if last else at,
-            "follow_up_on": nudge_due_date(row["briefed_at"], n),
+            "last_nudged_at": last,
+            "follow_up_on": nudge_due_date(row["briefed_at"], n, last),
         },
     )
     event_id = outreach_repo.insert_event(
