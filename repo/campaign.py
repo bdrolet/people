@@ -1,0 +1,442 @@
+"""Every SQL statement on the campaign_* tables (campaign spec §7.1). Takes an open
+connection; never opens one, never commits, and decides nothing: whether a status
+change is allowed is services/campaign.py's call."""
+
+import json
+from datetime import date, datetime
+from typing import Any
+
+from models.campaign import CONTACT_STATUSES
+
+TZ = "America/New_York"  # the zone the campaign counts days and weeks in
+
+_RUN_COLUMNS = "id, ran_at, lookback_from, lookback_to, counts, notes"
+_COMPANY_COLUMNS = """
+    id, domain, name, round, amount, announced_on, source_url, product_summary,
+    announcement_excerpt, hq_country, fit_score, fit_notes, status, run_id,
+    created_at, updated_at
+"""
+_CONTACT_COLUMNS = """
+    id, company_id, person_id, full_name, title, linkedin_url, email, email_source,
+    verification, status, subject, body, opener_generic, draft_id, graph_message_id,
+    sent_at, follow_up_on, replied_at, run_id, created_at, updated_at
+"""
+_COMPANY_INSERTABLE = frozenset(
+    {
+        "domain",
+        "name",
+        "round",
+        "amount",
+        "announced_on",
+        "source_url",
+        "product_summary",
+        "announcement_excerpt",
+        "hq_country",
+        "fit_score",
+        "fit_notes",
+        "status",
+        "run_id",
+    }
+)
+_COMPANY_UPDATABLE = frozenset(
+    {"fit_score", "fit_notes", "status", "announcement_excerpt", "product_summary"}
+)
+_CONTACT_UPDATABLE = frozenset(
+    {
+        "person_id",
+        "full_name",
+        "title",
+        "linkedin_url",
+        "email",
+        "email_source",
+        "verification",
+        "status",
+        "subject",
+        "body",
+        "opener_generic",
+        "draft_id",
+        "graph_message_id",
+        "sent_at",
+        "follow_up_on",
+        "replied_at",
+        "run_id",
+    }
+)
+_CONTACT_INSERTABLE = _CONTACT_UPDATABLE | {"company_id"}
+
+
+def _set_clause(changes: dict, allowed: frozenset[str]) -> str:
+    unknown = set(changes) - allowed
+    if unknown or not changes:
+        raise ValueError(f"not updatable: {sorted(unknown) or 'nothing to update'}")
+    return ", ".join(f"{column} = %s" for column in changes) + ", updated_at = now()"
+
+
+def _insert_parts(fields: dict, allowed: frozenset[str]) -> tuple[str, str, tuple]:
+    unknown = set(fields) - allowed
+    if unknown or not fields:
+        raise ValueError(f"not insertable: {sorted(unknown) or 'nothing to insert'}")
+    return ", ".join(fields), ", ".join(["%s"] * len(fields)), tuple(fields.values())
+
+
+def _where(conditions: list[str]) -> str:
+    return f" WHERE {' AND '.join(conditions)}" if conditions else ""
+
+
+# --- runs ---------------------------------------------------------------------------------
+
+
+def insert_run(conn: Any, *, ran_at: datetime, lookback_from: date, lookback_to: date) -> dict:
+    return conn.execute(
+        f"""
+        INSERT INTO campaign_runs (ran_at, lookback_from, lookback_to)
+        VALUES (%s, %s, %s)
+        RETURNING {_RUN_COLUMNS}
+        """,
+        (ran_at, lookback_from, lookback_to),
+    ).fetchone()
+
+
+def latest_run(conn: Any) -> dict | None:
+    return conn.execute(
+        f"SELECT {_RUN_COLUMNS} FROM campaign_runs ORDER BY ran_at DESC, id DESC LIMIT 1"
+    ).fetchone()
+
+
+def update_run_counts(conn: Any, run_id: int, counts: dict) -> None:
+    conn.execute(
+        "UPDATE campaign_runs SET counts = %s::jsonb WHERE id = %s",
+        (json.dumps(counts), run_id),
+    )
+
+
+# --- companies ----------------------------------------------------------------------------
+
+
+def insert_company_if_missing(conn: Any, fields: dict) -> dict | None:
+    """The new row, or None when the lower-cased domain already exists."""
+    columns, marks, params = _insert_parts(fields, _COMPANY_INSERTABLE)
+    return conn.execute(
+        f"""
+        INSERT INTO campaign_companies ({columns}) VALUES ({marks})
+        ON CONFLICT (lower(domain)) DO NOTHING
+        RETURNING {_COMPANY_COLUMNS}
+        """,
+        params,
+    ).fetchone()
+
+
+def get_company(conn: Any, company_id: int) -> dict | None:
+    return conn.execute(
+        f"SELECT {_COMPANY_COLUMNS} FROM campaign_companies WHERE id = %s", (company_id,)
+    ).fetchone()
+
+
+def get_company_by_domain(conn: Any, domain: str) -> dict | None:
+    return conn.execute(
+        f"SELECT {_COMPANY_COLUMNS} FROM campaign_companies WHERE lower(domain) = lower(%s)",
+        (domain,),
+    ).fetchone()
+
+
+def update_company(conn: Any, company_id: int, changes: dict) -> dict:
+    set_clause = _set_clause(changes, _COMPANY_UPDATABLE)
+    return conn.execute(
+        f"UPDATE campaign_companies SET {set_clause} WHERE id = %s RETURNING {_COMPANY_COLUMNS}",
+        (*changes.values(), company_id),
+    ).fetchone()
+
+
+def companies(conn: Any, *, status: str | None = None, run_id: int | None = None) -> list[dict]:
+    conditions, params = [], []
+    if status is not None:
+        conditions.append("status = %s")
+        params.append(status)
+    if run_id is not None:
+        conditions.append("run_id = %s")
+        params.append(run_id)
+    return conn.execute(
+        f"SELECT {_COMPANY_COLUMNS} FROM campaign_companies{_where(conditions)} ORDER BY id",
+        tuple(params),
+    ).fetchall()
+
+
+# --- contacts -----------------------------------------------------------------------------
+
+
+def insert_contact_if_missing(conn: Any, fields: dict) -> dict | None:
+    """The new row, or None when the company already has a contact with this email."""
+    columns, marks, params = _insert_parts(fields, _CONTACT_INSERTABLE)
+    return conn.execute(
+        f"""
+        INSERT INTO campaign_contacts ({columns}) VALUES ({marks})
+        ON CONFLICT (company_id, lower(email)) DO NOTHING
+        RETURNING {_CONTACT_COLUMNS}
+        """,
+        params,
+    ).fetchone()
+
+
+def get_contact(conn: Any, contact_id: int) -> dict | None:
+    return conn.execute(
+        f"SELECT {_CONTACT_COLUMNS} FROM campaign_contacts WHERE id = %s", (contact_id,)
+    ).fetchone()
+
+
+def get_contact_by_email(conn: Any, email: str) -> dict | None:
+    return conn.execute(
+        f"""
+        SELECT {_CONTACT_COLUMNS} FROM campaign_contacts
+        WHERE lower(email) = lower(%s) ORDER BY id LIMIT 1
+        """,
+        (email,),
+    ).fetchone()
+
+
+def contacts_by_domain(conn: Any, domain: str) -> list[dict]:
+    columns = ", ".join(f"c.{c.strip()}" for c in _CONTACT_COLUMNS.split(","))
+    return conn.execute(
+        f"""
+        SELECT {columns} FROM campaign_contacts c
+        JOIN campaign_companies co ON co.id = c.company_id
+        WHERE lower(co.domain) = lower(%s) ORDER BY c.id
+        """,
+        (domain,),
+    ).fetchall()
+
+
+def lock_contact(conn: Any, contact_id: int) -> dict:
+    """Row-locked read: two deliveries of one event cannot both see the old status."""
+    return conn.execute(
+        f"SELECT {_CONTACT_COLUMNS} FROM campaign_contacts WHERE id = %s FOR UPDATE",
+        (contact_id,),
+    ).fetchone()
+
+
+def update_contact(conn: Any, contact_id: int, changes: dict) -> dict:
+    set_clause = _set_clause(changes, _CONTACT_UPDATABLE)
+    return conn.execute(
+        f"UPDATE campaign_contacts SET {set_clause} WHERE id = %s RETURNING {_CONTACT_COLUMNS}",
+        (*changes.values(), contact_id),
+    ).fetchone()
+
+
+def contacts(
+    conn: Any,
+    *,
+    status: str | None = None,
+    run_id: int | None = None,
+    follow_up_due_on: date | None = None,
+) -> list[dict]:
+    conditions, params = [], []
+    if status is not None:
+        conditions.append("status = %s")
+        params.append(status)
+    if run_id is not None:
+        conditions.append("run_id = %s")
+        params.append(run_id)
+    if follow_up_due_on is not None:
+        conditions.append("follow_up_on <= %s")
+        params.append(follow_up_due_on)
+    return conn.execute(
+        f"SELECT {_CONTACT_COLUMNS} FROM campaign_contacts{_where(conditions)} ORDER BY id",
+        tuple(params),
+    ).fetchall()
+
+
+# --- events and counts --------------------------------------------------------------------
+
+
+def insert_event(
+    conn: Any,
+    *,
+    contact_id: int | None,
+    company_id: int | None,
+    status: str,
+    at: datetime,
+    source: str,
+    graph_message_id: str | None = None,
+    note: str | None = None,
+) -> int:
+    row = conn.execute(
+        """
+        INSERT INTO campaign_events
+            (contact_id, company_id, status, at, source, graph_message_id, note)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (contact_id, company_id, status, at, source, graph_message_id, note),
+    ).fetchone()
+    return row["id"]
+
+
+def sent_today(conn: Any, on: date, tz: str = TZ) -> int:
+    """Emails sent on `on` in `tz`: first sends and follow-ups share the daily cap. A
+    follow-up counts once, by its move to followed_up (note `follow-up: sending`), never by
+    the annotation recording its outcome."""
+    row = conn.execute(
+        """
+        SELECT count(*) AS n FROM campaign_events
+        WHERE (status = 'sent' OR (status = 'followed_up' AND note = 'follow-up: sending'))
+          AND (at AT TIME ZONE %s)::date = %s
+        """,
+        (tz, on),
+    ).fetchone()
+    return row["n"]
+
+
+def last_event_at(conn: Any, contact_id: int, status: str) -> datetime | None:
+    """When the contact last moved to `status`, or None if it never did."""
+    row = conn.execute(
+        "SELECT max(at) AS at FROM campaign_events WHERE contact_id = %s AND status = %s",
+        (contact_id, status),
+    ).fetchone()
+    return row["at"] if row else None
+
+
+def latest_event_note(conn: Any, contact_id: int) -> str | None:
+    """The note on the contact's newest event (None when it has none, or no events)."""
+    row = conn.execute(
+        "SELECT note FROM campaign_events WHERE contact_id = %s ORDER BY at DESC, id DESC LIMIT 1",
+        (contact_id,),
+    ).fetchone()
+    return row["note"] if row else None
+
+
+def bounced_count_for_run(conn: Any, run_id: int) -> int:
+    """Bounce events on the run's contacts (the send halt reads this)."""
+    row = conn.execute(
+        """
+        SELECT count(*) AS n FROM campaign_events e
+        JOIN campaign_contacts c ON c.id = e.contact_id
+        WHERE c.run_id = %s AND e.status = 'bounced'
+        """,
+        (run_id,),
+    ).fetchone()
+    return row["n"]
+
+
+def status_counts_for_run(conn: Any, run_id: int) -> dict[str, int]:
+    """One int per contact status (zeros included) for the run's contacts."""
+    rows = conn.execute(
+        "SELECT status, count(*) AS n FROM campaign_contacts WHERE run_id = %s GROUP BY status",
+        (run_id,),
+    ).fetchall()
+    counts = dict.fromkeys(CONTACT_STATUSES, 0)
+    counts.update({r["status"]: r["n"] for r in rows})
+    return counts
+
+
+# Events that annotate a contact at its current status (services.campaign.annotate) rather
+# than move it: the fact check's outcome and the follow-up's send outcome. They must not
+# count as status changes. `follow-up: sending` is the note on the move to followed_up itself.
+ANNOTATION_FILTER = (
+    "(note IS NULL OR NOT (note LIKE 'fact check%%'"
+    " OR (note LIKE 'follow-up:%%' AND note <> 'follow-up: sending')))"
+)
+
+
+def counts_by_week(conn: Any, since: date | None, until: date | None) -> list[dict]:
+    """One dict per ISO week in America/New_York (`week` is the Monday), oldest first: `companies_found`
+    (companies by created_at), `above_bar` (company events at `active`) and one key per
+    contact status (contact events, annotations excluded). `since`/`until` bound the event/creation date, inclusive, in the same zone."""
+
+    def bounds(column: str) -> tuple[str, list]:
+        conditions, params = [], []
+        if since is not None:
+            conditions.append(f"({column} AT TIME ZONE '{TZ}')::date >= %s")
+            params.append(since)
+        if until is not None:
+            conditions.append(f"({column} AT TIME ZONE '{TZ}')::date <= %s")
+            params.append(until)
+        return "".join(f" AND {c}" for c in conditions), params
+
+    co_sql, co_params = bounds("created_at")
+    ev_sql, ev_params = bounds("at")
+    contact_list = ", ".join(f"'{s}'" for s in CONTACT_STATUSES)
+    rows = conn.execute(
+        f"""
+        SELECT date_trunc('week', created_at AT TIME ZONE '{TZ}')::date AS week, 'companies_found' AS kind,
+               count(*) AS n
+        FROM campaign_companies WHERE true{co_sql} GROUP BY 1
+        UNION ALL
+        SELECT date_trunc('week', at AT TIME ZONE '{TZ}')::date, 'above_bar', count(*)
+        FROM campaign_events
+        WHERE company_id IS NOT NULL AND status = 'active'{ev_sql} GROUP BY 1
+        UNION ALL
+        SELECT date_trunc('week', at AT TIME ZONE '{TZ}')::date, status, count(*)
+        FROM campaign_events
+        WHERE contact_id IS NOT NULL AND status IN ({contact_list})
+          AND {ANNOTATION_FILTER}{ev_sql} GROUP BY 1, 2
+        """,
+        tuple(co_params + ev_params + ev_params),
+    ).fetchall()
+    blank = {"companies_found": 0, "above_bar": 0, **dict.fromkeys(CONTACT_STATUSES, 0)}
+    weeks: dict[date, dict] = {}
+    for r in rows:
+        weeks.setdefault(r["week"], {"week": r["week"], **blank})[r["kind"]] = r["n"]
+    return [weeks[w] for w in sorted(weeks)]
+
+
+def attention_contacts(conn: Any) -> list[dict]:
+    """Contacts to look at by hand: approved with a draft_id (send outcome unknown), and
+    followed_up whose latest event note is `follow-up: sending` or starts `follow-up: FAILED`."""
+    return conn.execute(
+        """
+        SELECT c.id, c.email, c.full_name, co.name AS company_name, c.status, c.draft_id,
+               e.note AS last_note
+        FROM campaign_contacts c
+        JOIN campaign_companies co ON co.id = c.company_id
+        LEFT JOIN LATERAL (
+            SELECT note FROM campaign_events
+            WHERE contact_id = c.id ORDER BY at DESC, id DESC LIMIT 1
+        ) e ON true
+        WHERE (c.status = 'approved' AND c.draft_id IS NOT NULL)
+           OR (c.status = 'followed_up'
+               AND (e.note = 'follow-up: sending' OR e.note LIKE 'follow-up: FAILED%%'))
+        ORDER BY c.id
+        """
+    ).fetchall()
+
+
+def set_people_bounced(conn: Any, email: str, at: datetime) -> None:
+    """Mark the address (not the contact) as hard-bounced; the first bounce time stays."""
+    conn.execute(
+        """
+        UPDATE people SET email_bounced_at = COALESCE(email_bounced_at, %s)
+        WHERE lower(email) = lower(%s)
+        """,
+        (at, email),
+    )
+
+
+def people_in_outreach_by_domain(conn: Any, domain: str) -> list[dict]:
+    """People at `domain` who are in the referral pipeline (the warm guard's domain rule)."""
+    return conn.execute(
+        """
+        SELECT p.id, p.email, p.display_name, o.stage
+        FROM people p JOIN outreach_contacts o ON o.person_id = p.id
+        WHERE lower(split_part(p.email, '@', 2)) = %s
+        ORDER BY p.id
+        """,
+        ((domain or "").strip().lower(),),
+    ).fetchall()
+
+
+def get_contact_by_company_email(conn: Any, company_id: int, email: str) -> dict | None:
+    """The company's contact with this email (the add-contact conflict key)."""
+    return conn.execute(
+        f"""
+        SELECT {_CONTACT_COLUMNS} FROM campaign_contacts
+        WHERE company_id = %s AND lower(email) = lower(%s)
+        """,
+        (company_id, email),
+    ).fetchone()
+
+
+def email_bounced_at(conn: Any, email: str) -> datetime | None:
+    """When the address hard-bounced (people.email_bounced_at), or None."""
+    row = conn.execute(
+        "SELECT email_bounced_at FROM people WHERE lower(email) = lower(%s)", (email,)
+    ).fetchone()
+    return row["email_bounced_at"] if row else None

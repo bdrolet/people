@@ -53,3 +53,6 @@ ChatStorage.sqlite*
 
 # Contact merge backups (full Google contact JSON — never committed)
 contact-merge-backup-*.json
+
+# Campaign review pages and run scratch (funded-founder campaign spec)
+.campaign/

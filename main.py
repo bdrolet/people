@@ -2,7 +2,8 @@
 Cloud Function entry points for the people service.
 
 process — Pub/Sub trigger on the inbox-owned email-events topic; routes
-          email_classified and email_sent to handlers, ignores everything else.
+          email_classified, email_sent and email_bounced to handlers, ignores
+          everything else.
 sync    — HTTP trigger; POST with bearer PEOPLE_SYNC_TOKEN runs the nightly
           Google Contacts sync + HubSpot reconcile (Cloud Scheduler people-sync).
 
@@ -14,6 +15,7 @@ Env: CLOUD_SQL_CONNECTION_NAME / POSTGRES_* — people DB
      HUBSPOT_TOKEN / HUBSPOT_OWNER_ID / HUBSPOT_MAX_CONTACTS / HUBSPOT_WRITES_ENABLED
      AUTOMATED_SENDER_PATTERN / AUTOMATED_SENDER_DOMAINS / OWN_ADDRESSES — eligibility
      OUTREACH_FROM_ADDRESSES — identities whose sent mail counts as a referral brief
+     CAMPAIGN_FROM_ADDRESS — funded-founder campaign sender (default: first OUTREACH_FROM_ADDRESSES)
      TASKS_API_URL — tasks-api, for the completed Asana task per outreach stage event
      PEOPLE_SYNC_TOKEN — bearer for POST /sync
      GRAFANA_OTLP_ENDPOINT / GRAFANA_OTLP_TOKEN — OTel export (optional)
@@ -32,7 +34,7 @@ import functions_framework
 from cloudevents.http import CloudEvent
 
 import clients.otel as otel
-from handlers import email_classified, email_sent
+from handlers import email_bounced, email_classified, email_sent
 from handlers import sync as sync_handler
 from services import sync_auth
 
@@ -53,6 +55,8 @@ def process(cloud_event: CloudEvent) -> None:
                 email_classified.handle(data)
             case "email_sent":
                 email_sent.handle(data)
+            case "email_bounced":
+                email_bounced.handle(data)
             case other:
                 logger.info("Ignoring event type %r", other)
     except Exception:

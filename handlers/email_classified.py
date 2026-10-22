@@ -1,12 +1,14 @@
 """email_classified → counters + eligibility (durable), then Google/HubSpot
 side effects (best-effort). Spec §6.1. Non-ignore mail from a briefed outreach
-contact also proves `replied`, inside the durable transaction."""
+contact also proves `replied`, inside the durable transaction. Any mail, including
+`ignore` and automated, goes to the funded-founder campaign too: an opt-out phrase stops
+the company whatever it was filed as."""
 
 import logging
 
 import clients.otel as otel
 from clients import db
-from services import google_contacts_sync, hubspot_mirror, ingest, outreach
+from services import campaign, google_contacts_sync, hubspot_mirror, ingest, outreach
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,7 @@ def handle(event: dict) -> None:
             category=event.get("category", ""),
         )
         row = res.row
+        graph_message_id = event.get("graph_message_id") or event.get("message_id")
         # Outreach spec §6.3: any non-ignore mail from a briefed contact proves `replied`.
         # An out-of-office is filed `ignore` by inbox and does not count.
         if (
@@ -35,8 +38,17 @@ def handle(event: dict) -> None:
                 row["id"],
                 "replied",
                 at=received_at,
-                graph_message_id=event.get("graph_message_id") or event.get("message_id"),
+                graph_message_id=graph_message_id,
             )
+        # Campaign spec: not gated on category or automated; an `ignore` "No" still opts out.
+        campaign_outcome = campaign.record_inbound_from_event(
+            conn,
+            sender=event["sender"],
+            body=event.get("body") or "",
+            category=event.get("category", ""),
+            graph_message_id=graph_message_id,
+            at=received_at,
+        )
         conn.commit()
         if row.get("eligible"):
             row = google_contacts_sync.ensure_contact(conn, row)
@@ -44,9 +56,10 @@ def handle(event: dict) -> None:
         hubspot_mirror.log_email(row, event)
         conn.commit()
     logger.info(
-        "email_classified %s from %s — eligible=%s newly=%s",
+        "email_classified %s from %s — eligible=%s newly=%s campaign=%s",
         event.get("message_id"),
         row.get("email"),
         row.get("eligible"),
         res.newly_eligible,
+        campaign_outcome,
     )

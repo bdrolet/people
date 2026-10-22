@@ -16,6 +16,9 @@ GOOGLE_CLIENT_ID=$(secret google-calendar-client-id)
 GOOGLE_CLIENT_SECRET=$(secret google-calendar-client-secret)
 GOOGLE_REFRESH_TOKEN=$(secret google-contacts-refresh-token 2>/dev/null || echo "")
 HUBSPOT_TOKEN=$(secret hubspot-token)
+APOLLO_API_KEY=$(secret apollo-api-key 2>/dev/null || echo "")
+HUNTER_API_KEY=$(secret hunter-api-key 2>/dev/null || echo "")
+CAMPAIGN_POSTAL_ADDRESS=$(secret campaign-postal-address 2>/dev/null || echo "")
 HUBSPOT_OWNER_ID=$(tfvar hubspot_owner_id)
 HUBSPOT_MAX_CONTACTS=$(tfvar hubspot_max_contacts)
 HUBSPOT_WRITES_ENABLED=$(tfvar hubspot_writes_enabled)
@@ -38,4 +41,5 @@ grep -q '^TASKS_API_URL=.' .env || sed -i '' 's|^TASKS_API_URL=.*|TASKS_API_URL=
 CONSULTING_DOCS="$HOME/src/consulting/docs"
 [ -f "$CONSULTING_DOCS/outreach_targets.toml" ] && echo "OUTREACH_TARGETS=$CONSULTING_DOCS/outreach_targets.toml" >> .env
 [ -f "$CONSULTING_DOCS/client_funnel_floors.toml" ] && echo "OUTREACH_FLOORS=$CONSULTING_DOCS/client_funnel_floors.toml" >> .env
+[ -f "$CONSULTING_DOCS/campaign_targets.toml" ] && echo "CAMPAIGN_TARGETS=$CONSULTING_DOCS/campaign_targets.toml" >> .env
 echo ".env written"

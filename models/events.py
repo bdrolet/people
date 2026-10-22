@@ -39,3 +39,16 @@ EmailSentEvent = TypedDict(
         "subject": str,
     },
 )
+
+
+class EmailBouncedEvent(TypedDict):
+    event: Literal["email_bounced"]
+    message_id: str
+    graph_message_id: str
+    conversation_id: str | None
+    received_at: str  # ISO-8601
+    failed_recipients: list[str]
+    status: str | None  # DSN status when present
+    diagnostic: str | None
+    original_subject: str
+    original_graph_message_id: str | None

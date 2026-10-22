@@ -51,14 +51,15 @@ Full design:
 
 ```
 main.py       CF entry points — process (Pub/Sub) and sync (HTTP), transport only
-models/       EmailClassifiedEvent / EmailSentEvent TypedDicts, IngestResult
-clients/      Google Contacts, HubSpot, Cloud SQL, OTel, local Graph import (I/O only)
-repo/         DB read/write + schema.sql (people, sync_state tables)
-services/     eligibility, ingest, google_contacts_sync, hubspot_mirror, person_edit, sync_auth
-handlers/     email_classified, email_sent, sync — orchestration, called only from main.py
+models/       EmailClassifiedEvent / EmailSentEvent TypedDicts, IngestResult, campaign.py (campaign statuses)
+clients/      Google Contacts, HubSpot, Cloud SQL, OTel, local Graph import, Apollo, Hunter, claude_cli (I/O only)
+repo/         DB read/write + schema.sql (people, sync_state, campaign_* tables); repo/campaign.py
+services/     eligibility, ingest, google_contacts_sync, hubspot_mirror, person_edit, sync_auth,
+              campaign*.py (funded-founder campaign: stage machine, verify, factcheck, draft, review, send, followups, report)
+handlers/     email_classified, email_sent, email_bounced, sync — orchestration, called only from main.py
 api/          people-api Cloud Run FastAPI service (main, auth, routers/people, routers/search)
 scripts/      import_contacts.py, get_google_contacts_token.py, migrate_db.py,
-              fetch-env.sh, test-api-local.py, link-skills.sh
+              fetch-env.sh, test-api-local.py, link-skills.sh, campaign.py (campaign CLI)
 terraform/    All GCP resources (state prefix: people)
 docs/         design spec, implementation plan
 .claude/      repo skills (architecture, deploy, logs, DB, secrets, observability, testing)
