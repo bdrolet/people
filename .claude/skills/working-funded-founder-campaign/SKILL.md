@@ -23,6 +23,7 @@ Design: `~/src/consulting/docs/superpowers/specs/2026-10-21-funded-founder-campa
 ## Weekly checklist
 
 - Run `weekly` on a weekday morning (it sends due follow-ups, then opens the review page).
+  Not until inbox PR #68 is deployed (see Rules); until then run `review`.
 - Never run `send` twice on the same day while `needs_check` is non-empty.
 - Read `campaign report` afterwards, including "Needs attention".
 
@@ -96,16 +97,17 @@ One short note per signal that scored. The threshold comes from
 
 ## 4. Find the buyer
 
-For each `active` company: CTO, VP Engineering, Head of Engineering, in that
+For each company added and scored `active` in THIS run (the ids `company add`
+printed this run that `$C company list --status active` shows; never an `active`
+company from an earlier run): CTO, VP Engineering, Head of Engineering, in that
 order; the CEO at seed or when none of those is listed. At most two people
 per company (the technical buyer and, at seed or when the buyer cannot be
 verified, the CEO).
 
-Apollo first (the key comes from `.env`):
+Apollo first (the key comes from `.env`, loaded by the one-liner itself):
 
 ```bash
-set -a; source .env; set +a
-.venv/bin/python -c "from clients import apollo; print(apollo.people_search('acme.health', ['CTO','VP Engineering','Head of Engineering']))"
+.venv/bin/python -c "from dotenv import load_dotenv; load_dotenv(); from clients import apollo; print(apollo.people_search('acme.health', ['CTO','VP Engineering','Head of Engineering']))"
 ```
 
 If Apollo returns nothing or is unavailable, use LinkedIn through Chrome.
@@ -117,7 +119,8 @@ $C contact add --company <id> --name "Jane Doe" --title CTO \
 ```
 
 Output is `candidate N`, `skipped_warm N`, `existing N` or `opted_out N`.
-`skipped_warm` means the guard found Ben already knows them; leave it. If the
+`skipped_warm` means the guard found Ben already knows them (or the company is
+already `warm`); leave it. If the
 people DB (`searching-people`) shows a real conversation the guard missed,
 stop and tell Ben.
 
@@ -128,7 +131,10 @@ $C contact verify --all
 ```
 
 One line per contact: `id email verification status`. Only `valid` can be
-drafted; the rest are parked as `unverified` and shown on the review page.
+drafted; the rest are parked as `unverified` and shown on the review page. A
+line `skipped_warm N (warm)` or `skipped_warm N (bounced address)` means the
+email found belongs to someone Ben knows or an address that hard-bounced; the
+contact is parked, leave it.
 
 ## 6. Draft
 
@@ -143,13 +149,21 @@ $C contact draft <id> --opener "Congrats on Acme's Series A to bring AI intake t
   --subject "Acme Health and AI in clinical workflows"
 ```
 
-Exit 2 means the fact check failed; stderr lists the unsupported claims.
-Rewrite the opener once, using only what the claims left out, and retry. On a
+Exit 2 means the fact check failed; stderr lists the unsupported claims (the
+subject is checked with the opener when you pass `--subject`). Rewrite the
+opener (and subject) once, using only what the claims left out, and retry. On a
 second exit 2, use the generic opener:
 
 ```bash
 $C contact draft <id> --generic
 ```
+
+Exit 3 means the fact check could not run at all (`fact check could not run:
+...` on stderr, usually the `claude` CLI failing). Do not use `--generic`: stop
+and tell Ben, with the message.
+
+Exit 1 with `cannot be drafted: <reason>` (`company warm`, `warm`, `bounced
+address`, ...) means the contact must not be emailed; leave it.
 
 ## 7. Review and send
 
@@ -157,12 +171,15 @@ $C contact draft <id> --generic
 $C weekly        # followups, then the review page
 ```
 
-`followups` prints `sent N (fallback M, skipped K, failed F)`; if F > 0 it
-points at `campaign report` (Needs attention lists contacts to check by
-hand). `review` then serves the page and opens it. Tell Ben the URL is open
+`followups` runs the same preflight as `send` and shares its daily cap: it
+prints `sent N (fallback M, skipped K, failed F)`, plus `remaining R` when the
+cap ran out (run `followups` again tomorrow); if F > 0 it points at `campaign
+report` (Needs attention lists contacts to check by hand). `review` then serves the page and opens it. Tell Ben the URL is open
 and wait for him to submit; submitting approves and runs `send`, which prints:
 
 - `sent N, remaining M`. If M > 0, tell Ben to run `campaign send` tomorrow morning.
+- `not sent: <id> (<reason>)`: the gate stopped those contacts at send time
+  (opted out, warm, bounced address). Relay them; they are never sent.
 - a halt line (`halted: more than two bounces; run campaign resume`). Stop and tell Ben.
 - a `needs_check` warning: Ben must look in Outlook Sent Items/Drafts for those
   contact ids. Do not rerun `send` the same day while it is non-empty.
@@ -181,3 +198,8 @@ End with `$C report` and relay the counts and any "Needs attention" contacts.
   `$C bounced <id|email>`, `$C optout <id|email> [--note "..."]` (stops the
   whole company), `$C booked <id|email>`.
 - Never send twice the same day while `needs_check` is non-empty.
+- Do not run `followups` or `weekly` until inbox PR #68 is deployed: before it,
+  a follow-up reply goes to Ben instead of the contact and is still recorded
+  as sent. Until then use `$C review` (or `$C send`) only.
+- `contact draft` exit 3 (the fact check could not run): stop and tell Ben;
+  never fall back to `--generic` for it.

@@ -39,6 +39,9 @@ def test_opt_out_phrases():
         "not interested",
         "no thanks",
         "please remove me",
+        "stop",
+        "opt out",
+        "opt-out",
     )
 
 

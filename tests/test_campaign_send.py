@@ -124,11 +124,14 @@ class FakeRepo:
 
     def __init__(self):
         self.runs = [{"id": 1, "ran_at": NOW - timedelta(days=1), "notes": None}]
-        self.companies = {1: {"id": 1, "name": "Acme", "domain": "acme.com"}}
+        self.companies = {1: {"id": 1, "name": "Acme", "domain": "acme.com", "status": "active"}}
         self.rows: dict[int, dict] = {}  # contacts by id
         self.events: list[dict] = []
         self.counts: dict[int, dict] = {}
         self.sent_today_override: int | None = None
+        self.on_lock = None  # called with the row before a lock returns it
+        self.bounced_at: dict[str, datetime] = {}
+        self.outreach_by_domain: dict[str, list[dict]] = {}
 
     def latest_run(self, conn):
         return self.runs[-1] if self.runs else None
@@ -149,7 +152,15 @@ class FakeRepo:
 
     def lock_contact(self, conn, contact_id):
         row = self.rows.get(contact_id)
+        if row and self.on_lock:
+            self.on_lock(row)
         return dict(row) if row else None
+
+    def email_bounced_at(self, conn, email):
+        return self.bounced_at.get(email.lower())
+
+    def people_in_outreach_by_domain(self, conn, domain):
+        return self.outreach_by_domain.get(domain, [])
 
     def update_contact(self, conn, contact_id, changes):
         self.rows[contact_id].update(changes)
@@ -282,7 +293,13 @@ def people(monkeypatch):
         return row
 
     monkeypatch.setattr(send.person_create, "create", create)
-    monkeypatch.setattr(send.people_repo, "get", lambda conn, email: state.by_email.get(email))
+
+    def get(conn, email):
+        row = state.by_email.get(email)
+        return {"message_count": 0, "my_response_count": 0, **row} if row else None
+
+    monkeypatch.setattr(send.people_repo, "get", get)
+    monkeypatch.setattr(send.people_repo, "get_by_linkedin_url", lambda conn, url: None)
     return state
 
 
@@ -644,3 +661,51 @@ def test_needs_check_is_reported_when_the_day_is_full(repo, people):
     repo.sent_today_override = TARGETS.per_day
     result = _send(FakeConn(), repo, FakeInbox())
     assert result.needs_check == [cid] and result.sent == 0
+
+
+# --- the sendable gate at send time ---------------------------------------------------------
+
+
+def test_a_contact_opted_out_between_selection_and_lock_is_never_sent(repo, people):
+    stopped, fine = repo.add(), repo.add()
+
+    def opt_out(row):
+        if row["id"] == stopped and row["status"] == "approved":
+            row["status"] = "opted_out"  # the inbox handler won the race
+            repo.companies[1]["status"] = "opted_out"
+
+    repo.on_lock = opt_out
+    inbox, conn = FakeInbox(), FakeConn()
+    result = _send(conn, repo, inbox)
+    assert [d["to"] for d in inbox.drafts] == []
+    assert repo.rows[stopped]["status"] == "opted_out"
+    assert result.sent == 0 and result.skipped[0][0] == stopped
+    assert "opted_out" in result.skipped[0][1]
+    assert {cid for cid, _ in result.skipped} == {stopped, fine}  # the company stopped too
+    assert repo.rows[stopped]["draft_id"] is None
+
+
+def test_a_contact_whose_address_bounced_is_not_sent(repo, people):
+    gone, fine = repo.add(), repo.add()
+    repo.bounced_at[f"sam{gone}@acme.com"] = NOW - timedelta(days=2)
+    inbox = FakeInbox()
+    result = _send(FakeConn(), repo, inbox)
+    assert [d["to"] for d in inbox.drafts] == [[f"sam{fine}@acme.com"]]
+    assert result.skipped == [(gone, "bounced address")]
+    assert repo.rows[gone]["status"] == "approved" and result.sent == 1
+
+
+def test_a_contact_found_warm_after_approval_is_not_sent(repo, people):
+    warm = repo.add()
+    people.by_email[f"sam{warm}@acme.com"] = {"id": 9, "message_count": 2, "my_response_count": 1}
+    inbox = FakeInbox()
+    result = _send(FakeConn(), repo, inbox)
+    assert inbox.drafts == [] and result.skipped == [(warm, "warm")]
+
+
+def test_a_skipped_contact_does_not_use_a_daily_slot(repo, people):
+    gone = repo.add()
+    ids = [repo.add() for _ in range(20)]
+    repo.bounced_at[f"sam{gone}@acme.com"] = NOW
+    result = _send(FakeConn(), repo, FakeInbox())
+    assert result.sent == 20 and [repo.rows[i]["status"] for i in ids] == ["sent"] * 20

@@ -103,6 +103,40 @@ def test_sent_today_uses_the_given_zone(conn, seeded):
     assert campaign.sent_today(conn, date(2026, 10, 19), "America/New_York") == 0
 
 
+def test_sent_today_counts_a_follow_up_send_but_not_its_annotations(conn, seeded):
+    ca = seeded["ca"]["id"]
+    for status, note in [
+        ("followed_up", "follow-up: sending"),
+        ("followed_up", "follow-up: sent (reply)"),
+        ("followed_up", "follow-up: FAILED RuntimeError: x; check Sent Items"),
+        ("drafted", None),
+    ]:
+        campaign.insert_event(
+            conn, contact_id=ca, company_id=None, status=status, at=TUESDAY, source="cli", note=note
+        )
+    assert campaign.sent_today(conn, date(2026, 10, 20), "America/New_York") == 2
+
+
+def test_get_contact_by_company_email_picks_the_companys_own_row(conn, seeded):
+    other = campaign.insert_contact_if_missing(
+        conn, {"company_id": seeded["b"]["id"], "full_name": "Ann B", "email": "ANN@a.io"}
+    )
+    row = campaign.get_contact_by_company_email(conn, seeded["b"]["id"], "ann@A.io")
+    assert row["id"] == other["id"]
+    mine = campaign.get_contact_by_company_email(conn, seeded["a"]["id"], "ann@a.io")
+    assert mine["id"] == seeded["ca"]["id"]
+    assert campaign.get_contact_by_company_email(conn, seeded["a"]["id"], "x@a.io") is None
+
+
+def test_email_bounced_at_reads_the_stamp(conn):
+    _person(conn, "gone@acme.com")
+    _person(conn, "fine@acme.com")
+    campaign.set_people_bounced(conn, "GONE@acme.com", TUESDAY)
+    assert campaign.email_bounced_at(conn, "gone@ACME.com") == TUESDAY
+    assert campaign.email_bounced_at(conn, "fine@acme.com") is None
+    assert campaign.email_bounced_at(conn, "nobody@acme.com") is None
+
+
 def test_insert_company_if_missing_ignores_case_duplicates(conn, seeded):
     assert campaign.insert_company_if_missing(conn, {"domain": "A.IO", "name": "A2"}) is None
 

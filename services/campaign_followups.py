@@ -36,6 +36,7 @@ class FollowUpResult:
     fallback: int
     skipped: int
     failed: int = 0
+    remaining: int = 0  # due contacts left for another day: the daily budget ran out
 
 
 def _first_name(full_name: str | None) -> str:
@@ -78,15 +79,33 @@ def run(
     postal_address: str,
     inbox: Any = inbox_api,
     sleep: Callable[[float], None] = time.sleep,
+    budget: int | None = None,
 ) -> FollowUpResult:
-    """Follow up every `sent` contact due on or before today (New York)."""
+    """Follow up every `sent` contact due on or before today (New York). `budget` caps
+    the sends (reply or fallback, failed ones included: each may have gone out); the due
+    contacts past it are counted in `remaining` and left for the next run."""
     today = now.astimezone(campaign.TZ).date()
     result = FollowUpResult(sent=0, fallback=0, skipped=0)
     attempted = 0
-    for due in campaign_repo.contacts(conn, status="sent", follow_up_due_on=today):
+    due_rows = campaign_repo.contacts(conn, status="sent", follow_up_due_on=today)
+    for n, due in enumerate(due_rows):
+        if budget is not None and attempted >= budget:
+            result.remaining = len(due_rows) - n
+            break
         contact = campaign_repo.lock_contact(conn, due["id"])
         if contact is None or contact["status"] != "sent":
             log.info("contact %s: no longer sent; follow-up skipped", due["id"])
+            conn.rollback()
+            result.skipped += 1
+            continue
+        company = campaign_repo.get_company(conn, contact["company_id"])
+        reason = (
+            "company gone"
+            if company is None
+            else campaign.sendable(conn, contact, company, allowed=("sent",))
+        )
+        if reason is not None:
+            log.warning("contact %s: follow-up skipped: %s", contact["id"], reason)
             conn.rollback()
             result.skipped += 1
             continue

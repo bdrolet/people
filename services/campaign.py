@@ -30,7 +30,8 @@ Transition = Literal["advance", "noop", "invalid"]
 # Spec §7.1, verbatim. `approved → drafted` happens only through the stale rule.
 _ALLOWED: dict[str, set[str]] = {
     "candidate": {"unverified", "skipped_warm", "drafted", "skipped"},
-    "unverified": {"drafted", "skipped"},  # after a re-verify
+    # `drafted` after a re-verify; `skipped_warm` when verify finds a warm or bounced address.
+    "unverified": {"skipped_warm", "drafted", "skipped"},
     "drafted": {"approved", "skipped"},
     "approved": {"sent", "drafted", "skipped"},
     "sent": {"followed_up", "replied", "opted_out", "bounced", "booked"},
@@ -50,7 +51,7 @@ _PRE_SEND = {"candidate", "unverified", "drafted", "approved"}
 _REACHED: dict[str, set[str]] = {
     "candidate": {"candidate"},
     "unverified": {"candidate", "unverified"},
-    "skipped_warm": {"candidate", "skipped_warm"},
+    "skipped_warm": {"candidate", "unverified", "skipped_warm"},
     "drafted": {"candidate", "unverified", "drafted"},
     "approved": {"candidate", "unverified", "approved"},
     "skipped": {"candidate", "skipped"},
@@ -136,9 +137,23 @@ def _company_event(conn: Any, company_id: int, status: str, note: str | None = N
     )
 
 
+_SCHEME = re.compile(r"^https?://")
+
+
+def normalize_domain(raw: str) -> str:
+    """`https://www.Acme.com/news` → `acme.com`: lower-cased, no scheme, no leading `www.`,
+    nothing from the first `/` or `:` on. ValueError when what is left is not a domain."""
+    domain = _SCHEME.sub("", (raw or "").strip().lower())
+    domain = domain.removeprefix("www.")
+    domain = re.split(r"[/:]", domain, maxsplit=1)[0]
+    if "." not in domain or re.search(r"\s", domain) or domain.startswith("."):
+        raise ValueError(f"not a domain: {raw!r}")
+    return domain
+
+
 def add_company(conn: Any, fields: dict, *, run_id: int) -> tuple[dict, bool]:
     """Insert unless the domain is known; a second add returns the first row, untouched."""
-    fields = {**fields, "domain": fields["domain"].strip().lower(), "run_id": run_id}
+    fields = {**fields, "domain": normalize_domain(fields["domain"]), "run_id": run_id}
     country = (fields.get("hq_country") or "").strip()
     non_us = bool(country) and country.lower() not in US_COUNTRIES
     if non_us:
@@ -192,8 +207,12 @@ def _domain(email: str | None) -> str | None:
     return email.rsplit("@", 1)[1].strip().lower() or None
 
 
-def _is_warm(conn: Any, email: str | None, linkedin_url: str | None) -> bool:
-    """Spec global constraint: two-way history, or anyone in the referral pipeline."""
+def _is_warm(
+    conn: Any, email: str | None, linkedin_url: str | None, *, domain: str | None = None
+) -> bool:
+    """Spec global constraint: two-way history, or anyone in the referral pipeline. The
+    domain rule uses the email's domain, else `domain` (the company's) when there is no
+    email yet."""
     if email:
         person = people_repo.get(conn, email)
         if person and person["message_count"] > 0 and person["my_response_count"] > 0:
@@ -203,15 +222,47 @@ def _is_warm(conn: Any, email: str | None, linkedin_url: str | None) -> bool:
         person = people_repo.get_by_linkedin_url(conn, url)
         if person and outreach_repo.get_contact(conn, person["id"]) is not None:
             return True
-    domain = _domain(email)
+    domain = _domain(email) or (domain or "").strip().lower() or None
     return bool(domain and campaign_repo.people_in_outreach_by_domain(conn, domain))
 
 
 def _existing_contact(conn: Any, company_id: int, email: str | None) -> dict | None:
+    """The company's own contact with this email (the same address may be recorded at
+    another company too)."""
     if not email:
         return None
-    row = campaign_repo.get_contact_by_email(conn, email)
-    return row if row and row["company_id"] == company_id else None
+    return campaign_repo.get_contact_by_company_email(conn, company_id, email)
+
+
+def _flip_company_warm(conn: Any, company: dict, contact_id: int) -> None:
+    """A warm contact makes an open company `warm`; a stopped or already-warm one is kept."""
+    if company["status"] in _WARMABLE_COMPANY:
+        campaign_repo.update_company(conn, company["id"], {"status": "warm"})
+        _company_event(conn, company["id"], "warm", f"warm contact {contact_id}")
+
+
+def sendable(conn: Any, contact: dict, company: dict, *, allowed: tuple[str, ...]) -> str | None:
+    """The one gate before drafting, sending or following up: None when the contact may be
+    emailed, else a short reason. `allowed` is the contact statuses the caller accepts."""
+    if company["status"] != "active":
+        return f"company {company['status']}"
+    if contact["status"] not in allowed:
+        return f"contact {contact['status']}"
+    email = contact.get("email")
+    if _is_warm(conn, email, contact.get("linkedin_url"), domain=company.get("domain")):
+        return "warm"
+    if email and campaign_repo.email_bounced_at(conn, email) is not None:
+        return "bounced address"
+    return None
+
+
+def park_warm(conn: Any, contact_id: int, *, reason: str, at: datetime, source: str) -> Advance:
+    """Move a not-yet-drafted contact to `skipped_warm` (note `reason`); a `warm` reason also
+    flips its company to `warm`, a bounced address does not."""
+    done = advance(conn, contact_id, "skipped_warm", at=at, source=source, note=reason)
+    if done.changed and reason == "warm":
+        _flip_company_warm(conn, _company(conn, done.row["company_id"]), contact_id)
+    return done
 
 
 def add_contact(conn: Any, fields: dict, *, run_id: int) -> tuple[dict, str]:
@@ -225,7 +276,9 @@ def add_contact(conn: Any, fields: dict, *, run_id: int) -> tuple[dict, str]:
     company = _company(conn, company_id)
     if company["status"] in _STOPPED_COMPANY:
         status, note = "opted_out", "company opted out"
-    elif _is_warm(conn, email, fields.get("linkedin_url")):
+    elif company["status"] == "warm":
+        status, note = "skipped_warm", "company warm"
+    elif _is_warm(conn, email, fields.get("linkedin_url"), domain=company["domain"]):
         status, note = "skipped_warm", None
     else:
         status, note = "candidate", None
@@ -234,8 +287,8 @@ def add_contact(conn: Any, fields: dict, *, run_id: int) -> tuple[dict, str]:
     )
     if row is None:  # lost a race with a concurrent add
         existing = _existing_contact(conn, company_id, email)
-        if existing is None:  # the conflict proved it exists; only a concurrent delete gets here
-            raise NotFound(f"no campaign contact for {email}")
+        if existing is None:  # the (company, email) conflict proved it; a concurrent delete
+            raise NotFound(f"no campaign contact for {email} at company {company_id}")
         return existing, "existing"
     campaign_repo.insert_event(
         conn,
@@ -247,9 +300,7 @@ def add_contact(conn: Any, fields: dict, *, run_id: int) -> tuple[dict, str]:
         note=note,
     )
     if status == "skipped_warm":
-        if company["status"] in _WARMABLE_COMPANY:
-            campaign_repo.update_company(conn, company_id, {"status": "warm"})
-            _company_event(conn, company_id, "warm", f"warm contact {row['id']}")
+        _flip_company_warm(conn, company, row["id"])
     return row, status
 
 
@@ -407,11 +458,15 @@ def _line_opts_out(raw: str) -> bool:
 
 def is_opt_out(body: str | None) -> bool:
     """True when one of the first two non-empty lines (after one leading greeting line)
-    is an opt-out phrase or starts with one."""
+    is an opt-out phrase or starts with one. A greeting line's own remainder after its
+    first comma or colon ("Hi Ben, not interested") is checked too. Phrases match at the
+    start of a line only: "Please opt me out" does not."""
     lines = [ln.strip() for ln in (body or "").splitlines() if ln.strip()]
+    candidates = lines[:2]
     if lines and _GREETING.match(lines[0]):
-        lines = lines[1:]
-    return any(_line_opts_out(ln) for ln in lines[:2])
+        rest = re.split(r"[,:]", lines[0], maxsplit=1)[1:]
+        candidates = [r for r in rest if r.strip()] + lines[1:3]
+    return any(_line_opts_out(ln) for ln in candidates)
 
 
 # --- inbox events ---------------------------------------------------------------------------

@@ -34,6 +34,18 @@ class FakeRepo:
         self.events: list[dict] = []
         self.updates: list[tuple[int, dict]] = []
         self.on_lock = None  # called with the row before a lock returns it
+        self.companies = {1: {"id": 1, "domain": "acme.com", "status": "active"}}
+        self.bounced_at: dict[str, datetime] = {}
+
+    def get_company(self, conn, company_id):
+        row = self.companies.get(company_id)
+        return dict(row) if row else None
+
+    def email_bounced_at(self, conn, email):
+        return self.bounced_at.get(email.lower())
+
+    def people_in_outreach_by_domain(self, conn, domain):
+        return []
 
     def contacts(self, conn, *, status=None, run_id=None, follow_up_due_on=None):
         return [
@@ -124,10 +136,11 @@ def repo(monkeypatch):
     fake = FakeRepo()
     monkeypatch.setattr(followups, "campaign_repo", fake)
     monkeypatch.setattr(campaign_svc, "campaign_repo", fake)
+    monkeypatch.setattr(campaign_svc.people_repo, "get", lambda conn, email: None)
     return fake
 
 
-def _run(conn, inbox, sleeps=None):
+def _run(conn, inbox, sleeps=None, budget=None):
     return followups.run(
         conn,
         now=NOW,
@@ -135,6 +148,7 @@ def _run(conn, inbox, sleeps=None):
         postal_address=POSTAL,
         inbox=inbox,
         sleep=(sleeps.append if sleeps is not None else lambda s: None),
+        budget=budget,
     )
 
 
@@ -382,3 +396,55 @@ def test_pauses_between_sends_only(repo):
     sleeps: list[float] = []
     _run(FakeConn(), FakeInbox(), sleeps)
     assert sleeps == [1.0, 1.0]
+
+
+# --- the daily budget and the gate ----------------------------------------------------------
+
+
+def test_the_budget_caps_follow_ups_and_reports_the_rest(repo):
+    ids = [repo.add() for _ in range(22)]
+    inbox = FakeInbox()
+    result = _run(FakeConn(), inbox, budget=20)
+    assert result.sent == 20 and result.remaining == 2
+    assert len(inbox.replies) == 20
+    assert [repo.rows[i]["status"] for i in ids[20:]] == ["sent", "sent"]
+
+
+def test_fallback_sends_count_against_the_budget(repo):
+    for _ in range(3):
+        repo.add(graph_message_id=None)
+    inbox = FakeInbox(hits=[])
+    result = _run(FakeConn(), inbox, budget=2)
+    assert result.sent == 2 and result.fallback == 2 and result.remaining == 1
+    assert len(inbox.sent) == 2
+
+
+def test_a_spent_budget_sends_nothing(repo):
+    repo.add()
+    inbox = FakeInbox()
+    result = _run(FakeConn(), inbox, budget=0)
+    assert result.sent == 0 and result.remaining == 1 and inbox.replies == []
+    assert repo.rows[1]["status"] == "sent"
+
+
+def test_no_budget_means_no_cap(repo):
+    for _ in range(3):
+        repo.add()
+    assert _run(FakeConn(), FakeInbox()).remaining == 0
+
+
+def test_a_bounced_address_gets_no_follow_up(repo):
+    gone, fine = repo.add(), repo.add()
+    repo.bounced_at[f"sam{gone}@acme.com"] = NOW
+    inbox = FakeInbox()
+    result = _run(FakeConn(), inbox)
+    assert [r["to"] for r in inbox.replies] == [[f"sam{fine}@acme.com"]]
+    assert repo.rows[gone]["status"] == "sent" and result.skipped == 1
+
+
+def test_a_stopped_company_gets_no_follow_up(repo):
+    repo.add()
+    repo.companies[1]["status"] = "opted_out"
+    inbox = FakeInbox()
+    result = _run(FakeConn(), inbox)
+    assert inbox.replies == [] and result.skipped == 1 and result.sent == 0

@@ -180,8 +180,26 @@ def test_sent_today_casts_at_in_the_given_zone():
     assert campaign.sent_today(conn, date(2026, 10, 21), "America/Los_Angeles") == 3
     sql, params = conn.calls[0]
     assert "FROM campaign_events" in sql and "status = 'sent'" in sql
+    # A follow-up's send shares the daily cap: its move to followed_up counts once.
+    assert "(status = 'followed_up' AND note = 'follow-up: sending')" in sql
     assert "(at AT TIME ZONE %s)::date = %s" in sql
     assert params == ("America/Los_Angeles", date(2026, 10, 21))
+
+
+def test_get_contact_by_company_email_keys_on_the_company_and_lower_email():
+    conn = FakeConn([[{"id": 4}]])
+    assert campaign.get_contact_by_company_email(conn, 2, "A@x.io") == {"id": 4}
+    sql, params = conn.calls[0]
+    assert "WHERE company_id = %s AND lower(email) = lower(%s)" in sql
+    assert params == (2, "A@x.io")
+
+
+def test_email_bounced_at_reads_the_people_row():
+    conn = FakeConn([[{"email_bounced_at": TS}], []])
+    assert campaign.email_bounced_at(conn, "A@x.io") == TS
+    assert campaign.email_bounced_at(conn, "nobody@x.io") is None
+    sql, params = conn.calls[0]
+    assert "FROM people WHERE lower(email) = lower(%s)" in sql and params == ("A@x.io",)
 
 
 def test_counts_by_week_pivots_rows_into_one_dict_per_week():

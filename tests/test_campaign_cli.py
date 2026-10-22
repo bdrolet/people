@@ -84,6 +84,11 @@ class Store:
         self.notes: dict[int, str] = {}
         self.advances: list[dict] = []
         self.updates: list[tuple[int, dict]] = []
+        self.people: dict[str, dict] = {}  # people rows by email, for the warm guard
+        self.bounced_at: dict[str, datetime] = {}
+        self.people_bounced: list[tuple[str, datetime]] = []
+        self.company_events: list[dict] = []
+        self.sent_today = 0
 
 
 @pytest.fixture
@@ -115,6 +120,21 @@ def store(monkeypatch):
         return dict(s.contacts[cid])
 
     monkeypatch.setattr(repo, "update_contact", update_contact)
+
+    def update_company(c, cid, changes):
+        s.companies[cid].update(changes)
+        return dict(s.companies[cid])
+
+    monkeypatch.setattr(repo, "update_company", update_company)
+    monkeypatch.setattr(repo, "insert_event", lambda c, **kw: s.company_events.append(kw) or 97)
+    monkeypatch.setattr(repo, "email_bounced_at", lambda c, e: s.bounced_at.get(e.lower()))
+    monkeypatch.setattr(repo, "people_in_outreach_by_domain", lambda c, d: [])
+    monkeypatch.setattr(
+        repo, "set_people_bounced", lambda c, e, at: s.people_bounced.append((e, at))
+    )
+    monkeypatch.setattr(repo, "sent_today", lambda c, on, tz="America/New_York": s.sent_today)
+    monkeypatch.setattr(cli.campaign.people_repo, "get", lambda c, e: s.people.get(e))
+    monkeypatch.setattr(cli.campaign.people_repo, "get_by_linkedin_url", lambda c, u: None)
 
     def advance(c, cid, status, **kw):
         s.advances.append({"id": cid, "status": status, **kw})
@@ -320,13 +340,57 @@ def test_a_failing_fact_check_exits_2_and_prints_the_claim(monkeypatch, run, sto
     assert "commit" in run.conn.log
 
 
-def test_a_fact_check_error_exits_2(monkeypatch, run, store):
+def test_a_fact_check_that_could_not_run_exits_3(monkeypatch, run, store):
     def boom(o, e):
         raise ClaudeCliError("claude exited 1")
 
     monkeypatch.setattr(cli.campaign_factcheck, "check", boom)
     code, _, err = run("contact", "draft", "5", "--opener", "Congrats.")
-    assert code == 2 and "claude exited 1" in err
+    assert code == 3 and "fact check could not run: claude exited 1" in err
+    assert store.advances == []
+    assert 5 not in store.notes  # not a failed check: no regenerated badge on the retry
+
+
+def test_an_empty_fact_check_reply_exits_3(monkeypatch, run, store):
+    monkeypatch.setattr(
+        cli.campaign_factcheck, "check", lambda o, e: FactCheck(False, ["unparseable"], "  ")
+    )
+    code, _, err = run("contact", "draft", "5", "--opener", "Congrats.")
+    assert code == 3 and "fact check could not run" in err
+
+
+def test_a_rejected_opener_still_exits_2_not_3(monkeypatch, run, store):
+    monkeypatch.setattr(
+        cli.campaign_factcheck, "check", lambda o, e: FactCheck(False, ["Series B"], "{}")
+    )
+    assert run("contact", "draft", "5", "--opener", "Congrats on the Series B.")[0] == 2
+
+
+def test_the_subject_is_fact_checked_with_the_opener(monkeypatch, run, store):
+    seen = []
+
+    def check(text, excerpt):
+        seen.append(text)
+        ok = "Series B" not in text
+        return FactCheck(ok, [] if ok else ["$40M Series B"], "{}")
+
+    monkeypatch.setattr(cli.campaign_factcheck, "check", check)
+    code, _, err = run(
+        "contact", "draft", "5", "--opener", "Congrats on the Series A.",
+        "--subject", "Acme's $40M Series B",
+    )  # fmt: skip
+    assert code == 2 and "$40M Series B" in err
+    assert seen == ["Acme's $40M Series B\nCongrats on the Series A."]
+    assert store.advances == []
+
+
+def test_without_a_subject_only_the_opener_is_checked(monkeypatch, run, store):
+    seen = []
+    monkeypatch.setattr(
+        cli.campaign_factcheck, "check", lambda t, e: seen.append(t) or FactCheck(True, [], "{}")
+    )
+    assert run("contact", "draft", "5", "--opener", "Congrats on the Series A.")[0] == 0
+    assert seen == ["Congrats on the Series A."]
 
 
 def test_a_draft_after_a_failed_check_is_annotated_regenerated(monkeypatch, run, store):
@@ -518,6 +582,7 @@ def test_inbox_reachable_counts_any_response(monkeypatch):
 
 
 def test_followups_prints_failed_and_the_report_hint(monkeypatch, run):
+    monkeypatch.setattr(cli.campaign_send, "preflight", lambda domain, **kw: None)
     monkeypatch.setattr(
         cli.campaign_followups,
         "run",
@@ -529,6 +594,7 @@ def test_followups_prints_failed_and_the_report_hint(monkeypatch, run):
 
 
 def test_followups_without_failures_has_no_hint(monkeypatch, run):
+    monkeypatch.setattr(cli.campaign_send, "preflight", lambda domain, **kw: None)
     monkeypatch.setattr(
         cli.campaign_followups, "run", lambda c, **kw: FollowUpResult(sent=1, fallback=0, skipped=0)
     )
@@ -598,3 +664,133 @@ def test_weekly_runs_followups_before_review(monkeypatch, run, store):
     )
     assert run("weekly")[0] == 0
     assert order == ["followups", "review"]
+
+
+# --- the sendable gate in the CLI -----------------------------------------------------------
+
+
+def _verify_finds(monkeypatch, email="jane@acme.com", verification="valid"):
+    monkeypatch.setattr(
+        cli.campaign_verify,
+        "resolve_email",
+        lambda contact, company, *, apollo, hunter: (email, verification, "apollo"),
+    )
+
+
+def test_verify_parks_a_contact_whose_found_email_is_warm(monkeypatch, run, store):
+    store.contacts[5].update(email=None, verification=None)
+    store.people["jane@acme.com"] = {"id": 7, "message_count": 4, "my_response_count": 2}
+    _verify_finds(monkeypatch)
+    code, out, _ = run("contact", "verify", "5")
+    assert code == 0 and "skipped_warm 5 (warm)" in out
+    assert store.contacts[5]["status"] == "skipped_warm"
+    assert store.advances[-1]["note"] == "warm"
+    assert store.companies[1]["status"] == "warm"
+    assert "commit" in run.conn.log
+
+
+def test_verify_parks_a_bounced_address_without_warming_the_company(monkeypatch, run, store):
+    store.contacts[5].update(email=None, verification=None)
+    store.bounced_at["jane@acme.com"] = NOW
+    _verify_finds(monkeypatch, verification="accept_all")
+    code, out, _ = run("contact", "verify", "5")
+    assert code == 0 and "skipped_warm 5 (bounced address)" in out
+    assert store.contacts[5]["status"] == "skipped_warm"
+    assert store.companies[1]["status"] == "active"
+
+
+def test_verify_of_a_cold_contact_is_unchanged(monkeypatch, run, store):
+    _verify_finds(monkeypatch)
+    code, out, _ = run("contact", "verify", "5")
+    assert code == 0 and "skipped_warm" not in out and store.contacts[5]["status"] == "candidate"
+
+
+def test_a_contact_at_a_warm_company_cannot_be_drafted(monkeypatch, run, store):
+    store.companies[1]["status"] = "warm"
+    monkeypatch.setattr(cli.campaign_factcheck, "check", lambda o, e: FactCheck(True, [], "{}"))
+    code, _, err = run("contact", "draft", "5", "--opener", "Congrats on the Series A.")
+    assert code == 1 and "company warm" in err
+    assert store.advances == []
+
+
+def test_a_contact_whose_address_bounced_cannot_be_drafted(monkeypatch, run, store):
+    store.bounced_at["jane@acme.com"] = NOW
+    code, _, err = run("contact", "draft", "5", "--generic")
+    assert code == 1 and "bounced address" in err
+    assert store.advances == []
+
+
+def test_a_warm_contact_cannot_be_drafted(monkeypatch, run, store):
+    store.people["jane@acme.com"] = {"id": 7, "message_count": 4, "my_response_count": 2}
+    code, _, err = run("contact", "draft", "5", "--generic")
+    assert code == 1 and "warm" in err
+
+
+def test_hand_bounced_stamps_the_people_row(run, store):
+    store.contacts[5]["status"] = "sent"
+    code, out, _ = run("bounced", "5")
+    assert code == 0 and "bounced 5" in out
+    assert store.people_bounced == [("jane@acme.com", NOW)]
+
+
+def test_hand_booked_does_not_stamp_a_bounce(run, store):
+    store.contacts[5]["status"] = "replied"
+    assert run("booked", "5")[0] == 0
+    assert store.people_bounced == []
+
+
+def test_send_prints_the_contacts_the_gate_skipped(monkeypatch, run):
+    _fake_send(
+        monkeypatch,
+        SendResult(sent=1, remaining=1, halted=False, skipped=[(6, "company opted_out")]),
+    )
+    code, out, _ = run("send")
+    assert code == 0 and "not sent: 6 (company opted_out)" in out
+
+
+# --- follow-ups: preflight and the shared daily cap -----------------------------------------
+
+
+def test_followups_run_preflight_first(monkeypatch, run):
+    calls = []
+    monkeypatch.setattr(
+        cli.campaign_send, "preflight", lambda domain, **kw: calls.append(("pre", domain, kw))
+    )
+    monkeypatch.setattr(
+        cli.campaign_followups,
+        "run",
+        lambda c, **kw: calls.append("run") or FollowUpResult(sent=0, fallback=0, skipped=0),
+    )
+    assert run("followups")[0] == 0
+    assert calls[0][0] == "pre" and calls[0][1] == "drolet.ai" and calls[1] == "run"
+    kw = calls[0][2]
+    assert kw["postal_address"] == "1 Main St, Springfield"
+    assert kw["inbox_reachable"] is cli.inbox_reachable
+
+
+def test_a_failed_preflight_sends_no_follow_ups(monkeypatch, run):
+    def fail(domain, **kw):
+        raise cli.campaign_send.PreflightError("dmarc: no v=DMARC1 TXT record")
+
+    def never(c, **kw):
+        raise AssertionError("must not follow up")
+
+    monkeypatch.setattr(cli.campaign_send, "preflight", fail)
+    monkeypatch.setattr(cli.campaign_followups, "run", never)
+    code, _, err = run("followups")
+    assert code == 1 and "dmarc" in err
+
+
+def test_followups_get_what_is_left_of_the_daily_cap(monkeypatch, run, store):
+    store.sent_today = 5
+    seen = {}
+    monkeypatch.setattr(cli.campaign_send, "preflight", lambda domain, **kw: None)
+
+    def fu(c, **kw):
+        seen.update(kw)
+        return FollowUpResult(sent=15, fallback=0, skipped=0, remaining=2)
+
+    monkeypatch.setattr(cli.campaign_followups, "run", fu)
+    code, out, _ = run("followups")
+    assert code == 0 and seen["budget"] == 15
+    assert "remaining 2" in out

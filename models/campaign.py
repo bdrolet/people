@@ -22,8 +22,18 @@ CONTACT_STATUSES = (
 VERIFICATIONS = ("valid", "accept_all", "unknown", "invalid")
 EMAIL_SOURCES = ("apollo", "hunter", "manual")
 EVENT_SOURCES = ("cli", "event", "page")
-# A reply that is just one of these (case-folded, trimmed) opts the contact out.
-OPT_OUT_PHRASES = ("no", "unsubscribe", "remove", "not interested", "no thanks", "please remove me")
+# A reply line that is, or starts with, one of these (case-folded, trimmed) opts the contact out.
+OPT_OUT_PHRASES = (
+    "no",
+    "unsubscribe",
+    "remove",
+    "not interested",
+    "no thanks",
+    "please remove me",
+    "stop",
+    "opt out",
+    "opt-out",
+)
 
 
 @dataclass

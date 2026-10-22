@@ -23,7 +23,8 @@ docs/superpowers/plans/2026-10-21-funded-founder-campaign.md, Task 13). Local on
 Env: CAMPAIGN_TARGETS (the targets TOML), CAMPAIGN_POSTAL_ADDRESS (every email's footer),
 CAMPAIGN_FROM_ADDRESS (default: the first OUTREACH_FROM_ADDRESSES entry), INBOX_API_URL,
 APOLLO_API_KEY, HUNTER_API_KEY. `contact draft` exits 2 when the fact check rejects the
-opener, so the skill can retry once with a new one and then fall back to --generic.
+opener (or subject), so the skill can retry once with a new one and then fall back to
+--generic; it exits 3 when the fact check could not run at all (stop and tell Ben).
 `review` serves the approval page and sends the ticked rows on submit; `weekly` is
 `followups` then `review`. The page HTML is written under .campaign/ (gitignored).
 """
@@ -85,6 +86,11 @@ class FactCheckFailed(Exception):
     def __init__(self, claims: list[str]) -> None:
         self.claims = claims
         super().__init__("; ".join(claims))
+
+
+class FactCheckUnavailable(Exception):
+    """The fact check could not run (the claude CLI failed or said nothing): exit 3. Not
+    a verdict on the opener, so it is not recorded and --generic is not the answer."""
 
 
 USER_ERRORS = (
@@ -282,6 +288,8 @@ def cmd_contact_add(conn: Any, args: argparse.Namespace, out: TextIO, now: datet
 
 
 def _verify_one(conn: Any, contact: dict, now: datetime) -> str:
+    """Resolve and store the email, then gate the contact on it: a found address that is
+    warm or has hard-bounced parks the contact at `skipped_warm`."""
     if contact["status"] not in _VERIFIABLE:
         raise CliError(f"contact {contact['id']} is at {contact['status']}; nothing to verify")
     company = _company(conn, contact["company_id"])
@@ -296,6 +304,12 @@ def _verify_one(conn: Any, contact: dict, now: datetime) -> str:
     # the contact at `unverified`, and `contact draft` accepts it (`unverified → drafted`).
     if verification != "valid" and row["status"] == "candidate":
         row = campaign.advance(conn, contact["id"], "unverified", at=now, source="cli").row
+    if row.get("email"):
+        reason = campaign.sendable(conn, row, company, allowed=_VERIFIABLE)
+        if reason in ("warm", "bounced address"):
+            campaign.park_warm(conn, contact["id"], reason=reason, at=now, source="cli")
+            conn.commit()
+            return f"skipped_warm {contact['id']} ({reason})"
     conn.commit()
     return f"{contact['id']} {email or '-'} {verification} {row['status']}"
 
@@ -313,15 +327,19 @@ def cmd_contact_verify(conn: Any, args: argparse.Namespace, out: TextIO, now: da
         print("nothing to verify", file=out)
 
 
-def _fact_check(conn: Any, contact: dict, opener: str, excerpt: str, now: datetime) -> str | None:
+def _fact_check(conn: Any, contact: dict, text: str, excerpt: str, now: datetime) -> str | None:
     """The regeneration note to annotate after drafting (None on a first pass), or
     FactCheckFailed after annotating the failure (committed, so the retry knows it is a
-    regeneration). Both are annotations: repo.campaign.counts_by_week skips them."""
+    regeneration). Both are annotations: repo.campaign.counts_by_week skips them.
+    `text` is the opener, with a hand-written subject line above it. FactCheckUnavailable
+    when the check could not run: nothing is recorded."""
     try:
-        result = campaign_factcheck.check(opener, excerpt)
-        claims = None if result.ok else result.unsupported
+        result = campaign_factcheck.check(text, excerpt)
     except ClaudeCliError as e:
-        claims = [f"fact check could not run: {e}"]
+        raise FactCheckUnavailable(str(e)) from e
+    if not result.ok and result.unsupported == ["unparseable"] and not result.raw.strip():
+        raise FactCheckUnavailable("the claude CLI returned nothing")
+    claims = None if result.ok else result.unsupported
     version = campaign_factcheck.PROMPT_VERSION
     if claims is not None:
         note = f"{FACT_CHECK_FAILED} (prompt {version}): {'; '.join(claims)}"
@@ -342,6 +360,9 @@ def cmd_contact_draft(conn: Any, args: argparse.Namespace, out: TextIO, now: dat
             "drafting needs valid (run `contact verify`)"
         )
     company = _company(conn, contact["company_id"])
+    reason = campaign.sendable(conn, contact, company, allowed=_DRAFTABLE)
+    if reason is not None:
+        raise CliError(f"contact {contact['id']} cannot be drafted: {reason}")
     targets, postal = _targets(), _require_postal_address()
     note = None
     if args.generic:
@@ -352,7 +373,9 @@ def cmd_contact_draft(conn: Any, args: argparse.Namespace, out: TextIO, now: dat
         raise CliError(f"company {company['id']} has no announcement excerpt; use --generic")
     else:
         opener = args.opener
-        note = _fact_check(conn, contact, opener, company["announcement_excerpt"], now)
+        # The default subject names only the company; a hand-written one is checked too.
+        text = f"{args.subject}\n{opener}" if args.subject else opener
+        note = _fact_check(conn, contact, text, company["announcement_excerpt"], now)
     first_name = (contact["full_name"].split() or [""])[0]
     subject, body = campaign_draft.render_email(
         first_name=first_name,
@@ -430,6 +453,9 @@ def send(conn: Any, out: TextIO, now: datetime, *, force: bool) -> None:
     print(f"sent {res.sent}, remaining {res.remaining}", file=out)
     if res.halted:
         print("halted: more than two bounces; run campaign resume", file=out)
+    if res.skipped:
+        stopped = ", ".join(f"{cid} ({reason})" for cid, reason in res.skipped)
+        print(f"not sent: {stopped}", file=out)
     if res.needs_check:
         ids = ", ".join(str(i) for i in res.needs_check)
         print(
@@ -468,10 +494,19 @@ def cmd_resume(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) 
 
 
 def cmd_followups(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:
+    """Follow-ups are sends: the same preflight, and the same daily cap as new sends."""
+    targets, from_address, postal = _targets(), _from_address(), _require_postal_address()
+    campaign_send.preflight(
+        from_address.split("@")[1], postal_address=postal, inbox_reachable=inbox_reachable
+    )
+    today = now.astimezone(campaign.TZ).date()
+    budget = max(0, targets.per_day - campaign_repo.sent_today(conn, today))
     res = campaign_followups.run(
-        conn, now=now, from_address=_from_address(), postal_address=_require_postal_address()
+        conn, now=now, from_address=from_address, postal_address=postal, budget=budget
     )
     line = f"sent {res.sent} (fallback {res.fallback}, skipped {res.skipped}, failed {res.failed})"
+    if res.remaining:
+        line += f"; remaining {res.remaining} (daily cap reached; run followups tomorrow)"
     if res.failed:
         line += "; see: campaign report (Needs attention)"
     print(line, file=out)
@@ -488,6 +523,9 @@ def cmd_weekly(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) 
 def cmd_hand(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:
     contact = _contact(conn, args.contact)
     res = campaign.advance(conn, contact["id"], args.command, at=now, source="cli")
+    if args.command == "bounced" and contact.get("email"):
+        # The address is dead whatever the contact: stamp it so no later contact gets it.
+        campaign_repo.set_people_bounced(conn, contact["email"], now)
     conn.commit()
     print(f"{args.command} {contact['id']}" + ("" if res.changed else " (unchanged)"), file=out)
 
@@ -616,6 +654,10 @@ def main_with(
                 for claim in e.claims:
                     print(f"  - {claim}", file=err)
                 return 2
+            except FactCheckUnavailable as e:
+                conn.rollback()
+                print(f"fact check could not run: {e}", file=err)
+                return 3
             except USER_ERRORS as e:
                 conn.rollback()
                 print(f"error: {e}", file=err)

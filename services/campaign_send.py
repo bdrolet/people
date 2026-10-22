@@ -39,6 +39,8 @@ class SendResult:
     halted: bool
     # Approved contacts whose draft may or may not have gone out: Ben checks Outlook Drafts.
     needs_check: list[int] = field(default_factory=list)
+    # Approved contacts the gate stopped at send time, with the reason (never sent).
+    skipped: list[tuple[int, str]] = field(default_factory=list)
 
 
 # --- preflight ------------------------------------------------------------------------------
@@ -227,6 +229,18 @@ def _reconcile(conn: Any, contact: dict, inbox: Any, *, now: datetime, follow_up
     return True
 
 
+def _gate(conn: Any, contact_id: int) -> str | None:
+    """Lock the contact and re-read it and its company: a reply, an opt-out or a bounce
+    that landed after the batch was selected must stop this send. The reason, or None."""
+    row = campaign_repo.lock_contact(conn, contact_id)
+    if row is None:
+        return "contact gone"
+    company = campaign_repo.get_company(conn, row["company_id"])
+    if company is None:
+        return "company gone"
+    return campaign.sendable(conn, row, company, allowed=("approved",))
+
+
 def send_batch(
     conn: Any,
     *,
@@ -248,6 +262,7 @@ def send_batch(
     budget = targets.per_day - campaign_repo.sent_today(conn, now.astimezone(campaign.TZ).date())
     follow_up_on = campaign.follow_up_date(now, targets.follow_up_business_days)
     sent, lost, attempted, needs_check = 0, 0, 0, []
+    skipped: list[tuple[int, str]] = []
     # Pre-pass, whatever the halt or the budget: a contact with a draft_id had a send
     # whose outcome is unknown. Reconciling only reads the mailbox; the rest go to Ben.
     fresh = []
@@ -266,6 +281,12 @@ def send_batch(
         if sent + lost >= budget:  # a lost send may have reached Graph: it uses a slot
             break
         if not _ensure_person(conn, contact):
+            continue
+        reason = _gate(conn, contact["id"])  # the lock is held until the draft_id commit
+        if reason is not None:
+            log.warning("contact %s: not sent: %s", contact["id"], reason)
+            conn.rollback()
+            skipped.append((contact["id"], reason))
             continue
         if attempted:
             sleep(pause_s)
@@ -310,5 +331,9 @@ def send_batch(
         )
         conn.commit()
     return SendResult(
-        sent=sent, remaining=len(approved) - sent, halted=halted, needs_check=needs_check
+        sent=sent,
+        remaining=len(approved) - sent,
+        halted=halted,
+        needs_check=needs_check,
+        skipped=skipped,
     )

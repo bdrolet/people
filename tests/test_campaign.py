@@ -31,6 +31,7 @@ class FakeRepo:
         self.outreach_by_domain: dict[str, list[dict]] = {}
         self.locked: list[int] = []
         self.people_bounced: list[tuple[str, datetime]] = []
+        self.bounced_at: dict[str, datetime] = {}
 
     # runs
     def latest_run(self, conn):
@@ -96,6 +97,15 @@ class FakeRepo:
             if (c.get("email") or "").lower() == email.lower():
                 return dict(c)
         return None
+
+    def get_contact_by_company_email(self, conn, company_id, email):
+        for c in self.contacts.values():
+            if c["company_id"] == company_id and (c.get("email") or "").lower() == email.lower():
+                return dict(c)
+        return None
+
+    def email_bounced_at(self, conn, email):
+        return self.bounced_at.get(email.lower())
 
     def contacts_by_domain(self, conn, domain):
         ids = {i for i, c in self.companies.items() if c["domain"].lower() == domain.lower()}
@@ -165,6 +175,7 @@ ALLOWED = [
     ("candidate", "skipped_warm"),
     ("candidate", "drafted"),
     ("candidate", "skipped"),
+    ("unverified", "skipped_warm"),
     ("unverified", "drafted"),
     ("unverified", "skipped"),
     ("drafted", "approved"),
@@ -397,6 +408,30 @@ def test_add_company_lower_cases_the_domain_and_sets_the_run(repo):
     assert row["domain"] == "acme.com" and row["run_id"] == 4
 
 
+@pytest.mark.parametrize(
+    "domain", ["https://www.Acme.com/news", "www.acme.com", "acme.com", "http://acme.com:443/"]
+)
+def test_add_company_normalises_the_domain_so_they_dedupe(repo, domain):
+    first, _ = svc.add_company(FakeConn(), {"domain": "acme.com", "name": "Acme"}, run_id=1)
+    row, created = svc.add_company(FakeConn(), {"domain": domain, "name": "Acme"}, run_id=1)
+    assert created is False and row["id"] == first["id"]
+    assert len(repo.companies) == 1
+
+
+def test_add_company_stores_the_normalised_domain(repo):
+    row, _ = svc.add_company(
+        FakeConn(), {"domain": " https://www.Acme.com/news ", "name": "Acme"}, run_id=1
+    )
+    assert row["domain"] == "acme.com"
+
+
+@pytest.mark.parametrize("domain", ["not a domain", "localhost", "https://", ""])
+def test_add_company_rejects_a_non_domain(repo, domain):
+    with pytest.raises(ValueError):
+        svc.add_company(FakeConn(), {"domain": domain, "name": "Acme"}, run_id=1)
+    assert repo.companies == {}
+
+
 @pytest.mark.parametrize("country", ["US", "usa", "United States", "united states", None])
 def test_add_company_us_or_unknown_country_is_new(repo, country):
     row, _ = svc.add_company(
@@ -553,6 +588,93 @@ def test_add_contact_twice_returns_existing(repo, people):
     assert len(repo.events) == events and len(repo.contacts) == 1
 
 
+def test_add_contact_at_a_warm_company_is_skipped_warm(repo, people):
+    co = _company(repo, status="warm")
+    row, kind = svc.add_contact(FakeConn(), _fields(co), run_id=2)
+    assert kind == "skipped_warm" and row["status"] == "skipped_warm"
+    assert repo.events[-1]["status"] == "skipped_warm"
+    assert repo.events[-1]["note"] == "company warm"
+    assert repo.companies[co]["status"] == "warm"
+
+
+def test_add_contact_without_an_email_uses_the_company_domain_rule(repo, people):
+    co = _company(repo)
+    repo.outreach_by_domain["acme.com"] = [{"id": 12, "email": "ceo@acme.com"}]
+    _, kind = svc.add_contact(FakeConn(), _fields(co, email=None, linkedin_url=None), run_id=2)
+    assert kind == "skipped_warm"
+    assert repo.companies[co]["status"] == "warm"
+
+
+def test_add_contact_same_email_at_another_company_finds_its_own_row(repo, people):
+    a = _company(repo, "acme.com")
+    b = _company(repo, "acme-labs.com")
+    _contact(repo, a, "candidate", "cto@acme.com")
+    mine = _contact(repo, b, "candidate", "cto@acme.com")
+    row, kind = svc.add_contact(FakeConn(), _fields(b), run_id=3)
+    assert kind == "existing" and row["id"] == mine
+
+
+# --- the sendable gate ----------------------------------------------------------------------
+
+
+def _gate(repo, contact_id, allowed=("candidate", "unverified")):
+    contact = repo.contacts[contact_id]
+    company = repo.companies[contact["company_id"]]
+    return svc.sendable(FakeConn(), contact, company, allowed=allowed)
+
+
+def test_sendable_passes_a_cold_contact_at_an_active_company(repo, people):
+    co = _company(repo)
+    assert _gate(repo, _contact(repo, co, "candidate")) is None
+
+
+@pytest.mark.parametrize("status", ["warm", "opted_out", "closed", "below_bar", "new"])
+def test_sendable_needs_an_active_company(repo, people, status):
+    co = _company(repo, status=status)
+    assert _gate(repo, _contact(repo, co, "candidate")) == f"company {status}"
+
+
+def test_sendable_needs_an_allowed_contact_status(repo, people):
+    co = _company(repo)
+    cid = _contact(repo, co, "opted_out")
+    assert _gate(repo, cid, allowed=("approved",)) == "contact opted_out"
+
+
+def test_sendable_runs_the_warm_guard_on_the_current_email(repo, people):
+    co = _company(repo)
+    cid = _contact(repo, co, "unverified", "found@acme.com")
+    people.by_email["found@acme.com"] = {"id": 7, "message_count": 2, "my_response_count": 1}
+    assert _gate(repo, cid) == "warm"
+
+
+def test_sendable_refuses_a_bounced_address(repo, people):
+    co = _company(repo)
+    cid = _contact(repo, co, "approved", "Gone@acme.com")
+    repo.bounced_at["gone@acme.com"] = TS
+    assert _gate(repo, cid, allowed=("approved",)) == "bounced address"
+
+
+def test_park_warm_skips_the_contact_and_flips_the_company(repo, people):
+    co = _company(repo)
+    cid = _contact(repo, co, "unverified")
+    conn = FakeConn()
+    svc.park_warm(conn, cid, reason="warm", at=TS, source="cli")
+    assert repo.contacts[cid]["status"] == "skipped_warm"
+    assert repo.companies[co]["status"] == "warm"
+    moves = [e for e in repo.events if e["contact_id"] == cid]
+    assert moves[-1]["status"] == "skipped_warm" and moves[-1]["note"] == "warm"
+    assert conn.commits == 0
+
+
+def test_park_warm_for_a_bounced_address_leaves_the_company(repo, people):
+    co = _company(repo)
+    cid = _contact(repo, co, "candidate")
+    svc.park_warm(FakeConn(), cid, reason="bounced address", at=TS, source="cli")
+    assert repo.contacts[cid]["status"] == "skipped_warm"
+    assert repo.companies[co]["status"] == "active"
+    assert repo.events[-1]["note"] == "bounced address"
+
+
 # --- opt-out --------------------------------------------------------------------------------
 
 
@@ -605,6 +727,12 @@ def test_opt_out_company_unknown_raises(repo):
         "Hi Ben,\n\nNot interested.",
         "Thanks for reaching out.\n\nNo thanks.",
         "Good morning Ben\nunsubscribe",
+        "Hi Ben, not interested",
+        "Hello Ben: unsubscribe",
+        "Stop",
+        "stop emailing me",
+        "Opt out",
+        "opt-out please",
     ],
 )
 def test_is_opt_out_true(body):
@@ -628,6 +756,11 @@ def test_is_opt_out_true(body):
         "Hi Ben,\n\nHappy to talk, send the intake",
         "Thanks for reaching out.\n\nSounds great.\n\nNo thanks to the newsletter though",
         "Hi Ben,\nHello again\nSounds good\nNo",
+        "Hi Ben, happy to talk",
+        "Hi Ben, no problem, send it over",
+        # Start-of-line rule: "opt out" mid-line does not count.
+        "Please opt me out",
+        "Stopping by to say thanks",
     ],
 )
 def test_is_opt_out_false(body):

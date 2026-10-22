@@ -271,10 +271,14 @@ def insert_event(
 
 
 def sent_today(conn: Any, on: date, tz: str = TZ) -> int:
+    """Emails sent on `on` in `tz`: first sends and follow-ups share the daily cap. A
+    follow-up counts once, by its move to followed_up (note `follow-up: sending`), never by
+    the annotation recording its outcome."""
     row = conn.execute(
         """
         SELECT count(*) AS n FROM campaign_events
-        WHERE status = 'sent' AND (at AT TIME ZONE %s)::date = %s
+        WHERE (status = 'sent' OR (status = 'followed_up' AND note = 'follow-up: sending'))
+          AND (at AT TIME ZONE %s)::date = %s
         """,
         (tz, on),
     ).fetchone()
@@ -417,3 +421,22 @@ def people_in_outreach_by_domain(conn: Any, domain: str) -> list[dict]:
         """,
         ((domain or "").strip().lower(),),
     ).fetchall()
+
+
+def get_contact_by_company_email(conn: Any, company_id: int, email: str) -> dict | None:
+    """The company's contact with this email (the add-contact conflict key)."""
+    return conn.execute(
+        f"""
+        SELECT {_CONTACT_COLUMNS} FROM campaign_contacts
+        WHERE company_id = %s AND lower(email) = lower(%s)
+        """,
+        (company_id, email),
+    ).fetchone()
+
+
+def email_bounced_at(conn: Any, email: str) -> datetime | None:
+    """When the address hard-bounced (people.email_bounced_at), or None."""
+    row = conn.execute(
+        "SELECT email_bounced_at FROM people WHERE lower(email) = lower(%s)", (email,)
+    ).fetchone()
+    return row["email_bounced_at"] if row else None
