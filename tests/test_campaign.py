@@ -371,6 +371,14 @@ def test_start_run_later_run_looks_back_to_the_previous_run(repo):
     assert run["lookback_to"] == date(2026, 10, 21)
 
 
+def test_start_run_lookback_days_overrides_the_previous_run(repo):
+    targets = SimpleNamespace(lookback_days_first_run=30)
+    svc.start_run(FakeConn(), now=TS - timedelta(days=7), targets=targets)
+    run = svc.start_run(FakeConn(), now=TS, targets=targets, lookback_days=10)
+    assert run["lookback_from"] == date(2026, 10, 11)
+    assert run["lookback_to"] == date(2026, 10, 21)
+
+
 # --- companies ------------------------------------------------------------------------------
 
 

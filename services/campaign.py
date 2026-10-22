@@ -106,10 +106,16 @@ def _now() -> datetime:
 # --- runs and companies ---------------------------------------------------------------------
 
 
-def start_run(conn: Any, *, now: datetime, targets: Any) -> dict:
-    """Look back to the previous run, or `lookback_days_first_run` days on the first one."""
+def start_run(conn: Any, *, now: datetime, targets: Any, lookback_days: int | None = None) -> dict:
+    """Look back to the previous run, or `lookback_days_first_run` days on the first one;
+    `lookback_days` (`run start --lookback-days`) overrides both."""
     last = campaign_repo.latest_run(conn)
-    since = last["ran_at"] if last else now - timedelta(days=targets.lookback_days_first_run)
+    if lookback_days is not None:
+        since = now - timedelta(days=lookback_days)
+    elif last:
+        since = last["ran_at"]
+    else:
+        since = now - timedelta(days=targets.lookback_days_first_run)
     return campaign_repo.insert_run(
         conn,
         ran_at=now,

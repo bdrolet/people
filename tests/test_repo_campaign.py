@@ -237,6 +237,17 @@ def test_last_event_at_takes_the_latest_of_the_status():
     assert params == (4, "approved")
 
 
+def test_latest_event_note_reads_the_newest_event():
+    conn = FakeConn([[{"note": "fact check regenerated"}]])
+    assert campaign.latest_event_note(conn, 4) == "fact check regenerated"
+    sql, params = conn.calls[0]
+    assert sql == (
+        "SELECT note FROM campaign_events WHERE contact_id = %s ORDER BY at DESC, id DESC LIMIT 1"
+    )
+    assert params == (4,)
+    assert campaign.latest_event_note(FakeConn(), 4) is None
+
+
 def test_bounced_count_for_run_joins_the_runs_contacts():
     conn = FakeConn([[{"n": 3}]])
     assert campaign.bounced_count_for_run(conn, 9) == 3

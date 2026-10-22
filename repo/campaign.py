@@ -290,6 +290,15 @@ def last_event_at(conn: Any, contact_id: int, status: str) -> datetime | None:
     return row["at"] if row else None
 
 
+def latest_event_note(conn: Any, contact_id: int) -> str | None:
+    """The note on the contact's newest event (None when it has none, or no events)."""
+    row = conn.execute(
+        "SELECT note FROM campaign_events WHERE contact_id = %s ORDER BY at DESC, id DESC LIMIT 1",
+        (contact_id,),
+    ).fetchone()
+    return row["note"] if row else None
+
+
 def bounced_count_for_run(conn: Any, run_id: int) -> int:
     """Bounce events on the run's contacts (the send halt reads this)."""
     row = conn.execute(
