@@ -46,7 +46,7 @@ This overrides the default "commit or push only when asked" behavior for code ch
 
 **Funded-founder campaign one-time setup:**
 
-- Secret Manager: add versions by hand for `hunter-api-key` (required) and `apollo-api-key` (optional: the Apollo free plan has no API access, and a 401/403 or missing key falls through to Hunter) (resources are declared in terraform) and a `campaign-postal-address` secret; `scripts/fetch-env.sh` reads all three into `.env`.
+- Secret Manager: add versions by hand for `hunter-api-key` (required) and `apollo-api-key` (optional: the Apollo free plan has no API access, and a 401/403 or missing key falls through to Hunter) (resources are declared in terraform) and a `campaign-postal-address` secret; `scripts/fetch-env.sh` reads all three into `.env`. Values in `.env` are double-quoted so `set -a; source .env` works even with spaces.
 - `CAMPAIGN_POSTAL_ADDRESS` in `.env` (sends refuse without it).
 - Google contact group `consulting-campaign`: created on first use (by `person_create` labels), or by hand.
 - Inbox PR #68 merged and deployed (reply `to`, draft send `id`, `email_bounced`, search `is_draft`).
