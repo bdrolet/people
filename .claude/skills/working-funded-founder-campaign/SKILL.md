@@ -139,7 +139,9 @@ One line per contact: `id email verification status`. Only `valid` can be
 drafted; the rest are parked as `unverified` and shown on the review page. A
 line `skipped_warm N (warm)` or `skipped_warm N (bounced address)` means the
 email found belongs to someone Ben knows or an address that hard-bounced; the
-contact is parked, leave it.
+contact is parked, leave it. A contact Hunter cannot look up (a 4xx for its
+domain or name) is parked `unverified` with a `verify failed: ...` note, prints
+`id email error reason`, and the rest continue.
 
 ## 6. Draft
 

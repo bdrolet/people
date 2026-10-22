@@ -207,3 +207,67 @@ def test_apollo_other_http_errors_propagate(code):
             apollo=RaisingApollo(_status_error(code)),
             hunter=FindHunter(),
         )
+
+
+class StepHunter(FakeHunter):
+    """Raises `exc` from the named step ('find', 'pattern' or 'verify')."""
+
+    def __init__(self, step, exc, **kw):
+        super().__init__(**kw)
+        self.step, self.exc = step, exc
+
+    def find(self, domain, first, last):
+        if self.step == "find":
+            raise self.exc
+        return self.found
+
+    def domain_pattern(self, domain):
+        if self.step == "pattern":
+            raise self.exc
+        return self.pattern
+
+    def verify(self, email):
+        if self.step == "verify":
+            raise self.exc
+        return super().verify(email)
+
+
+@pytest.mark.parametrize("code", [400, 404, 422])
+def test_hunter_find_4xx_means_no_result_and_continues_to_pattern(code, caplog):
+    hu = StepHunter(
+        "find", _status_error(code), statuses={"cy@acme.com": "valid"}, pattern="{first}"
+    )
+    with caplog.at_level(logging.WARNING):
+        out = resolve_email({"full_name": "Cy Tee"}, COMPANY, apollo=FakeApollo(), hunter=hu)
+    assert out == ("cy@acme.com", "valid", "hunter")
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+@pytest.mark.parametrize("code", [400, 404, 422])
+def test_hunter_pattern_4xx_means_no_result(code, caplog):
+    hu = StepHunter("pattern", _status_error(code))
+    with caplog.at_level(logging.WARNING):
+        out = resolve_email({"full_name": "Cy Tee"}, COMPANY, apollo=FakeApollo(), hunter=hu)
+    assert out == (None, "unknown", None)
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+@pytest.mark.parametrize("code", [400, 404, 422])
+def test_hunter_verify_4xx_is_unknown_for_that_candidate(code):
+    hu = StepHunter("verify", _status_error(code))
+    contact = {"full_name": "Cy Tee", "email": "cy@acme.com"}
+    out = resolve_email(contact, COMPANY, apollo=FakeApollo(), hunter=hu)
+    assert out == ("cy@acme.com", "unknown", "manual")
+
+
+@pytest.mark.parametrize("step", ["find", "pattern", "verify"])
+@pytest.mark.parametrize("code", [401, 403, 429, 500, 503])
+def test_hunter_outage_and_key_errors_propagate(step, code):
+    hu = StepHunter(step, _status_error(code), found={"email": "cy@acme.com"})
+    with pytest.raises(httpx.HTTPStatusError):
+        resolve_email(
+            {"full_name": "Cy Tee", "email": "cy@acme.com"},
+            COMPANY,
+            apollo=FakeApollo(),
+            hunter=hu,
+        )

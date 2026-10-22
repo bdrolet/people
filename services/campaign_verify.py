@@ -13,6 +13,17 @@ log = logging.getLogger(__name__)
 
 _RANK = {"valid": 2, "accept_all": 1, "unknown": 0}
 
+# Hunter answers these when it has nothing for the domain/name (e.g. a domain that does not
+# exist). 401/403 (bad key), 429 and 5xx are plan/outage problems and must propagate.
+_HUNTER_MISS = (400, 404, 422)
+
+
+def _hunter_miss(e: httpx.HTTPStatusError, step: str) -> None:
+    """Log and return when Hunter has nothing for this step; re-raise anything else."""
+    if e.response.status_code not in _HUNTER_MISS:
+        raise e
+    log.warning("Hunter %s has nothing here (HTTP %s)", step, e.response.status_code)
+
 
 def _clean(token: str) -> str:
     ascii_ = unicodedata.normalize("NFKD", token).encode("ascii", "ignore").decode()
@@ -73,10 +84,19 @@ def _candidates(contact: dict, company: dict, first: str, last: str, apollo, hun
             email = None
         if email:
             yield email, "apollo"
-    found = hunter.find(company["domain"], first, last) if last else None
+    found = None
+    if last:
+        try:
+            found = hunter.find(company["domain"], first, last)
+        except httpx.HTTPStatusError as e:
+            _hunter_miss(e, "find")
     if found and found.get("email"):
         yield found["email"], "hunter"
-    pattern = hunter.domain_pattern(company["domain"])
+    try:
+        pattern = hunter.domain_pattern(company["domain"])
+    except httpx.HTTPStatusError as e:
+        _hunter_miss(e, "domain_pattern")
+        pattern = None
     if pattern:
         guess = _apply_pattern(pattern, first, last, company["domain"])
         if guess:
@@ -96,7 +116,11 @@ def resolve_email(
         if not _well_formed(email) or key in seen:
             continue
         seen.add(key)
-        status = hunter.verify(email)
+        try:
+            status = hunter.verify(email)
+        except httpx.HTTPStatusError as e:
+            _hunter_miss(e, "verify")
+            status = "unknown"
         if status == "valid":
             return email, "valid", source
         if status != "invalid" and (best is None or _RANK[status] > _RANK[best[1]]):

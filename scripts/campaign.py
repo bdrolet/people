@@ -287,15 +287,39 @@ def cmd_contact_add(conn: Any, args: argparse.Namespace, out: TextIO, now: datet
     print(f"{outcome} {row['id']}", file=out)
 
 
+# Key, plan and quota problems affect every contact: they abort the command.
+_VERIFY_ABORT = (401, 403, 429)
+
+
+def _verify_failed(conn: Any, contact: dict, reason: str, now: datetime) -> str:
+    """Park a contact whose lookup failed for its own sake and let the rest continue."""
+    log.warning("verify failed for contact %s: %s", contact["id"], reason)
+    conn.rollback()
+    if contact["status"] == "candidate":
+        campaign.advance(
+            conn, contact["id"], "unverified", at=now, source="cli", note=f"verify failed: {reason}"
+        )
+        conn.commit()
+    return f"{contact['id']} {contact.get('email') or '-'} error {reason}"
+
+
 def _verify_one(conn: Any, contact: dict, now: datetime) -> str:
     """Resolve and store the email, then gate the contact on it: a found address that is
     warm or has hard-bounced parks the contact at `skipped_warm`."""
     if contact["status"] not in _VERIFIABLE:
         raise CliError(f"contact {contact['id']} is at {contact['status']}; nothing to verify")
     company = _company(conn, contact["company_id"])
-    email, verification, source = campaign_verify.resolve_email(
-        contact, company, apollo=apollo, hunter=hunter
-    )
+    try:
+        email, verification, source = campaign_verify.resolve_email(
+            contact, company, apollo=apollo, hunter=hunter
+        )
+    except httpx.HTTPStatusError as e:
+        code = e.response.status_code
+        if code in _VERIFY_ABORT or not 400 <= code < 500:
+            raise
+        return _verify_failed(conn, contact, f"HTTP {code} from {e.request.url.host}", now)
+    except ValueError as e:
+        return _verify_failed(conn, contact, str(e), now)
     changes: dict[str, Any] = {"verification": verification}
     if email:
         changes = {"email": email, "email_source": source, **changes}
