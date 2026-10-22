@@ -312,6 +312,24 @@ def advance(
     )
 
 
+def annotate(conn: Any, contact_id: int, *, at: datetime, source: str, note: str) -> int:
+    """Append an event at the contact's current status carrying `note`, with no move:
+    the outcome of something done at that status (a follow-up's send). Returns the
+    event id; the caller commits."""
+    row = campaign_repo.lock_contact(conn, contact_id)
+    if row is None:
+        raise NotFound(f"no campaign contact {contact_id}")
+    return campaign_repo.insert_event(
+        conn,
+        contact_id=row["id"],
+        company_id=row["company_id"],
+        status=row["status"],
+        at=at,
+        source=source,
+        note=note,
+    )
+
+
 def opt_out_company(
     conn: Any, company_id: int, *, at: datetime, source: str, note: str | None
 ) -> int:

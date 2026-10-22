@@ -887,3 +887,29 @@ def test_reply_from_a_drafted_contact_falls_through_to_the_sent_one(repo):
     assert got == "replied"
     assert repo.contacts[cto]["status"] == "replied"
     assert repo.contacts[ceo]["status"] == "drafted"
+
+
+# --- annotate -------------------------------------------------------------------------------
+
+
+def test_annotate_appends_an_event_at_the_current_status_without_a_move(repo):
+    cid = _contact(repo, _company(repo), "followed_up")
+    conn = FakeConn()
+    before = len(repo.events)
+    event_id = svc.annotate(conn, cid, at=TS, source="cli", note="follow-up: sent (reply)")
+    assert repo.contacts[cid]["status"] == "followed_up"
+    assert len(repo.events) == before + 1 and event_id == len(repo.events)
+    event = repo.events[-1]
+    assert event["contact_id"] == cid and event["company_id"] == repo.contacts[cid]["company_id"]
+    assert (event["status"], event["at"], event["source"], event["note"]) == (
+        "followed_up",
+        TS,
+        "cli",
+        "follow-up: sent (reply)",
+    )
+    assert conn.commits == 0
+
+
+def test_annotate_unknown_contact_raises_not_found(repo):
+    with pytest.raises(svc.NotFound):
+        svc.annotate(FakeConn(), 999, at=TS, source="cli", note="x")

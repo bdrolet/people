@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime
 
+import httpx
 import pytest
 
 from services import campaign as campaign_svc
@@ -10,6 +11,7 @@ NOW = datetime(2026, 10, 21, 15, 0, tzinfo=UTC)  # a Wednesday, 11:00 in New Yor
 TODAY = date(2026, 10, 21)
 FROM = "ben@drolet.ai"
 SUBJECT = "Production-readiness audit for Acme"
+POSTAL = "123 Main St, San Francisco, CA 94110"
 
 
 class FakeConn:
@@ -81,9 +83,11 @@ class FakeRepo:
 
 
 class FakeInbox:
-    def __init__(self, hits=(), fail_reply_for=frozenset()):
+    def __init__(self, hits=(), fail_reply_for=frozenset(), reply_error=None, send_error=None):
         self.hits = list(hits)
         self.fail_reply_for = set(fail_reply_for)
+        self.reply_error = reply_error  # raised by every reply, after it is recorded
+        self.send_error = send_error  # raised by every send_draft, after it is recorded
         self.replies: list[dict] = []
         self.searches: list[tuple[str, str]] = []
         self.drafts: list[dict] = []
@@ -93,6 +97,8 @@ class FakeInbox:
         if message_id in self.fail_reply_for:
             raise RuntimeError("graph 503")
         self.replies.append({"id": message_id, "body": body, "to": to, "from": from_address})
+        if self.reply_error:
+            raise self.reply_error
         return {"status": "sent"}
 
     def search_sent(self, *, to, subject):
@@ -108,6 +114,8 @@ class FakeInbox:
 
     def send_draft(self, draft_id, *, from_address):
         self.sent.append((draft_id, from_address))
+        if self.send_error:
+            raise self.send_error
         return {"status": "sent", "id": f"m-{draft_id}"}
 
 
@@ -124,8 +132,16 @@ def _run(conn, inbox, sleeps=None):
         conn,
         now=NOW,
         from_address=FROM,
+        postal_address=POSTAL,
         inbox=inbox,
         sleep=(sleeps.append if sleeps is not None else lambda s: None),
+    )
+
+
+def _status_error(code):
+    request = httpx.Request("POST", "http://inbox-api/emails/m1/reply")
+    return httpx.HTTPStatusError(
+        f"{code}", request=request, response=httpx.Response(code, request=request)
     )
 
 
@@ -147,7 +163,7 @@ def test_a_due_contact_with_an_id_gets_a_threaded_reply_and_is_followed_up(repo)
     assert inbox.replies == [
         {
             "id": "m1",
-            "body": render_follow_up(first_name="Dana"),
+            "body": render_follow_up(first_name="Dana", postal_address=POSTAL),
             "to": ["sam1@acme.com"],
             "from": FROM,
         }
@@ -155,11 +171,12 @@ def test_a_due_contact_with_an_id_gets_a_threaded_reply_and_is_followed_up(repo)
     assert inbox.searches == [] and inbox.drafts == []
     assert repo.rows[cid]["status"] == "followed_up"
     assert repo.rows[cid]["follow_up_on"] is None
-    event = repo.events[-1]
-    assert event["status"] == "followed_up" and event["note"] is None
-    assert event["source"] == "cli" and event["at"] == NOW
+    assert [(e["status"], e["note"], e["source"], e["at"]) for e in repo.events] == [
+        ("followed_up", "follow-up: sending", "cli", NOW),
+        ("followed_up", "follow-up: sent (reply)", "cli", NOW),
+    ]
     assert (result.sent, result.fallback, result.skipped, result.failed) == (1, 0, 0, 0)
-    assert conn.commits == 1
+    assert conn.commits == 2
 
 
 def test_no_id_and_a_confirmed_sent_hit_replies_on_it_and_stores_the_id(repo):
@@ -170,7 +187,9 @@ def test_no_id_and_a_confirmed_sent_hit_replies_on_it_and_stores_the_id(repo):
     assert inbox.searches == [("sam1@acme.com", SUBJECT)]
     assert [r["id"] for r in inbox.replies] == ["m-found"]
     assert repo.rows[cid]["graph_message_id"] == "m-found"
-    assert (cid, {"graph_message_id": "m-found"}) in repo.updates
+    assert repo.updates == [
+        (cid, {"status": "followed_up", "follow_up_on": None, "graph_message_id": "m-found"})
+    ]
     assert repo.rows[cid]["status"] == "followed_up"
     assert inbox.drafts == []
     assert (result.sent, result.fallback) == (1, 0)
@@ -196,14 +215,14 @@ def test_no_confirmed_hit_falls_back_to_a_fresh_re(repo, hit):
             "id": "fd1",
             "to": ["sam1@acme.com"],
             "subject": "Re: Production-readiness audit for Acme",
-            "body": render_follow_up(first_name="Sam"),
+            "body": render_follow_up(first_name="Sam", postal_address=POSTAL),
             "from": FROM,
         }
     ]
     assert inbox.sent == [("fd1", FROM)]
     assert repo.rows[cid]["status"] == "followed_up"
     assert repo.rows[cid]["graph_message_id"] is None
-    assert repo.events[-1]["note"] == "fallback: fresh Re:"
+    assert repo.events[-1]["note"] == "follow-up: sent (fallback: fresh Re:)"
     assert (result.sent, result.fallback, result.failed) == (1, 1, 0)
 
 
@@ -229,6 +248,7 @@ def test_today_is_the_new_york_date(repo):
         FakeConn(),
         now=datetime(2026, 10, 22, 2, 0, tzinfo=UTC),
         from_address=FROM,
+        postal_address=POSTAL,
         inbox=FakeInbox(),
         sleep=lambda s: None,
     )
@@ -250,16 +270,109 @@ def test_a_contact_that_replied_before_the_lock_is_skipped(repo):
     assert conn.rollbacks == 1  # the lock is released
 
 
-def test_a_failed_reply_leaves_the_contact_sent_and_continues(repo):
+def test_a_failed_reply_is_recorded_and_never_retried(repo):
     first = repo.add()
     second = repo.add()
-    conn, inbox = FakeConn(), FakeInbox(fail_reply_for={"m1"})
+    conn = FakeConn()
+    inbox = FakeInbox(fail_reply_for={"m1"})
     result = _run(conn, inbox)
-    assert repo.rows[first]["status"] == "sent"
+    assert repo.rows[first]["status"] == "followed_up"
+    assert repo.rows[first]["follow_up_on"] is None
+    notes = [e["note"] for e in repo.events if e["contact_id"] == first]
+    assert notes == [
+        "follow-up: sending",
+        "follow-up: FAILED RuntimeError: graph 503; check Sent Items",
+    ]
     assert repo.rows[second]["status"] == "followed_up"
     assert [r["id"] for r in inbox.replies] == ["m2"]
-    assert conn.rollbacks == 1
     assert (result.sent, result.failed) == (1, 1)
+    again = _run(FakeConn(), inbox)
+    assert [r["id"] for r in inbox.replies] == ["m2"]
+    assert (again.sent, again.failed, again.skipped) == (0, 0, 0)
+
+
+def test_a_reply_whose_response_is_lost_is_not_sent_twice(repo):
+    cid = repo.add()
+    inbox = FakeInbox(reply_error=httpx.ReadTimeout("timed out"))
+    result = _run(FakeConn(), inbox)
+    assert result.failed == 1 and result.sent == 0
+    assert repo.rows[cid]["status"] == "followed_up"
+    assert repo.events[-1]["note"] == ("follow-up: FAILED ReadTimeout: timed out; check Sent Items")
+    _run(FakeConn(), inbox)
+    assert len(inbox.replies) == 1
+    assert inbox.drafts == []
+
+
+def test_a_5xx_from_reply_is_a_failure_not_a_fallback(repo):
+    repo.add()
+    inbox = FakeInbox(reply_error=_status_error(503))
+    result = _run(FakeConn(), inbox)
+    assert (result.failed, result.fallback) == (1, 0)
+    assert inbox.drafts == []
+
+
+@pytest.mark.parametrize("code", [404, 410])
+def test_a_gone_original_falls_through_to_a_fresh_re(repo, code):
+    cid = repo.add()
+    inbox = FakeInbox(reply_error=_status_error(code))
+    result = _run(FakeConn(), inbox)
+    assert len(inbox.replies) == 1
+    assert [d["subject"] for d in inbox.drafts] == ["Re: " + SUBJECT]
+    assert inbox.sent == [("fd1", FROM)]
+    assert (result.sent, result.fallback, result.failed) == (1, 1, 0)
+    assert repo.rows[cid]["status"] == "followed_up"
+    assert repo.events[-1]["note"] == "follow-up: sent (fallback: fresh Re:)"
+
+
+def test_a_failed_fallback_send_is_recorded_and_never_retried(repo):
+    cid = repo.add(graph_message_id=None)
+    inbox = FakeInbox(send_error=RuntimeError("read timeout"))
+    result = _run(FakeConn(), inbox)
+    assert (result.sent, result.fallback, result.failed) == (0, 0, 1)
+    assert repo.rows[cid]["status"] == "followed_up"
+    assert repo.events[-1]["note"] == (
+        "follow-up: FAILED RuntimeError: read timeout; check Sent Items"
+    )
+    _run(FakeConn(), inbox)
+    assert len(inbox.drafts) == 1 and len(inbox.sent) == 1
+
+
+def test_advance_failing_before_the_send_sends_nothing(repo, monkeypatch):
+    cid = repo.add()
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(campaign_svc, "advance", broken)
+    inbox = FakeInbox()
+    with pytest.raises(RuntimeError, match="db down"):
+        _run(FakeConn(), inbox)
+    assert inbox.replies == [] and inbox.drafts == []
+    assert repo.rows[cid]["status"] == "sent"
+
+
+def test_path_b_stores_the_found_id_with_the_sending_record(repo):
+    cid = repo.add(graph_message_id=None)
+    inbox = FakeInbox(hits=[_hit()], reply_error=RuntimeError("graph 503"))
+    conn = FakeConn()
+    _run(conn, inbox)
+    assert repo.rows[cid]["graph_message_id"] == "m-found"
+    sending = [u for c, u in repo.updates if c == cid and u.get("status") == "followed_up"]
+    assert sending and sending[0]["graph_message_id"] == "m-found"
+
+
+def test_a_failed_search_leaves_the_contact_sent_for_the_next_run(repo):
+    cid = repo.add(graph_message_id=None)
+
+    class SearchDown(FakeInbox):
+        def search_sent(self, *, to, subject):
+            raise RuntimeError("inbox-api down")
+
+    conn = FakeConn()
+    result = _run(conn, SearchDown())
+    assert result.failed == 1
+    assert repo.rows[cid]["status"] == "sent" and repo.events == []
+    assert conn.rollbacks == 1
 
 
 def test_pauses_between_sends_only(repo):

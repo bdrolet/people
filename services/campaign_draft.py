@@ -88,5 +88,7 @@ def render_email(
     return subject, body
 
 
-def render_follow_up(*, first_name: str) -> str:
-    return FOLLOW_UP_TEMPLATE.replace("{first_name}", first_name)
+def render_follow_up(*, first_name: str, postal_address: str) -> str:
+    """The nudge, then the signature: spec §9 wants the postal address in every message."""
+    values = {"first_name": first_name, "postal_address": postal_address}
+    return _PLACEHOLDER.sub(lambda m: values[m.group(1)], FOLLOW_UP_TEMPLATE + "\n" + SIGNATURE)

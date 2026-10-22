@@ -62,6 +62,15 @@ needed.
 Ben
 """
 
+# Spec section 9: every message carries the postal address, the follow-up included.
+SPEC_SIGNATURE = """\
+-- 
+Ben Drolet
+AI Infrastructure Engineering for Healthcare
+drolet.ai · linkedin.com/in/benjamindrolet
+{postal_address}
+"""
+
 
 def _expected():
     return (
@@ -147,7 +156,17 @@ def test_nul_sequences_in_values_stay_verbatim():
 
 
 def test_follow_up_matches_spec():
-    assert render_follow_up(first_name="Sam") == SPEC_FOLLOW_UP.replace("{first_name}", "Sam")
+    assert render_follow_up(first_name="Sam", postal_address=POSTAL) == (
+        SPEC_FOLLOW_UP.replace("{first_name}", "Sam")
+        + "\n"
+        + SPEC_SIGNATURE.replace("{postal_address}", POSTAL)
+    )
+
+
+def test_follow_up_substitutes_in_one_pass():
+    body = render_follow_up(first_name="{postal_address}", postal_address="{first_name}")
+    assert body.startswith("Hi {postal_address}, one nudge")
+    assert body.endswith("linkedin.com/in/benjamindrolet\n{first_name}\n")
 
 
 def test_generic_opener():
