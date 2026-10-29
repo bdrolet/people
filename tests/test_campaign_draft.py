@@ -19,30 +19,40 @@ TARGETS = CampaignTargets(
 POSTAL = "123 Main St, San Francisco, CA 94110"
 OPENER = "Congratulations on the Series A last week."
 
-# Copied from spec section 8. Trailing space after "--" is the signature delimiter.
+# Copied from spec section 5 (2026-10-29 launch spec). Trailing space after "--" is the signature delimiter.
 SPEC_BODY = """\
 Hi {first_name},
 
 {opening_sentence}
 
-I'm doing {slots} Production-Readiness Audits for healthcare AI teams
-{slots_through}, at no charge. I spend two days in your stack and hand you a
-written report on three things:
+Somewhere between the pilot and the contract, the health system's security
+team sends the questionnaire and asks for a BAA, and "where does the data
+live and who has access" has to be answered in writing. For most small teams
+the honest answer includes a logging tool, a dev tool or a model provider
+setting nobody put under a BAA, and finding that out mid-review costs a
+quarter, or the deal.
 
-- Compliance: where PHI flows through your LLM calls, whether your access
-  boundaries, audit logging and vendor BAAs would survive an enterprise
-  security review, and what an auditor would flag first.
-- Performance: what each call costs, where latency and failures come from,
-  and whether your model routing and fallbacks hold up.
-- Delivery: whether you can change a prompt or swap a model without breaking
-  production, which comes down to evals, versioning and tracing.
+I'm doing about {slots} Production-Readiness Reviews for healthcare startups
+with an LLM feature {slots_through}, one per week, at no charge. One week,
+read-only, no PHI. You get a written report you can hand a buyer: where PHI
+actually flows, which hops have a BAA and which don't, which of the fifteen
+questions health systems now ask about AI you can truthfully answer today,
+what breaks at the next prompt change or model deprecation, and the fix list
+in order, each item marked weekend, sprint or rebuild.
 
-You get the three things standing between you and production, the fixes you
-can make this month without me, and a 30-day order of operations. No PHI
-leaves your environment and there's no pitch at the end.
+I built Homeward Health's AI platform from the ground up, PHI boundaries and
+audit trails included, and that infrastructure has been through health system
+security reviews, BAA negotiations and SOC 2.
 
-If you want one of the {slots}, reply and I'll send the intake. If this isn't
-for you, reply "no" and I won't write again.
+I don't sell a platform, a certificate or a remediation product. I make my
+living on paid engineering work; some reviews lead to that, most don't, and
+the report is yours either way. Nothing connects to your repo: you show me
+first, and any access later is a read-only login you can revoke.
+
+How it works, the report's sections and who I am: drolet.ai/review
+
+If you'd like one, reply and we'll find 45 minutes. If this isn't for you,
+reply "no" and I won't write again.
 
 Ben
 
@@ -54,10 +64,10 @@ drolet.ai · linkedin.com/in/benjamindrolet
 """
 
 SPEC_FOLLOW_UP = """\
-Hi {first_name}, one nudge in case this got buried. The audit is two days of my
-time, a written report on what's between your AI feature and production, and
-nothing to buy. Happy to send the intake if useful, and if not, no reply
-needed.
+Hi {first_name}, one nudge in case this got buried. The review is one week of
+my time, read-only, no PHI, and a written report on what a health system's
+security review will find, with nothing to buy. Happy to find 45 minutes if
+useful, and if not, no reply needed.
 
 Ben
 """
@@ -102,8 +112,8 @@ def test_body_matches_spec():
 
 
 def test_default_subject_when_none():
-    assert _render()[0] == "Production-readiness audit for Acme"
-    assert DEFAULT_SUBJECT == "Production-readiness audit for {company}"
+    assert _render()[0] == "Production-readiness review for Acme"
+    assert DEFAULT_SUBJECT == "Production-readiness review for {company}"
 
 
 def test_good_subject_kept():
@@ -113,16 +123,16 @@ def test_good_subject_kept():
 
 
 def test_invalid_subject_falls_back():
-    assert _render(subject="Free audit for Acme")[0] == DEFAULT_SUBJECT.replace("{company}", "Acme")
+    assert _render(subject="Free review for Acme")[0] == DEFAULT_SUBJECT.replace("{company}", "Acme")
 
 
 def test_valid_subject_rules():
-    assert valid_subject("Audit for Acme", "Acme")
-    assert valid_subject("audit for ACME", "Acme")
-    assert not valid_subject("Free audit for Acme", "Acme")
+    assert valid_subject("Review for Acme", "Acme")
+    assert valid_subject("review for ACME", "Acme")
+    assert not valid_subject("Free review for Acme", "Acme")
     assert not valid_subject("Acme is carefree", "Acme")
-    assert not valid_subject("Audit for Acme!", "Acme")
-    assert not valid_subject("Audit for someone", "Acme")
+    assert not valid_subject("Review for Acme!", "Acme")
+    assert not valid_subject("Review for someone", "Acme")
     ok = "Acme " + "x" * 55
     assert len(ok) == 60 and valid_subject(ok, "Acme")
     assert not valid_subject(ok + "x", "Acme")
@@ -135,7 +145,7 @@ def test_placeholders_in_values_stay_verbatim():
         opening_sentence="Hi {first_name} {slots_through}",
         postal_address="{first_name} {opening_sentence} {slots}",
     )
-    assert subject == "Production-readiness audit for A{slots}co"
+    assert subject == "Production-readiness review for A{slots}co"
     expected = (
         SPEC_BODY.replace("{first_name}", "\x01F")
         .replace("{opening_sentence}", "\x01O")
@@ -171,3 +181,11 @@ def test_follow_up_substitutes_in_one_pass():
 
 def test_generic_opener():
     assert GENERIC_OPENER == "Congratulations on the round."
+
+
+def test_body_has_no_countdown_or_audit():
+    _, body = _render()
+    low = body.lower().replace("audit trails", "")
+    assert "audit" not in low
+    assert "if you want one of the" not in low
+    assert "drolet.ai/review" in body
