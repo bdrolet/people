@@ -1,4 +1,5 @@
-"""Rendering of the funded-founder campaign email and follow-up (spec §8). Pure text: no
+"""Rendering of the funded-founder campaign email and follow-up (2026-10-29 launch spec §5,
+which supersedes the 2026-10-21 campaign spec §8). Pure text: no
 I/O. Placeholders are substituted with str.replace, not str.format, so braces in a
 company name cannot break rendering."""
 
@@ -6,7 +7,7 @@ import re
 
 from services.campaign_targets import CampaignTargets
 
-DEFAULT_SUBJECT = "Production-readiness audit for {company}"
+DEFAULT_SUBJECT = "Production-readiness review for {company}"
 GENERIC_OPENER = "Congratulations on the round."
 MAX_SUBJECT_LENGTH = 60
 _PLACEHOLDER = re.compile(r"\{(first_name|opening_sentence|slots_through|slots|postal_address)\}")
@@ -16,24 +17,34 @@ Hi {first_name},
 
 {opening_sentence}
 
-I'm doing {slots} Production-Readiness Audits for healthcare AI teams
-{slots_through}, at no charge. I spend two days in your stack and hand you a
-written report on three things:
+Somewhere between the pilot and the contract, the health system's security
+team sends the questionnaire and asks for a BAA, and "where does the data
+live and who has access" has to be answered in writing. For most small teams
+the honest answer includes a logging tool, a dev tool or a model provider
+setting nobody put under a BAA, and finding that out mid-review costs a
+quarter, or the deal.
 
-- Compliance: where PHI flows through your LLM calls, whether your access
-  boundaries, audit logging and vendor BAAs would survive an enterprise
-  security review, and what an auditor would flag first.
-- Performance: what each call costs, where latency and failures come from,
-  and whether your model routing and fallbacks hold up.
-- Delivery: whether you can change a prompt or swap a model without breaking
-  production, which comes down to evals, versioning and tracing.
+I'm doing about {slots} Production-Readiness Reviews for healthcare startups
+with an LLM feature {slots_through}, one per week, at no charge. One week,
+read-only, no PHI. You get a written report you can hand a buyer: where PHI
+actually flows, which hops have a BAA and which don't, which of the fifteen
+questions health systems now ask about AI you can truthfully answer today,
+what breaks at the next prompt change or model deprecation, and the fix list
+in order, each item marked weekend, sprint or rebuild.
 
-You get the three things standing between you and production, the fixes you
-can make this month without me, and a 30-day order of operations. No PHI
-leaves your environment and there's no pitch at the end.
+I built Homeward Health's AI platform from the ground up, PHI boundaries and
+audit trails included, and that infrastructure has been through health system
+security reviews, BAA negotiations and SOC 2.
 
-If you want one of the {slots}, reply and I'll send the intake. If this isn't
-for you, reply "no" and I won't write again.
+I don't sell a platform, a certificate or a remediation product. I make my
+living on paid engineering work; some reviews lead to that, most don't, and
+the report is yours either way. Nothing connects to your repo: you show me
+first, and any access later is a read-only login you can revoke.
+
+How it works, the report's sections and who I am: drolet.ai/review
+
+If you'd like one, reply and we'll find 45 minutes. If this isn't for you,
+reply "no" and I won't write again.
 
 Ben
 """
@@ -47,10 +58,10 @@ SIGNATURE = (
 )
 
 FOLLOW_UP_TEMPLATE = """\
-Hi {first_name}, one nudge in case this got buried. The audit is two days of my
-time, a written report on what's between your AI feature and production, and
-nothing to buy. Happy to send the intake if useful, and if not, no reply
-needed.
+Hi {first_name}, one nudge in case this got buried. The review is one week of
+my time, read-only, no PHI, and a written report on what a health system's
+security review will find, with nothing to buy. Happy to find 45 minutes if
+useful, and if not, no reply needed.
 
 Ben
 """

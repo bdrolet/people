@@ -11,7 +11,7 @@ from services.campaign_draft import render_follow_up
 NOW = datetime(2026, 10, 21, 15, 0, tzinfo=UTC)  # a Wednesday, 11:00 in New York
 TODAY = date(2026, 10, 21)
 FROM = "ben@drolet.ai"
-SUBJECT = "Production-readiness audit for Acme"
+SUBJECT = "Production-readiness review for Acme"
 POSTAL = "123 Main St, San Francisco, CA 94110"
 
 
@@ -245,7 +245,7 @@ def test_no_confirmed_hit_falls_back_to_a_fresh_re(repo, hit):
         {
             "id": "fd1",
             "to": ["sam1@acme.com"],
-            "subject": "Re: Production-readiness audit for Acme",
+            "subject": "Re: Production-readiness review for Acme",
             "body": render_follow_up(first_name="Sam", postal_address=POSTAL),
             "from": FROM,
         }
