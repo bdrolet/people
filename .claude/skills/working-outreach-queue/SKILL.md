@@ -112,14 +112,17 @@ To work a person in their own session ("start a session for Jonah", "open
 sessions for my next 5", "reload the session for Jonah"), dispatch the
 `outreach-launcher` agent with who is meant — a name is fine. It runs
 `outreach-sessions`, which:
-- leaves a running session alone (`already open`);
-- resumes the person's exited session, same id and conversation (`resumed`);
-- or spawns a fresh one preloaded with their DB snapshot and contact doc
-  (`spawned`), already prepping or reloading.
+- leaves an open session alone (`already open`);
+- reopens the person's stopped or archived session, same conversation, and sends
+  it the reload prompt (`reopened`);
+- or launches a fresh one preloaded with their DB snapshot and contact doc
+  (`launched`), already prepping or reloading.
 
-It returns `claude attach <id>` lines. Attaching needs a real terminal. To close a
-session without losing it: `claude stop <id>`. Never `claude rm` one — that
-deletes its transcript (and a worktree it ran in).
+Sessions are agent-deck sessions in group `outreach`, supervised by
+`conductor-outreach`. It returns `agent-deck session attach <id>` lines.
+Attaching needs a real terminal. To close a session without losing it:
+`agent-deck session stop <id>`. Never `agent-deck rm` one, and never
+`claude rm` an old transcript.
 
 ## Prep a brief
 

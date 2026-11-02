@@ -130,11 +130,13 @@ def test_context_block_without_any_messages(monkeypatch):
     assert "No direct messages on file." in block and "LinkedIn: none linked" in block
 
 
-def test_session_name_is_bounded():
-    assert svc.session_name({"display_name": "Jonah Example"}) == "outreach: Jonah Example"
-    long = svc.session_name({"display_name": "A" * 100, "id": 1})
-    assert len(long) == svc.NAME_MAX and long.endswith("…")
-    assert svc.session_name({"display_name": None, "email": None, "id": 7}) == "outreach: person 7"
+def test_session_name_carries_the_id_and_is_bounded():
+    jonah = {"display_name": "Jonah Example", "id": 388}
+    assert svc.session_name(jonah) == "outreach: Jonah Example #388"
+    long = svc.session_name({"display_name": "A" * 100, "id": 1234})
+    assert len(long) == svc.NAME_MAX and long.endswith("… #1234")
+    nobody = {"display_name": None, "email": None, "id": 7}
+    assert svc.session_name(nobody) == "outreach: person 7 #7"
 
 
 def test_prep_prompt_points_at_the_skill_procedure():

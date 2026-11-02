@@ -33,7 +33,7 @@ for agent in outreach-launcher; do
   echo "linked $AGENT_DIR/$agent.md -> $(readlink "$AGENT_DIR/$agent.md")"
 done
 
-# outreach-sessions onto PATH: one background Claude session per outreach person.
+# outreach-sessions onto PATH: one agent-deck Claude session per outreach person.
 BIN_DEST="$HOME/.local/bin"
 mkdir -p "$BIN_DEST"
 if [[ -e "$BIN_DEST/outreach-sessions" && ! -L "$BIN_DEST/outreach-sessions" ]]; then
@@ -42,3 +42,5 @@ if [[ -e "$BIN_DEST/outreach-sessions" && ! -L "$BIN_DEST/outreach-sessions" ]];
 fi
 ln -sfn "$REPO_ROOT/scripts/outreach-sessions" "$BIN_DEST/outreach-sessions"
 echo "linked $BIN_DEST/outreach-sessions -> $(readlink "$BIN_DEST/outreach-sessions")"
+command -v agent-deck >/dev/null || echo "warning: agent-deck is not on PATH — outreach-sessions needs it" >&2
+command -v deck-sessions >/dev/null || echo "warning: deck-sessions is not on PATH — run ~/src/scripts/deck-sessions/install.sh" >&2

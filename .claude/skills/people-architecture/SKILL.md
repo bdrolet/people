@@ -405,8 +405,10 @@ stage log), all keyed to `people.id` and CASCADE-deleted with the person.
   `outreach_contacts.doc_url`. `outreach-sessions --write-doc` is the only writer:
   `services/outreach_doc.py` merges (Ben's notes and the log survive, Messages is
   regenerated), `services/outreach_doc_write.py` guards the PUT with a second GET.
-  `outreach-sessions` resumes a person's exited session from the cwd its transcript
-  records, or spawns a fresh one from the doc.
+  `outreach-sessions` gives each person an agent-deck session (hint `person_id`,
+  group `outreach`, parent `conductor-outreach`) through `deck-sessions`
+  (`~/src/scripts/deck-sessions`): it reopens a stopped one with the reload prompt,
+  or launches a fresh one from the doc. agent-deck's registry is the only state.
 
 ## Layer rules
 

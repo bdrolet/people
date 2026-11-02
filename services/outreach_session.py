@@ -47,8 +47,15 @@ def _label(person: dict) -> str:
 
 
 def session_name(person: dict) -> str:
-    full = f"outreach: {_label(person)}"
-    return full if len(full) <= NAME_MAX else full[: NAME_MAX - 1] + "…"
+    """`outreach: <label> #<id>`, at most NAME_MAX chars. The id keeps two people with
+    one display name apart (agent-deck refuses a duplicate title at one path); a long
+    label is truncated, never the id."""
+    suffix = f" #{person['id']}" if person.get("id") is not None else ""
+    label = f"outreach: {_label(person)}"
+    room = NAME_MAX - len(suffix)
+    if len(label) > room:
+        label = label[: room - 1] + "…"
+    return label + suffix
 
 
 def snapshot(conn: Any, person_id: int, *, limit: int) -> dict | None:

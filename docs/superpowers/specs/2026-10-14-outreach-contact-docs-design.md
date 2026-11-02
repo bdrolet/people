@@ -1,6 +1,6 @@
 # Outreach contact docs and reloadable sessions
 
-**Status:** implemented on branch `outreach-contact-docs`; design written 2026-10-14 after Ben made these decisions in
+**Status:** implemented on branch `outreach-contact-docs`; design written 2026-10-14 after Ben made these decisions in Sessions have since moved to agent-deck: see `2026-11-02-outreach-sessions-on-agent-deck-design.md`.
 conversation:
 - doc plus session resume;
 - the docs are machine-maintained;
