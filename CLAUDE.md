@@ -495,10 +495,20 @@ either workflow can run unattended — see "First-time setup" in `README.md`.
 Manual/local verification: `/deploy-people` and `/verifying-pr-locally` skills.
 
 **Phase C (shipped 2026-09-08).** `HUBSPOT_WRITES_ENABLED` (Terraform var
-`hubspot_writes_enabled`, GitHub variable of the same name) is `true`: the
-inbox-side extraction (inbox PR #52 — no HubSpot code, no `senders` table,
-`email_sent` flowing) shipped first, then the flag was flipped and the first
-reconcile run by hand — it adopted 19 existing HubSpot contacts, filled 14 and
-evicted none (HubSpot was under the cap). The nightly `people-sync` owns the
-mirror from here; the design's cutover phases are in §11 of the spec. To pause
-HubSpot writes again, set the variable back to `false` and apply.
+`hubspot_writes_enabled`, GitHub variable of the same name) was set `true`:
+the inbox-side extraction (inbox PR #52 — no HubSpot code, no `senders`
+table, `email_sent` flowing) shipped first, then the flag was flipped and the
+first reconcile run by hand — it adopted 19 existing HubSpot contacts, filled
+14 and evicted none (HubSpot was under the cap). The design's cutover phases
+are in §11 of the spec.
+
+**Paused since 2026-09-18.** The GitHub variable and the deployed `people-sync`
+env are both `false`, so people writes nothing to HubSpot: no creates,
+evictions or engagements, and the nightly reconcile is a no-op on the HubSpot
+side. Keep it paused, by decision on 2026-11-02. While paused the cap is not
+enforced by people. HubSpot's own connected-inbox auto-create added ~70
+contacts from 2026-10-19, bringing the free portal to 964/1,000. The fix is to
+turn that HubSpot setting off and archive junk senders (33 archived
+2026-11-02), not to upgrade the plan. To
+resume, set the variable to `true` and apply; the first reconcile will then
+enforce the cap by evicting the oldest managed contacts.
