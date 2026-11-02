@@ -563,7 +563,16 @@ def _migrate(
         result = runner(add_argv(title, key, sid, cwd, context_file, placement, model))
         body = _json_out(result)
         if result.returncode == 0 and isinstance(body, dict) and body.get("id"):
-            say(f"adopted {_short(body['id'])}" + (" (stopped claude --bg)" if bg else ""))
+            # A never-started session reads `error` / `unknown-exit`, which a conductor
+            # restarting errored children would wake. It can't be stopped (not running),
+            # but it can be archived; ensure reopens archived sessions with RELOAD.
+            archived = runner(["agent-deck", "session", "archive", body["id"]])
+            note = "" if archived.returncode == 0 else f"; archive failed: {_first_error(archived)}"
+            failures += 1 if note else 0
+            say(
+                f"adopted {_short(body['id'])} (archived{note})"
+                + (" (stopped claude --bg)" if bg else "")
+            )
         else:
             failures += 1
             say(f"failed: {_first_error(result)}")

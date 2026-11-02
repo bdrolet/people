@@ -172,7 +172,22 @@ Write `~/.local/share/agent-deck/conductor/outreach/POLICY.md`, modelled on
 Ben has narrowed `conductor-tasks`'s escalation by hand since its policy was
 written (it decides alone when highly confident, escalating payments,
 unapproved security changes, unapproved outward messages and low
-confidence). Ask him whether outreach should match that or stay stricter.
+confidence). **Decided (Ben, 2026-11-02):** outreach stays stricter, as
+above. The policy also never restarts an outreach session in any status (see
+the D5 notes).
+
+Implementation notes (D5): `add --resume-session` was verified in a throwaway
+profile first (umbrella facts 17–18). `--migrate` takes `--apply` (an alias of
+`--spawn`). It skips people already in agent-deck (so it can be rerun) and
+`claude --bg` sessions that are busy. It takes `<cwd>` from the transcript's
+last recorded directory, writes the context file where `deck-sessions` would
+(`~/.claude/deck-context/person_id/<id>.md`), and keeps the JSON file when any
+adoption fails. It then **archives** each adopted session, because a
+never-started session reads `error` / `unknown-exit`. On the first live run
+(2026-11-02) conductor-outreach restarted all 25 as crashed children. No
+turns were sent, and they were stopped by hand. A never-started session
+can't be `session stop`ped, but it can be archived, and `ensure` reopens an
+archived session with RELOAD.
 
 ### D8. Agent and docs
 
