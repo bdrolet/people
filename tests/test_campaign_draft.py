@@ -123,7 +123,9 @@ def test_good_subject_kept():
 
 
 def test_invalid_subject_falls_back():
-    assert _render(subject="Free review for Acme")[0] == DEFAULT_SUBJECT.replace("{company}", "Acme")
+    assert _render(subject="Free review for Acme")[0] == DEFAULT_SUBJECT.replace(
+        "{company}", "Acme"
+    )
 
 
 def test_valid_subject_rules():
