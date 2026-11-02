@@ -500,6 +500,8 @@ class FakeShell:
             return _done(argv, json.dumps(self.deck_rows))
         if argv[:2] == ["agent-deck", "add"]:
             return _done(argv, json.dumps({"success": True, "id": f"add{len(self.calls):05d}-1"}))
+        if argv[:3] == ["agent-deck", "session", "archive"]:
+            return _done(argv, "archived")
         raise AssertionError(argv)
 
     def adds(self):
@@ -566,7 +568,13 @@ def test_migrate_apply_adopts_without_starting_and_retires_the_file(migrating):
     ctx = cli.CONTEXT_DIR / "388.md"
     assert f"--extra-arg={ctx}" in argv and ctx.read_text() == "CONTEXT 388"
     assert (ctx.stat().st_mode & 0o777) == 0o600
-    assert "launch" not in " ".join(" ".join(a) for a in migrating.shell.calls)
+    joined = [" ".join(a) for a in migrating.shell.calls]
+    assert not any(" launch " in c or " start " in c for c in joined)
+    archives = [a for a in migrating.shell.calls if a[:3] == ["agent-deck", "session", "archive"]]
+    assert (
+        len(archives) == 2
+    )  # never-started sessions read `error`; archived, no conductor wakes them
+    assert "(archived)" in out
     assert "(stopped claude --bg)" in out
     assert not migrating.state.exists()
     assert migrating.state.with_name("sessions.json.migrated").exists()
