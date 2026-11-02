@@ -1,5 +1,6 @@
 import io
 import json
+import subprocess
 from datetime import date
 
 import pytest
@@ -10,6 +11,7 @@ JONAH = {"id": 388, "email": "jonah@example.com", "display_name": "Jonah Example
 ANA = {"id": 41, "email": "ana@example.com", "display_name": "Ana Example"}
 TODAY = date(2026, 10, 13)
 SID = "ab12cd34-0000-4000-8000-000000000001"
+DECK_ID = "f14db301-1793648803"
 DOC = "https://docs.google.com/document/d/doc388/edit"
 SECTIONS = """## Who they are
 
@@ -37,14 +39,95 @@ class Conn:
         return False
 
 
+def _done(argv, stdout="", code=0, stderr=""):
+    return subprocess.CompletedProcess(argv, code, stdout, stderr)
+
+
+class FakeDeckSessions:
+    """Records each deck-sessions call and answers with canned results.
+
+    `results` maps a people id (str) to the result `ensure` returns; anyone not listed
+    comes back `launched` (`would launch` without --apply)."""
+
+    def __init__(self):
+        self.results: dict[str, dict] = {}
+        self.listed: list[dict] = []
+        self.exit_code = 0
+        self.stderr = ""
+        self.calls: list[tuple[list[str], str | None]] = []
+
+    def specs(self):
+        stdin = next(s for a, s in self.calls if a[0] == "ensure")
+        return [json.loads(line) for line in stdin.splitlines()]
+
+    def verbs(self):
+        return [a[0] for a, _ in self.calls]
+
+    def __call__(self, argv, stdin=None):
+        self.calls.append((argv, stdin))
+        if self.exit_code:
+            return _done(argv, code=self.exit_code, stderr=self.stderr)
+        if argv[0] == "ensure":
+            apply = "--apply" in argv
+            out = []
+            for line in stdin.splitlines():
+                key = json.loads(line)["key"]
+                default = (
+                    {"outcome": "launched", "deck_id": DECK_ID, "status": "starting"}
+                    if apply
+                    else {"outcome": "would launch"}
+                )
+                base = {
+                    "key": key,
+                    "detail": None,
+                    "deck_id": None,
+                    "status": None,
+                    "group": None,
+                    "adopted": False,
+                }
+                out.append(json.dumps(base | self.results.get(key, default)))
+            return _done(argv, "\n".join(out) + "\n", stderr=self.stderr)
+        if argv[0] == "sessions":
+            rows = self.listed
+            if "--group" in argv:
+                group = argv[argv.index("--group") + 1]
+                rows = [r for r in rows if r["group"] == group]
+            return _done(argv, json.dumps(rows))
+        if argv[0] == "archive":
+            apply = "--apply" in argv
+            out = []
+            for sid in (a for a in argv[1:] if a != "--apply"):
+                status = next(r["status"] for r in self.listed if r["deck_id"] == sid)
+                outcome = (
+                    "kept (busy)"
+                    if status == "running"
+                    else "archived"
+                    if apply
+                    else "would archive"
+                )
+                out.append(json.dumps({"deck_id": sid, "outcome": outcome, "detail": None}))
+            return _done(argv, "\n".join(out) + "\n")
+        raise AssertionError(argv)
+
+
+def _session(key, title=None, deck_id=DECK_ID, status="waiting", group="outreach", archived=False):
+    return {
+        "deck_id": deck_id,
+        "key": str(key),
+        "title": title or f"outreach: x #{key}",
+        "group": group,
+        "status": status,
+        "archived": archived,
+    }
+
+
 @pytest.fixture
 def run(monkeypatch, tmp_path):
     monkeypatch.delenv("OUTREACH_SESSION_MODEL", raising=False)
-    state_path = tmp_path / "sessions.json"
-    projects = tmp_path / "projects"
-    projects.mkdir()
     people = {"jonah@example.com": JONAH, "388": JONAH, "ana@example.com": ANA, "41": ANA}
-    spawned, resumed, named = [], [], []
+    named = []
+    deck = FakeDeckSessions()
+    fetched = []
 
     def resolve(conn, ident):
         if ident not in people:
@@ -56,25 +139,13 @@ def run(monkeypatch, tmp_path):
             return None
         return {"pid": pid, "limit": limit, "item": {"doc_url": _run.doc_urls.get(pid)}}
 
-    def spawn(name, context, *, cwd, prompt=None, model=None):
-        spawned.append({"name": name, "context": context, "prompt": prompt, "cwd": cwd})
-        _run.models.append(model)
-        short = f"id{len(spawned):06d}"
-        _run.live[f"{short}-0000-4000-8000-000000000000"] = str(cwd)
-        return short
-
-    def resume(session_id, name, *, cwd, prompt=None, model=None):
-        resumed.append({"session_id": session_id, "name": name, "cwd": cwd, "prompt": prompt})
-        _run.models.append(model)
-        if _run.resume_as:  # a stopped session comes back under a new id
-            _run.live[_run.resume_as] = str(cwd)
-            return _run.resume_as[:8]
-        _run.live[session_id] = str(cwd)
-        return session_id[:8]
-
     def people_named(conn, text):
         named.append(text)
         return _run.named_result
+
+    def get_doc(doc_id):
+        fetched.append(doc_id)
+        return {"content": f"DOC {doc_id}"}
 
     monkeypatch.setattr(cli.person_lookup, "resolve", resolve)
     monkeypatch.setattr(cli.outreach_session, "snapshot", snapshot)
@@ -83,147 +154,76 @@ def run(monkeypatch, tmp_path):
         "context_block",
         lambda snap, today, doc=None: f"CONTEXT {snap['pid']}" + (f" + {doc}" if doc else ""),
     )
-    monkeypatch.setattr(cli.claude_sessions, "spawn", spawn)
-    monkeypatch.setattr(cli.claude_sessions, "resume", resume)
-    monkeypatch.setattr(cli.claude_sessions, "live_sessions", lambda cwd: dict(_run.live))
-    monkeypatch.setattr(cli.claude_sessions, "PROJECTS_DIR", projects)
     monkeypatch.setattr(cli.outreach, "people_named", people_named)
-    monkeypatch.setattr(cli.docs_api, "get_doc", lambda doc_id: {"content": f"DOC {doc_id}"})
+    monkeypatch.setattr(cli.docs_api, "get_doc", get_doc)
+    monkeypatch.setattr(cli.outreach_repo, "pipeline_row", lambda conn, pid: _run.stages.get(pid))
 
-    def _run(*argv):
+    def _run(*argv, env=None):
         out, err = io.StringIO(), io.StringIO()
         code = cli.main_with(
-            list(argv), lambda: Conn(), out=out, err=err, today=TODAY, state_path=state_path
+            list(argv),
+            lambda: Conn(),
+            out=out,
+            err=err,
+            today=TODAY,
+            deck=deck,
+            runner=_run.runner,
+            env=env or {},
+            state_path=tmp_path / "sessions.json",
+            projects_dir=tmp_path / "projects",
         )
         return code, out.getvalue(), err.getvalue()
 
-    _run.spawned, _run.resumed, _run.named = spawned, resumed, named
-    _run.live, _run.doc_urls, _run.named_result = {}, {}, []
-    _run.resume_as = None
-    _run.models = []
-    _run.state_path, _run.projects = state_path, projects
+    _run.deck, _run.named, _run.fetched = deck, named, fetched
+    _run.doc_urls, _run.named_result, _run.stages = {}, [], {}
+    _run.runner = lambda argv, stdin=None: pytest.fail(f"unexpected {argv}")
     return _run
 
 
-def _record(run, record):
-    run.state_path.write_text(json.dumps({"388": record}))
+# --- the spec each person becomes ----------------------------------------
 
 
-def _transcript(run, session_id, cwd):
-    project = run.projects / "-Users-me-src-repo--claude-worktrees-w"
-    project.mkdir(exist_ok=True)
-    (project / f"{session_id}.jsonl").write_text(json.dumps({"cwd": str(cwd)}) + "\n")
-
-
-def test_dry_run_spawns_nothing(run):
+def test_dry_run_launches_nothing(run):
     code, out, err = run("jonah@example.com")
-    assert code == 0 and "388" in out and "→ spawn" in out and run.spawned == []
-    assert "dry run" in err and not run.state_path.exists()
+    assert code == 0 and "388\toutreach: Jonah Example #388\t→ would launch" in out
+    assert run.deck.calls[0][0] == ["ensure"] and "dry run" in err
+    assert run.fetched == []  # no doc fetch for a dry run
 
 
-def test_spawn_preloads_context_starts_the_prep_and_records_the_session(run):
+def test_one_spec_per_person(run):
     code, out, _ = run("388", "--spawn")
-    assert code == 0 and "spawned id000001" in out
-    [s] = run.spawned
-    assert s["name"] == "outreach: Jonah Example" and s["context"] == "CONTEXT 388"
-    assert s["prompt"] == cli.outreach_session.PREP_PROMPT and s["cwd"] == cli.REPO
-    assert json.loads(run.state_path.read_text())["388"] == {
-        "session_id": "id000001-0000-4000-8000-000000000000",
-        "cwd": str(cli.REPO),
-        "name": "outreach: Jonah Example",
-    }
-
-
-def test_the_same_person_named_twice_spawns_once(run):
-    code, out, _ = run("388", "jonah@example.com", "--spawn")
-    assert code == 0 and len(run.spawned) == 1
-    assert len([line for line in out.splitlines() if line.startswith("388\t")]) == 1
-
-
-def test_idle_spawns_without_a_prompt(run):
-    run("388", "--spawn", "--idle")
-    assert run.spawned[0]["prompt"] is None
-
-
-def test_a_live_session_is_not_duplicated(run):
-    run("388", "--spawn")
-    code, out, _ = run("388", "--spawn")
-    assert "already open id000001" in out and len(run.spawned) == 1 and run.resumed == []
-
-
-def test_a_closed_session_is_resumed_from_its_transcript_cwd(run, tmp_path):
-    worktree = tmp_path / "worktree"
-    worktree.mkdir()
-    _record(run, {"session_id": SID, "cwd": str(cli.REPO), "name": "outreach: Jonah Example"})
-    _transcript(run, SID, worktree)
-    code, out, _ = run("388", "--spawn")
-    assert code == 0 and "resumed ab12cd34" in out and run.spawned == []
-    assert run.resumed == [
+    assert code == 0 and "→ launched f14db301" in out
+    assert run.deck.calls[0][0] == ["ensure", "--apply"]
+    assert run.deck.specs() == [
         {
-            "session_id": SID,
-            "name": "outreach: Jonah Example",
-            "cwd": worktree,
-            "prompt": cli.outreach_session.RELOAD_PROMPT,
+            "key_hint": "person_id",
+            "key": "388",
+            "title": "outreach: Jonah Example #388",
+            "adopt_prefix": None,
+            "context": "CONTEXT 388",
+            "cwd": str(cli.REPO),
+            "group": "outreach",
+            "parent": "conductor-outreach",
+            "parent_is_default": True,
+            "hints": {},
+            "model": "opus",
+            "idle_timeout": None,
+            "prompt": cli.outreach_session.PREP_PROMPT,
+            "reopen_prompt": cli.outreach_session.RELOAD_PROMPT,
+            "refresh": False,
         }
     ]
-    assert json.loads(run.state_path.read_text())["388"]["cwd"] == str(worktree)
 
 
-def test_dry_run_says_resume(run, tmp_path):
-    _record(run, {"session_id": SID})
-    _transcript(run, SID, tmp_path)
-    code, out, _ = run("388")
-    assert "→ resume" in out and run.resumed == []
-
-
-def test_idle_resume_has_no_prompt(run, tmp_path):
-    _record(run, {"session_id": SID})
-    _transcript(run, SID, tmp_path)
-    run("388", "--spawn", "--idle")
-    assert run.resumed[0]["prompt"] is None
-
-
-def test_a_legacy_short_id_is_resumed_and_upgraded(run, tmp_path):
-    run.state_path.write_text(json.dumps({"388": "ab12cd34"}))
-    _transcript(run, SID, tmp_path)
-    code, out, _ = run("388", "--spawn")
-    assert "resumed ab12cd34" in out
-    assert json.loads(run.state_path.read_text())["388"] == {
-        "session_id": SID,
-        "cwd": str(tmp_path),
-        "name": "outreach: Jonah Example",
-    }
-
-
-def test_a_live_legacy_entry_is_already_open(run):
-    run.state_path.write_text(json.dumps({"388": "ab12cd34"}))
-    run.live = {SID: "/somewhere"}
-    code, out, _ = run("388", "--spawn")
-    assert "already open ab12cd34" in out and run.spawned == [] and run.resumed == []
-
-
-def test_a_closed_session_without_a_transcript_gets_a_fresh_spawn(run):
-    _record(run, {"session_id": SID})
-    code, out, _ = run("388", "--spawn")
-    assert "spawned id000001" in out and run.resumed == []
-
-
-def test_a_transcript_whose_directory_is_gone_gets_a_fresh_spawn(run, tmp_path):
-    _record(run, {"session_id": SID})
-    _transcript(run, SID, tmp_path / "removed-worktree")
-    code, out, _ = run("388", "--spawn")
-    assert "spawned id000001" in out and run.resumed == []
-
-
-def test_a_fresh_spawn_with_a_doc_carries_it_and_reloads(run):
+def test_a_person_with_a_doc_launches_on_reload_with_the_doc(run):
     run.doc_urls[388] = DOC
     run("388", "--spawn")
-    [s] = run.spawned
-    assert s["context"] == "CONTEXT 388 + DOC doc388"
-    assert s["prompt"] == cli.outreach_session.RELOAD_PROMPT
+    [spec] = run.deck.specs()
+    assert spec["context"] == "CONTEXT 388 + DOC doc388"
+    assert spec["prompt"] == cli.outreach_session.RELOAD_PROMPT
 
 
-def test_an_unavailable_doc_does_not_block_the_spawn(run, monkeypatch):
+def test_an_unavailable_doc_does_not_block_the_launch(run, monkeypatch):
     run.doc_urls[388] = DOC
 
     def unavailable(doc_id):
@@ -231,17 +231,115 @@ def test_an_unavailable_doc_does_not_block_the_spawn(run, monkeypatch):
 
     monkeypatch.setattr(cli.docs_api, "get_doc", unavailable)
     code, out, _ = run("388", "--spawn")
-    assert "spawned id000001 (doc unavailable: DocsApiUnavailable)" in out
-    assert run.spawned[0]["context"] == "CONTEXT 388"
-    assert run.spawned[0]["prompt"] == cli.outreach_session.RELOAD_PROMPT
+    assert "launched f14db301 (doc unavailable: DocsApiUnavailable)" in out
+    [spec] = run.deck.specs()
+    assert spec["context"] == "CONTEXT 388"
+    assert spec["prompt"] == cli.outreach_session.RELOAD_PROMPT
 
 
-def test_a_name_matches_a_recorded_session_first(run):
-    _record(run, {"session_id": SID, "name": "outreach: Jonah Example"})
-    run.live = {SID: "/x"}
+def test_idle_sends_no_prompts(run):
+    run("388", "--spawn", "--idle")
+    [spec] = run.deck.specs()
+    assert spec["prompt"] is None and spec["reopen_prompt"] is None
+
+
+def test_sessions_run_on_opus_unless_configured(run):
+    run("388")
+    run("388", env={"OUTREACH_SESSION_MODEL": "sonnet"})
+    models = [json.loads(s)["model"] for a, s in run.deck.calls if a[0] == "ensure"]
+    assert models == ["opus", "sonnet"]
+
+
+def test_group_and_parent_precedence(run):
+    env = {"OUTREACH_SESSIONS_GROUP": "g-env", "OUTREACH_SESSIONS_PARENT": "p-env"}
+    run("388", env=env)
+    run("388", "--group", "g-flag", "--parent", "none", env=env)
+    first, second = (json.loads(s) for a, s in run.deck.calls if a[0] == "ensure")
+    assert (first["group"], first["parent"], first["parent_is_default"]) == (
+        "g-env",
+        "p-env",
+        False,
+    )
+    assert (second["group"], second["parent"]) == ("g-flag", "none")
+
+
+def test_parent_self(run):
+    run("388", "--parent", "self", env={"AGENTDECK_INSTANCE_ID": "781a5faa-1"})
+    assert run.deck.specs()[0]["parent"] == "781a5faa-1"
+    code, _, err = run("388", "--parent", "self")
+    assert code == 1 and "inside an agent-deck session" in err
+
+
+def test_a_missing_explicit_parent_is_an_error(run):
+    run.deck.results["388"] = {"outcome": "failed", "detail": "parent bob not found in agent-deck"}
+    code, out, err = run("388", "--spawn", "--parent", "bob")
+    assert code == 1 and "parent bob not found" in err and out == ""
+
+
+def test_deck_sessions_warnings_are_forwarded(run):
+    run.deck.stderr = "warning: parent conductor-outreach not found; launching without a parent\n"
+    _, _, err = run("388", "--spawn")
+    assert "conductor-outreach not found" in err
+
+
+def test_the_same_person_named_twice_launches_once(run):
+    code, out, _ = run("388", "jonah@example.com", "--spawn")
+    assert code == 0 and len(run.deck.specs()) == 1
+    assert len([line for line in out.splitlines() if line.startswith("388\t")]) == 1
+
+
+def test_someone_outside_the_pipeline_is_never_sent(run):
+    code, out, _ = run("ana@example.com", "388", "--spawn")
+    assert code == 0 and "41\toutreach: Ana Example #41\t→ not in the pipeline" in out
+    assert [s["key"] for s in run.deck.specs()] == ["388"]
+
+
+def test_nobody_to_send_skips_deck_sessions(run):
+    code, out, _ = run("ana@example.com", "--spawn")
+    assert code == 0 and "not in the pipeline" in out and run.deck.calls == []
+
+
+# --- outcome mapping -----------------------------------------------------
+
+OUTCOMES = [
+    (
+        {"outcome": "already open", "deck_id": DECK_ID, "status": "waiting"},
+        "already open f14db301 (waiting)",
+    ),
+    ({"outcome": "already open", "detail": "exists"}, "already open (exists)"),
+    ({"outcome": "reopened", "deck_id": DECK_ID, "status": "stopped"}, "reopened f14db301"),
+    ({"outcome": "duplicate", "detail": "11223344-9,55667788-9"}, "duplicate 11223344,55667788"),
+    ({"outcome": "failed", "detail": "tmux exploded"}, "failed: tmux exploded"),
+    ({"outcome": "would reopen", "deck_id": DECK_ID}, "would reopen f14db301"),
+]
+
+
+@pytest.mark.parametrize(("result", "text"), OUTCOMES)
+def test_outcomes_map_to_the_familiar_words(run, result, text):
+    run.deck.results["388"] = result
+    _, out, _ = run("388", "--spawn")
+    assert out.rstrip().endswith(f"→ {text}")
+
+
+def test_spawn_closes_with_agent_deck_hints(run):
+    _, _, err = run("388", "--spawn")
+    assert "agent-deck session attach <id>" in err and "agent-deck -g outreach" in err
+
+
+# --- names ---------------------------------------------------------------
+
+
+def test_a_name_matches_a_session_title_first(run):
+    run.deck.listed = [_session(388, "outreach: Jonah Example #388")]
     code, out, _ = run("JONAH")
-    assert code == 0 and out.startswith("388\t") and "already open ab12cd34" in out
-    assert run.named == []
+    assert code == 0 and out.startswith("388\t") and run.named == []
+
+
+def test_the_id_suffix_is_not_part_of_the_name(run):
+    run.deck.listed = [_session(388, "outreach: Jonah Example #388")]
+    run.named_result = []
+    code, _, err = run("388x")
+    assert code == 1 and "no person matches 388x" in err
 
 
 def test_a_name_falls_back_to_pipeline_people(run):
@@ -250,25 +348,29 @@ def test_a_name_falls_back_to_pipeline_people(run):
     assert code == 0 and out.startswith("388\t") and run.named == ["jonah ex"]
 
 
-def test_an_ambiguous_name_stops_with_the_ids(run):
+def test_an_ambiguous_session_name_stops_with_the_ids(run):
+    run.deck.listed = [_session(388, "outreach: Jo A #388"), _session(41, "outreach: Jo B #41")]
+    code, _, err = run("jo", "--spawn")
+    assert code == 1 and "several sessions ([41, 388])" in err
+
+
+def test_an_ambiguous_pipeline_name_stops_with_the_ids(run):
     run.named_result = [{"id": 388, "display_name": "Jo A"}, {"id": 41, "display_name": "Jo B"}]
     code, _, err = run("jo", "--spawn")
-    assert code == 1 and "[388, 41]" in err and run.spawned == []
+    assert code == 1 and "[388, 41]" in err
 
 
-def test_an_unknown_name_is_not_found(run):
-    code, _, err = run("zed")
-    assert code == 1 and "no person matches zed" in err
-
-
-def test_someone_outside_the_pipeline_is_skipped(run):
-    code, out, _ = run("ana@example.com", "--spawn")
-    assert code == 0 and "not in the pipeline" in out and run.spawned == []
+def test_an_id_never_lists_sessions(run):
+    run("388")
+    assert "sessions" not in run.deck.verbs()
 
 
 def test_unknown_person_is_a_user_error(run):
     code, _, err = run("nobody@example.com", "--spawn")
-    assert code == 1 and "no person matches nobody@example.com" in err and run.spawned == []
+    assert code == 1 and "no person matches nobody@example.com" in err
+
+
+# --- selection -----------------------------------------------------------
 
 
 def test_next_takes_the_queue_in_rank_order(run, monkeypatch):
@@ -280,7 +382,8 @@ def test_next_takes_the_queue_in_rank_order(run, monkeypatch):
 
     monkeypatch.setattr(cli.outreach, "queue", queue)
     code, out, _ = run("--next", "3", "--spawn")
-    assert code == 0 and seen == {"stage": "to_contact", "limit": 3} and len(run.spawned) == 1
+    assert code == 0 and seen == {"stage": "to_contact", "limit": 3}
+    assert len(run.deck.specs()) == 1
 
 
 def test_people_and_next_are_exclusive(run):
@@ -295,7 +398,7 @@ def test_the_cap_is_enforced(run):
 
 def test_print_context(run):
     code, out, _ = run("--print-context", "388")
-    assert code == 0 and out.strip() == "CONTEXT 388" and run.spawned == []
+    assert code == 0 and out.strip() == "CONTEXT 388" and run.deck.calls == []
 
 
 def test_print_context_includes_the_doc(run):
@@ -304,10 +407,214 @@ def test_print_context_includes_the_doc(run):
     assert code == 0 and out.strip() == "CONTEXT 388 + DOC doc388"
 
 
-def test_spawn_failure_is_reported(run, monkeypatch):
-    monkeypatch.setattr(cli.claude_sessions, "spawn", lambda *a, **k: None)
-    code, out, _ = run("388", "--spawn")
-    assert code == 0 and "spawn failed" in out
+# --- failures ------------------------------------------------------------
+
+
+def test_registry_unavailable_exits_2(run):
+    run.deck.exit_code = 2
+    run.deck.stderr = '{"error": "registry unavailable: tmux down"}\n'
+    code, out, err = run("388", "--spawn")
+    assert code == 2 and "registry unavailable: tmux down — nothing launched" in err
+
+
+def test_a_missing_deck_sessions_binary_exits_2(run):
+    def missing(argv, stdin=None):
+        raise FileNotFoundError("deck-sessions")
+
+    out, err = io.StringIO(), io.StringIO()
+    code = cli.main_with(
+        ["388", "--spawn"], lambda: Conn(), out=out, err=err, today=TODAY, deck=missing, env={}
+    )
+    assert code == 2 and "deck-sessions not on PATH" in err.getvalue()
+
+
+# --- prune ---------------------------------------------------------------
+
+
+def test_prune_archives_people_at_a_terminal_stage(run):
+    run.deck.listed = [
+        _session(388, deck_id="aaaa0000-1", status="idle"),
+        _session(41, deck_id="bbbb0000-1", status="idle"),
+        _session(7, deck_id="cccc0000-1", status="idle"),
+        _session(8, deck_id="dddd0000-1", status="stopped", archived=True),
+        _session(9, deck_id="eeee0000-1", status="idle"),
+    ]
+    run.stages = {
+        388: {"stage": "introduced"},
+        41: {"stage": "briefed"},
+        7: {"stage": "declined"},
+        8: {"stage": "skipped"},
+    }  # 9 left the pipeline
+    code, out, _ = run("--prune", "--spawn")
+    assert code == 0
+    assert run.deck.calls[0][0] == ["sessions", "--key-hint", "person_id", "--group", "outreach"]
+    assert run.deck.calls[1][0] == ["archive", "--apply", "aaaa0000-1", "cccc0000-1"]
+    assert "388\toutreach: x #388\t→ pruned aaaa0000 (introduced)" in out
+    assert "7\toutreach: x #7\t→ pruned cccc0000 (declined)" in out
+
+
+def test_every_terminal_stage_counts(run):
+    assert {"introduced", "declined", "skipped", "signed", "lost"} == cli.TERMINAL
+
+
+def test_prune_dry_run_and_busy(run):
+    run.deck.listed = [
+        _session(388, deck_id="aaaa0000-1", status="running"),
+        _session(7, deck_id="cccc0000-1", status="idle"),
+    ]
+    run.stages = {388: {"stage": "skipped"}, 7: {"stage": "lost"}}
+    _, out, _ = run("--prune")
+    assert run.deck.calls[1][0] == ["archive", "aaaa0000-1", "cccc0000-1"]
+    assert "→ kept (busy) aaaa0000" in out and "→ would prune cccc0000" in out
+
+
+def test_prune_with_nothing_terminal_archives_nothing(run):
+    run.deck.listed = [_session(388, status="idle")]
+    run.stages = {388: {"stage": "briefed"}}
+    run("--prune", "--spawn")
+    assert run.deck.verbs() == ["sessions"]
+
+
+# --- migrate -------------------------------------------------------------
+
+
+class FakeShell:
+    """`claude agents --json`, `claude stop`, `agent-deck list/add` for --migrate."""
+
+    def __init__(self, agents=None, deck_rows=None):
+        self.agents = agents or []
+        self.deck_rows = (
+            deck_rows
+            if deck_rows is not None
+            else [{"id": "c0nd0000-1", "title": "conductor-outreach"}]
+        )
+        self.calls = []
+
+    def __call__(self, argv, stdin=None):
+        self.calls.append(argv)
+        if argv[:3] == ["claude", "agents", "--json"]:
+            return _done(argv, json.dumps(self.agents))
+        if argv[:2] == ["claude", "stop"]:
+            return _done(argv, "stopped")
+        if argv[:3] == ["agent-deck", "list", "--json"]:
+            return _done(argv, json.dumps(self.deck_rows))
+        if argv[:2] == ["agent-deck", "add"]:
+            return _done(argv, json.dumps({"success": True, "id": f"add{len(self.calls):05d}-1"}))
+        raise AssertionError(argv)
+
+    def adds(self):
+        return [a for a in self.calls if a[:2] == ["agent-deck", "add"]]
+
+
+@pytest.fixture
+def migrating(run, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "CONTEXT_DIR", tmp_path / "ctx")
+    worktree = tmp_path / "people"
+    worktree.mkdir()
+    project = tmp_path / "projects" / "-Users-ben-src-people"
+    project.mkdir(parents=True)
+    records = {}
+    for pid in (388, 7, 9, 12):
+        sid = f"{pid:08d}-0000-4000-8000-000000000000"
+        records[str(pid)] = {"session_id": sid, "cwd": str(worktree), "name": f"outreach: {pid}"}
+        if pid != 12:  # 12's transcript is gone
+            (project / f"{sid}.jsonl").write_text(json.dumps({"cwd": str(worktree)}) + "\n")
+    (tmp_path / "sessions.json").write_text(json.dumps(records))
+    run.stages = {
+        388: {"id": 388, "display_name": "Jonah Example", "stage": "briefed"},
+        7: {"id": 7, "display_name": "Sev", "stage": "replied"},
+        12: {"id": 12, "display_name": "Twelve", "stage": "briefed"},
+    }  # 9 left
+    run.shell = FakeShell()
+    run.runner = run.shell
+    run.worktree, run.state = worktree, tmp_path / "sessions.json"
+    return run
+
+
+def test_migrate_dry_run_plans_every_record(migrating):
+    migrating.shell.agents = [
+        {"id": "00000007", "sessionId": "00000007-0000-4000-8000-000000000000", "status": "idle"}
+    ]
+    code, out, err = migrating("--migrate")
+    assert code == 0 and "dry run" in err
+    lines = out.splitlines()
+    assert len(lines) == 4
+    assert "7\toutreach: Sev #7\t→ would stop claude --bg + adopt 00000007" in lines
+    assert "9\toutreach: 9\t→ skipped (left the pipeline)" in lines
+    assert "12\toutreach: Twelve #12\t→ skipped (transcript gone)" in lines
+    assert "388\toutreach: Jonah Example #388\t→ would adopt 00000388" in lines
+    assert migrating.shell.adds() == [] and migrating.state.exists()
+
+
+def test_migrate_apply_adopts_without_starting_and_retires_the_file(migrating):
+    migrating.shell.agents = [
+        {"id": "00000007", "sessionId": "00000007-0000-4000-8000-000000000000", "status": "idle"}
+    ]
+    code, out, err = migrating("--migrate", "--apply")
+    assert code == 0
+    stops = [a for a in migrating.shell.calls if a[:2] == ["claude", "stop"]]
+    assert stops == [["claude", "stop", "00000007"]]
+    adds = migrating.shell.adds()
+    assert len(adds) == 2
+    argv = next(a for a in adds if "person_id=388" in a)
+    assert argv[argv.index("--resume-session") + 1] == "00000388-0000-4000-8000-000000000000"
+    assert argv[argv.index("--parent") + 1] == "conductor-outreach"
+    assert argv[argv.index("-g") + 1] == "outreach"
+    assert argv[argv.index("-t") + 1] == "outreach: Jonah Example #388"
+    assert argv[argv.index("--model") + 1] == "opus"
+    assert "--no-identity" in argv and argv[-1] == str(migrating.worktree)
+    ctx = cli.CONTEXT_DIR / "388.md"
+    assert f"--extra-arg={ctx}" in argv and ctx.read_text() == "CONTEXT 388"
+    assert (ctx.stat().st_mode & 0o777) == 0o600
+    assert "launch" not in " ".join(" ".join(a) for a in migrating.shell.calls)
+    assert "(stopped claude --bg)" in out
+    assert not migrating.state.exists()
+    assert migrating.state.with_name("sessions.json.migrated").exists()
+
+
+def test_migrate_skips_people_already_in_agent_deck(migrating):
+    migrating.deck.listed = [_session(388, deck_id="aaaa0000-1")]
+    _, out, _ = migrating("--migrate", "--apply")
+    assert "388\toutreach: Jonah Example #388\t→ already in agent-deck aaaa0000" in out
+    assert not any("person_id=388" in a for a in migrating.shell.adds())
+
+
+def test_migrate_leaves_a_busy_bg_session_alone(migrating):
+    migrating.shell.agents = [
+        {"id": "00000388", "sessionId": "00000388-0000-4000-8000-000000000000", "status": "busy"}
+    ]
+    _, out, err = migrating("--migrate", "--apply")
+    assert "busy in claude --bg 00000388" in out
+    assert not any(a[:2] == ["claude", "stop"] for a in migrating.shell.calls)
+
+
+def test_migrate_keeps_the_file_when_an_add_fails(migrating, monkeypatch):
+    real = migrating.shell.__call__
+
+    def failing(argv, stdin=None):
+        if argv[:2] == ["agent-deck", "add"]:
+            migrating.shell.calls.append(argv)
+            return _done(argv, json.dumps({"success": False, "error": "nope"}), 1)
+        return real(argv, stdin)
+
+    migrating.runner = failing
+    code, out, err = migrating("--migrate", "--apply")
+    assert "failed: nope" in out and "kept" in err and migrating.state.exists()
+
+
+def test_migrate_without_the_conductor_adopts_unparented(migrating):
+    migrating.shell.deck_rows = []
+    _, _, err = migrating("--migrate", "--apply")
+    assert "conductor-outreach not found" in err
+    assert all("--no-parent" in a for a in migrating.shell.adds())
+
+
+def test_migrate_with_no_state_file(run):
+    code, _, err = run("--migrate")
+    assert code == 0 and "nothing to migrate" in err
+
+
+# --- write-doc -----------------------------------------------------------
 
 
 def test_write_doc_parses_the_sections_and_writes(run, monkeypatch, tmp_path):
@@ -322,7 +629,7 @@ def test_write_doc_parses_the_sections_and_writes(run, monkeypatch, tmp_path):
     monkeypatch.setattr(cli.outreach_doc_write, "write", write)
     code, out, _ = run("--write-doc", "388", "--sections", str(path))
     assert code == 0 and seen == {"pid": 388, "step": "brief", "today": TODAY}
-    assert "388\toutreach: Jonah Example\t→ created" in out
+    assert "388\toutreach: Jonah Example #388\t→ created" in out
 
 
 def test_write_doc_refuses_bad_sections(run, tmp_path):
@@ -351,38 +658,6 @@ def test_write_doc_reports_a_conflict(run, monkeypatch, tmp_path):
     assert code == 1 and "changed while it was being written" in err
 
 
-def test_an_unlistable_session_list_stops_a_spawn(run, monkeypatch):
-    monkeypatch.setattr(cli.claude_sessions, "live_sessions", lambda cwd: None)
-    code, out, err = run("jonah@example.com", "--spawn")
-    assert code == 1
-    assert "can't list running Claude sessions" in err
-    assert run.spawned == [] and run.resumed == [] and not run.state_path.exists()
-
-
-def test_an_unlistable_session_list_warns_on_a_dry_run(run, monkeypatch):
-    monkeypatch.setattr(cli.claude_sessions, "live_sessions", lambda cwd: None)
-    code, out, err = run("jonah@example.com")
-    assert code == 0
-    assert "→ spawn" in out
-    assert "warning:" in err and "claude agents --json" in err
-    assert run.spawned == []
-
-
-def test_state_is_saved_when_a_later_person_raises(run, monkeypatch):
-    real = cli.outreach_session.snapshot
-
-    def snapshot(conn, pid, limit):
-        if pid == 41:
-            raise RuntimeError("db went away")
-        return real(conn, pid, limit)
-
-    monkeypatch.setattr(cli.outreach_session, "snapshot", snapshot)
-    with pytest.raises(RuntimeError):
-        run("jonah@example.com", "ana@example.com", "--spawn")
-    saved = json.loads(run.state_path.read_text())
-    assert list(saved) == ["388"] and saved["388"]["session_id"].startswith("id000001")
-
-
 def test_write_doc_reads_the_sections_from_stdin(run, monkeypatch):
     """`--sections -`: a session pipes its sections in, so it changes no file (a file it
     writes shows up in Claude Code's diff panel)."""
@@ -396,30 +671,3 @@ def test_write_doc_reads_the_sections_from_stdin(run, monkeypatch):
     monkeypatch.setattr("sys.stdin", io.StringIO(SECTIONS))
     code, out, _ = run("--write-doc", "388", "--sections", "-")
     assert code == 0 and seen == {"pid": 388, "step": "brief"} and "→ updated" in out
-
-
-def test_a_resume_under_a_new_id_records_the_new_id(run, tmp_path):
-    """`claude --bg --resume` of a stopped session forks a new id; recording the old one
-    made the next run resume (and duplicate) a session that was already open."""
-    new = "cd34ef56-0000-4000-8000-000000000002"
-    _record(run, {"session_id": SID, "name": "outreach: Jonah Example"})
-    _transcript(run, SID, tmp_path)
-    run.resume_as = new
-    code, out, _ = run("388", "--spawn")
-    assert code == 0 and "resumed cd34ef56" in out
-    assert json.loads(run.state_path.read_text())["388"]["session_id"] == new
-    code, out, _ = run("388", "--spawn")
-    assert "already open cd34ef56" in out and len(run.resumed) == 1
-
-
-def test_sessions_run_on_opus_unless_configured(run, monkeypatch, tmp_path):
-    run("388", "--spawn")
-    _record(run, {"session_id": SID})
-    run.live.clear()
-    _transcript(run, SID, tmp_path)
-    run("388", "--spawn")
-    assert run.models == ["opus", "opus"]  # spawn, then resume
-    monkeypatch.setenv("OUTREACH_SESSION_MODEL", "sonnet")
-    run.live.clear()
-    run("388", "--spawn")
-    assert run.models[-1] == "sonnet"

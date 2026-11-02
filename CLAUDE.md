@@ -39,7 +39,7 @@ This overrides the default "commit or push only when asked" behavior for code ch
 | **Google Contacts** | People API v1 via `clients/google_contacts.py` — OAuth refresh-token creds, scope `https://www.googleapis.com/auth/contacts`; reuses schedule's OAuth client (`google-calendar-client-id`/`-secret`, data sources), a people-owned refresh token (`google-contacts-refresh-token`) |
 | **HubSpot** | `clients/hubspot.py` (ported from inbox) — contacts search/create/update/archive, email engagement create; bounded mirror, see §HubSpot below |
 | **Local Graph import** | `clients/graph_local.py` — device-code MSAL auth for `scripts/import_contacts.py` only; people's Cloud Functions never call Graph |
-| **Referral outreach** | `services/outreach.py` stage machine over `outreach_*`; `email_sent` from `OUTREACH_FROM_ADDRESSES` proves *briefed*, `email_classified` proves *replied*; one completed Asana task per countable stage event via `clients/tasks_api.py` (Cloud Run IAM, `TASKS_API_URL`); CLI `scripts/outreach.py`, seed `scripts/outreach_seed.py`; follow-ups are `nudge` events on a `briefed` contact (+7/+14 days from the brief, propose close at +21); `outreach today` checks pace against `OUTREACH_TARGETS` (private TOML); skill `working-outreach-queue`; one machine-maintained Google Doc per pipeline person (`Outreach — <name>`, My Drive `Consulting/Outreach`, link in `outreach_contacts.doc_url`) written only by `outreach-sessions --write-doc` via docs-api (`clients/docs_api.py`, `DOCS_API_URL`); `outreach-sessions` resumes a person's exited session (`claude --bg --resume`) or spawns a fresh one from the doc |
+| **Referral outreach** | `services/outreach.py` stage machine over `outreach_*`; `email_sent` from `OUTREACH_FROM_ADDRESSES` proves *briefed*, `email_classified` proves *replied*; one completed Asana task per countable stage event via `clients/tasks_api.py` (Cloud Run IAM, `TASKS_API_URL`); CLI `scripts/outreach.py`, seed `scripts/outreach_seed.py`; follow-ups are `nudge` events on a `briefed` contact (+7/+14 days from the brief, propose close at +21); `outreach today` checks pace against `OUTREACH_TARGETS` (private TOML); skill `working-outreach-queue`; one machine-maintained Google Doc per pipeline person (`Outreach — <name>`, My Drive `Consulting/Outreach`, link in `outreach_contacts.doc_url`) written only by `outreach-sessions --write-doc` via docs-api (`clients/docs_api.py`, `DOCS_API_URL`); `outreach-sessions` gives each person an agent-deck session (hint `person_id=<id>`, group `outreach`, parent `conductor-outreach`, Opus) via `deck-sessions` (`~/src/scripts/deck-sessions`): reopens a stopped/archived one with the reload prompt or launches a fresh one from the doc; agent-deck's registry is the only state (`~/.claude/outreach-sessions.json` was retired by `--migrate`); `--prune` archives sessions of people at `introduced`/`declined`/`skipped`/`signed`/`lost` |
 | **Funded-founder campaign** | Cold email to technical buyers at freshly funded digital health companies. Tables `campaign_*`; `services/campaign.py` is the only writer (stage machine), with `campaign_verify/factcheck/draft/review/send/followups/report/targets.py` around it; CLI `scripts/campaign.py` (run, company, contact, review, send, resume, followups, weekly, bounced, optout, booked, report); skill `working-funded-founder-campaign`; `CAMPAIGN_TARGETS` private TOML in the consulting repo (`campaign_targets.toml`); env `CAMPAIGN_FROM_ADDRESS`, `CAMPAIGN_POSTAL_ADDRESS`, `APOLLO_API_KEY`, `HUNTER_API_KEY`; Apollo and Hunter clients (`clients/apollo.py`, `clients/hunter.py`) are CLI-only; `handlers/email_bounced.py` consumes inbox `email_bounced` events. One-time setup below. |
 | **Observability** | OTel → Grafana Cloud OTLP; metrics prefixed `people_` (outreach instruments are `people.outreach_*`) |
 | **Infra** | `terraform/` — GCS backend `bens-project-462804-tf-state`, state prefix `people` |
@@ -80,7 +80,6 @@ clients/
   tasks_api.py              create_task / complete_task / configured — Asana tasks via tasks-api
   inbox_api.py              create_draft (empty body) — CLI-only (scripts/outreach.py draft), so the
                              Graph rule still holds: Cloud Functions never use it
-  claude_sessions.py        `claude --bg` spawn / resume, running sessions, transcript lookup, per-person records — CLI-only (outreach-sessions)
   apollo.py                 Apollo people search / enrich — CLI-only (scripts/campaign.py)
   hunter.py                 Hunter email finder / verifier — CLI-only (scripts/campaign.py)
   claude_cli.py             `claude -p` prompt wrapper for the fact check — CLI-only
@@ -161,9 +160,10 @@ scripts/
   test-api-local.py          smoke test people-api
   link-skills.sh             symlink searching-people/fetching-person/editing-person/creating-person/working-outreach-queue/working-funded-founder-campaign/checking-linkedin-messages/staging-linkedin-message into ~/.claude/skills/,
                              the outreach-launcher agent into ~/.claude/agents/, outreach-sessions into ~/.local/bin/
-  outreach_sessions.py      one background Claude session per outreach person: resume an exited one, or spawn
-                             preloaded with the snapshot and contact doc; --write-doc creates or merges the doc
-                             (`outreach-sessions` wrapper runs it under the venv) — --next N, --spawn, --idle
+  outreach_sessions.py      one agent-deck session per outreach person via `deck-sessions`: reopen a stopped one
+                             (with the reload prompt), or launch one preloaded with the snapshot and contact doc;
+                             --write-doc creates or merges the doc (`outreach-sessions` wrapper runs it under the
+                             venv) — --next N, --spawn, --idle, --group, --parent, --prune, --migrate
                              Sessions run on `OUTREACH_SESSION_MODEL` (default `opus`), not the user's default model
   import_linkedin.py        load a LinkedIn export snapshot — --dry-run, --me
   import_imessage.py        import chat.db into the imessage_* tables — --full, --dry-run, --db
