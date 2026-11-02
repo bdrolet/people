@@ -507,8 +507,10 @@ env are both `false`, so people writes nothing to HubSpot: no creates,
 evictions or engagements, and the nightly reconcile is a no-op on the HubSpot
 side. Keep it paused, by decision on 2026-11-02. While paused the cap is not
 enforced by people. HubSpot's own connected-inbox auto-create added ~70
-contacts from 2026-10-19, bringing the free portal to 964/1,000. The fix is to
-turn that HubSpot setting off and archive junk senders (33 archived
-2026-11-02), not to upgrade the plan. To
+contacts from 2026-10-19, bringing the free portal to 964/1,000. On 2026-11-02
+the account-level contact email logging rule (Settings → Objects → Activities
+→ Email Log & Track) was moved from "Create new contacts from logged emails"
+to "Log all emails from known contacts", and 33 junk senders were archived,
+instead of upgrading the plan. To
 resume, set the variable to `true` and apply; the first reconcile will then
 enforce the cap by evicting the oldest managed contacts.
