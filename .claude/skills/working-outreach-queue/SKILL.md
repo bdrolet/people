@@ -46,6 +46,11 @@ O=".venv/bin/python scripts/outreach.py"
   WhatsApp: give him the text to send. Email: dispatch `email-builder` with the
   consulting identity; it leaves a draft. **Never send, either way**, and never
   put a drafted message in the contact doc.
+- **Flag a finished message.** In a per-person session, end the reply that hands
+  Ben a message with the line `DRAFT READY: <brief|nudge|reply> via <channel>`
+  (for example `DRAFT READY: nudge via linkedin`). When he says he sent it or
+  drops it, end that reply with `DRAFT CLEARED`. conductor-outreach sorts sessions
+  holding a draft into `outreach/to-send` by these lines.
 - Briefs and email nudges go from **the consulting identity** (the first entry of
   `OUTREACH_FROM_ADDRESSES` in `~/src/people/.env`; read it with
   `grep '^OUTREACH_FROM_ADDRESSES=' ~/src/people/.env`, first comma-separated
