@@ -166,6 +166,16 @@ def test_prompts_and_context_carry_the_draft_ready_marker(monkeypatch):
     assert svc.DRAFT_MARKER in block
 
 
+def test_prompts_and_context_carry_the_scheduling_marker(monkeypatch):
+    """A session flags a meeting being arranged, so conductor-outreach can sort it
+    into outreach/scheduling until it lands on the calendar (2026-11-03)."""
+    assert "`SCHEDULING`" in svc.SCHEDULING_MARKER
+    assert svc.SCHEDULING_MARKER in svc.PREP_PROMPT and svc.SCHEDULING_MARKER in svc.RELOAD_PROMPT
+    _patch(monkeypatch, FakeRepos())
+    block = svc.context_block(svc.snapshot(None, 388, limit=60), today=date(2026, 10, 13))
+    assert svc.SCHEDULING_MARKER in block
+
+
 def test_people_api_never_reads_message_text():
     """Message text goes only into a local session's prompt; people-api must never
     reach the functions that select it (iMessage and WhatsApp §7)."""

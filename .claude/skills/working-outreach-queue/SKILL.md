@@ -51,6 +51,10 @@ O=".venv/bin/python scripts/outreach.py"
   (for example `DRAFT READY: nudge via linkedin`). When he says he sent it or
   drops it, end that reply with `DRAFT CLEARED`. conductor-outreach sorts sessions
   holding a draft into `outreach/to-send` by these lines.
+- **Flag a meeting being arranged.** When Ben and the person are working out a
+  time to meet and it isn't on his calendar yet, end your reply with the line
+  `SCHEDULING`. conductor-outreach keeps the session in `outreach/scheduling`
+  until the meeting shows up on the calendar (`outreach/scheduled`).
 - Briefs and email nudges go from **the consulting identity** (the first entry of
   `OUTREACH_FROM_ADDRESSES` in `~/src/people/.env`; read it with
   `grep '^OUTREACH_FROM_ADDRESSES=' ~/src/people/.env`, first comma-separated

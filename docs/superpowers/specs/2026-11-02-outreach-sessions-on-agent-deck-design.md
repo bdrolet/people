@@ -195,7 +195,10 @@ an `outreach` sublist named for Ben's next action: `to-send`, `to-reply`,
 Sessions say they hold one with a `DRAFT READY: <brief|nudge|reply> via
 <channel>` line (`DRAFT_MARKER` in `services/outreach_session.py`, in both
 prompts and the context block) and `DRAFT CLEARED` when it's gone. The
-conductor also clears a draft once the pipeline moves past it.
+conductor also clears a draft once the pipeline moves past it. Meetings (same day): `scheduling` (a session's `SCHEDULING` line,
+`SCHEDULING_MARKER`), `scheduled` (an upcoming calendar event with the person),
+and `to-record` (a meeting in the last 14 days that the pipeline hasn't caught
+up with), read from the schedule-api calendar search.
 
 ### D8. Agent and docs
 
