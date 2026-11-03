@@ -27,10 +27,17 @@ DRAFT_RULE = (
     "Give Ben talking points; write the message itself only when he explicitly asks for "
     "it, and never send it."
 )
+# conductor-outreach sorts a session holding a finished message into outreach/to-send
+# by this line (2026-11-03); the pipeline moving on also clears it.
+DRAFT_MARKER = (
+    "Whenever you finish writing a message for Ben to send, end that reply with the line "
+    "`DRAFT READY: <brief|nudge|reply> via <channel>`; when he says he sent it or drops "
+    "it, end your reply with the line `DRAFT CLEARED`."
+)
 PREP_PROMPT = (
     "Prep this outreach brief now: follow the working-outreach-queue skill's \"Prep a "
-    f'brief" procedure for the person in your system prompt. {DRAFT_RULE} Then wait '
-    "for Ben."
+    f'brief" procedure for the person in your system prompt. {DRAFT_RULE} '
+    f"{DRAFT_MARKER} Then wait for Ben."
 )
 RELOAD_PROMPT = (
     'Reload this outreach session: follow the working-outreach-queue skill\'s "Reload" '
@@ -38,7 +45,7 @@ RELOAD_PROMPT = (
     "`outreach-sessions --print-context <people id>` (the snapshot and the contact doc); "
     "search email since the doc's last log date; tell Ben what changed; update the doc "
     "with `outreach-sessions --write-doc`; rewrite the talking points for the next step. "
-    f"{DRAFT_RULE} Then wait for Ben."
+    f"{DRAFT_RULE} {DRAFT_MARKER} Then wait for Ben."
 )
 
 
@@ -192,6 +199,6 @@ def context_block(snap: dict, *, today: date, doc: str | None = None) -> str:
         "",
         f"{DRAFT_RULE} Record nothing until he says he sent it. Change the contact doc "
         "only with `outreach-sessions --write-doc` (working-outreach-queue skill), and "
-        "never put a drafted message in it. Work only this person.",
+        f"never put a drafted message in it. {DRAFT_MARKER} Work only this person.",
     ]
     return "\n".join(lines)

@@ -189,6 +189,14 @@ turns were sent, and they were stopped by hand. A never-started session
 can't be `session stop`ped, but it can be archived, and `ensure` reopens an
 archived session with RELOAD.
 
+**Sorting by next action (Ben, 2026-11-03).** The conductor keeps each child in
+an `outreach` sublist named for Ben's next action: `to-send`, `to-reply`,
+`to-close`, `to-nudge`, `to-draft`, `waiting`. A draft wins over the stage.
+Sessions say they hold one with a `DRAFT READY: <brief|nudge|reply> via
+<channel>` line (`DRAFT_MARKER` in `services/outreach_session.py`, in both
+prompts and the context block) and `DRAFT CLEARED` when it's gone. The
+conductor also clears a draft once the pipeline moves past it.
+
 ### D8. Agent and docs
 
 - `.claude/agents/outreach-launcher.md`: attach line becomes

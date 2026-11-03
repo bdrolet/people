@@ -155,6 +155,17 @@ def test_prep_prompt_and_context_draft_only_on_request(monkeypatch):
     assert svc.DRAFT_RULE in block and "Never draft" not in block
 
 
+def test_prompts_and_context_carry_the_draft_ready_marker(monkeypatch):
+    """A session that writes a message for Ben flags it with a marker line, so
+    conductor-outreach can sort it into outreach/to-send (2026-11-03)."""
+    assert "DRAFT READY: <brief|nudge|reply> via <channel>" in svc.DRAFT_MARKER
+    assert "DRAFT CLEARED" in svc.DRAFT_MARKER
+    assert svc.DRAFT_MARKER in svc.PREP_PROMPT and svc.DRAFT_MARKER in svc.RELOAD_PROMPT
+    _patch(monkeypatch, FakeRepos())
+    block = svc.context_block(svc.snapshot(None, 388, limit=60), today=date(2026, 10, 13))
+    assert svc.DRAFT_MARKER in block
+
+
 def test_people_api_never_reads_message_text():
     """Message text goes only into a local session's prompt; people-api must never
     reach the functions that select it (iMessage and WhatsApp §7)."""
