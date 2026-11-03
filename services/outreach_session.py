@@ -34,10 +34,15 @@ DRAFT_MARKER = (
     "`DRAFT READY: <brief|nudge|reply> via <channel>`; when he says he sent it or drops "
     "it, end your reply with the line `DRAFT CLEARED`."
 )
+# ...and a meeting being arranged into outreach/scheduling, until it is on Ben's calendar.
+SCHEDULING_MARKER = (
+    "When Ben and this person are arranging a meeting that isn't on his calendar yet, "
+    "end your reply with the line `SCHEDULING`."
+)
 PREP_PROMPT = (
     "Prep this outreach brief now: follow the working-outreach-queue skill's \"Prep a "
     f'brief" procedure for the person in your system prompt. {DRAFT_RULE} '
-    f"{DRAFT_MARKER} Then wait for Ben."
+    f"{DRAFT_MARKER} {SCHEDULING_MARKER} Then wait for Ben."
 )
 RELOAD_PROMPT = (
     'Reload this outreach session: follow the working-outreach-queue skill\'s "Reload" '
@@ -45,7 +50,7 @@ RELOAD_PROMPT = (
     "`outreach-sessions --print-context <people id>` (the snapshot and the contact doc); "
     "search email since the doc's last log date; tell Ben what changed; update the doc "
     "with `outreach-sessions --write-doc`; rewrite the talking points for the next step. "
-    f"{DRAFT_RULE} {DRAFT_MARKER} Then wait for Ben."
+    f"{DRAFT_RULE} {DRAFT_MARKER} {SCHEDULING_MARKER} Then wait for Ben."
 )
 
 
@@ -199,6 +204,7 @@ def context_block(snap: dict, *, today: date, doc: str | None = None) -> str:
         "",
         f"{DRAFT_RULE} Record nothing until he says he sent it. Change the contact doc "
         "only with `outreach-sessions --write-doc` (working-outreach-queue skill), and "
-        f"never put a drafted message in it. {DRAFT_MARKER} Work only this person.",
+        f"never put a drafted message in it. {DRAFT_MARKER} "
+        f"{SCHEDULING_MARKER} Work only this person.",
     ]
     return "\n".join(lines)
