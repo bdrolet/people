@@ -1,5 +1,11 @@
 {
   "permissions": {
-    "allow": ["Bash(gcloud:*)", "Bash(terraform:*)"]
-  }
+    "allow": ["Bash(gcloud:*)", "Bash(terraform:*)"],
+    "ask": [
+      "mcp__linkedin__connect_with_person",
+      "mcp__linkedin__archive_conversation",
+      "mcp__linkedin__dismiss_job"
+    ]
+  },
+  "enabledMcpjsonServers": ["linkedin"]
 }

@@ -22,10 +22,13 @@ NAME_MAX = 60
 TEXT_MAX = 300
 CHANNEL_TITLES = {"imessage": "iMessage", "whatsapp": "WhatsApp", "linkedin": "LinkedIn"}
 # Ben's rule (2026-10-14): talking points by default, the message itself only when he
-# asks for it, and never sent. One sentence, so the prompts and the context agree.
+# asks for it, and never sent -- except LinkedIn (2026-11-04), which goes out through
+# the LinkedIn MCP once he approves the exact text. One sentence, so the prompts and
+# the context agree.
 DRAFT_RULE = (
     "Give Ben talking points; write the message itself only when he explicitly asks for "
-    "it, and never send it."
+    "it, and never send it, except a LinkedIn message, which you may send with "
+    "staging-linkedin-message only after Ben approves its exact text."
 )
 # conductor-outreach sorts a session holding a finished message into outreach/to-send
 # by this line (2026-11-03); the pipeline moving on also clears it.

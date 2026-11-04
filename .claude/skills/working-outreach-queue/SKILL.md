@@ -41,11 +41,12 @@ O=".venv/bin/python scripts/outreach.py"
 - **When Ben explicitly asks for the message** ("write it for me", "draft the
   message", "give me the text"), write it — don't refuse or argue the strategy
   back at him; it's his call (rule changed 2026-10-14). Write in his voice with
-  `matching-writing-style`, from the talking points. LinkedIn: stage it with
-  `staging-linkedin-message` (clipboard + message box open). iMessage or
-  WhatsApp: give him the text to send. Email: dispatch `email-builder` with the
-  consulting identity; it leaves a draft. **Never send, either way**, and never
-  put a drafted message in the contact doc.
+  `matching-writing-style`, from the talking points. LinkedIn:
+  `staging-linkedin-message`, which sends through the LinkedIn MCP **only after
+  Ben approves the exact text** (rule changed 2026-11-04). iMessage or WhatsApp:
+  give him the text to send. Email: dispatch `email-builder` with the consulting
+  identity; it leaves a draft. **Never send anything else**, and never put a
+  drafted message in the contact doc.
 - **Flag a finished message.** In a per-person session, end the reply that hands
   Ben a message with the line `DRAFT READY: <brief|nudge|reply> via <channel>`
   (for example `DRAFT READY: nudge via linkedin`). When he says he sent it or
