@@ -145,9 +145,11 @@ def test_prep_prompt_points_at_the_skill_procedure():
 
 def test_prep_prompt_and_context_draft_only_on_request(monkeypatch):
     """Talking points by default; the message only when Ben explicitly asks for it,
-    and never sent (2026-10-14 rule change)."""
+    and never sent (2026-10-14 rule change) -- except LinkedIn, sent only once Ben
+    approves the exact text (2026-11-04)."""
     assert "talking points" in svc.DRAFT_RULE and "explicitly asks" in svc.DRAFT_RULE
     assert "never send" in svc.DRAFT_RULE
+    assert "LinkedIn" in svc.DRAFT_RULE and "approves its exact text" in svc.DRAFT_RULE
     assert svc.DRAFT_RULE in svc.PREP_PROMPT and svc.DRAFT_RULE in svc.RELOAD_PROMPT
     assert "never draft" not in svc.PREP_PROMPT.lower()
     _patch(monkeypatch, FakeRepos())
