@@ -15,7 +15,7 @@ REFERRER_STAGES = (
 BUYER_STAGES = ("intro", "conversation", "proposal", "signed", "lost")
 # Event kinds that are not stages (working-queue spec §3.2): appended to outreach_events,
 # never stored in outreach_contacts.stage, never a CLI stage choice, never an Asana task.
-ACTIVITY_KINDS = ("nudge",)
+ACTIVITY_KINDS = ("nudge", "qualified", "not_qualified")
 CHANNELS = ("email", "imessage", "whatsapp", "linkedin", "call", "in_person")
 # linkedin_outbox: a LinkedIn send recorded by the send queue (send-queue design).
 SOURCES = ("event", "cli", "hubspot", "seed", "linkedin_outbox")
@@ -38,6 +38,7 @@ class CohortCounts:
     replied: int = 0
     intro: int = 0
     conversation: int = 0
+    qualified: int = 0  # opportunities whose current verdict is yes
     proposal: int = 0
     signed: int = 0
 

@@ -504,6 +504,30 @@ DO $$ BEGIN
     END IF;
 END $$;
 
+-- Qualified leads: Ben's yes/no verdict on a buyer opportunity, recorded after he meets
+-- them. NULL is "not judged yet". Each verdict is also an outreach_events row
+-- ('qualified' / 'not_qualified', activity kinds like 'nudge', never a stage or a task),
+-- so a changed verdict keeps its history.
+ALTER TABLE outreach_opportunities ADD COLUMN IF NOT EXISTS qualified    BOOLEAN;
+ALTER TABLE outreach_opportunities ADD COLUMN IF NOT EXISTS qualified_at TIMESTAMPTZ;
+
+-- The stage CHECK gains the two verdict kinds. Replaced once: a database that already
+-- admits 'not_qualified' is left alone, so the file stays safe to re-run.
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'outreach_events'::regclass
+          AND conname = 'outreach_events_stage_check'
+          AND position('not_qualified' in pg_get_constraintdef(oid)) > 0
+    ) THEN
+        ALTER TABLE outreach_events DROP CONSTRAINT IF EXISTS outreach_events_stage_check;
+        ALTER TABLE outreach_events ADD CONSTRAINT outreach_events_stage_check CHECK (stage IN
+            ('candidate','to_contact','briefed','replied','introduced','declined','skipped',
+             'intro','conversation','proposal','signed','lost','nudge',
+             'qualified','not_qualified'));
+    END IF;
+END $$;
+
 -- LinkedIn profile URL as a third identifier
 -- (docs/superpowers/specs/2026-10-13-linkedin-identity-design.md §3). Normal form
 -- linkedin.com/in/<slug>, derived from the Google contact's urls; NULL for most rows.

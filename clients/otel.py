@@ -43,6 +43,7 @@ outreach_lost: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop"
 outreach_sync: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
 outreach_report_runs: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
 outreach_nudges: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
+outreach_qualifications: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
 
 # LinkedIn send queue (send-queue design, "Metrics"). No person, username or text in labels.
 linkedin_sends: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
@@ -54,12 +55,22 @@ linkedin_approval_to_send: metrics.Histogram = metrics.NoOpMeter("noop").create_
 # outreach CLI invocation (outreach spec §12.2).
 _outreach_population: list[tuple[int, dict[str, str]]] = []
 _outreach_follow_ups_due: int | None = None
+_outreach_qualified: list[tuple[int, dict[str, str]]] = []
 
 
 def set_outreach_population(rows: list[tuple[int, dict[str, str]]], follow_ups_due: int) -> None:
     global _outreach_population, _outreach_follow_ups_due
     _outreach_population = list(rows)
     _outreach_follow_ups_due = follow_ups_due
+
+
+def set_outreach_qualified(rows: list[tuple[int, dict[str, str]]]) -> None:
+    global _outreach_qualified
+    _outreach_qualified = list(rows)
+
+
+def _observe_qualified(options: CallbackOptions) -> list[Observation]:
+    return [Observation(value, attrs) for value, attrs in _outreach_qualified]
 
 
 def _observe_population(options: CallbackOptions) -> list[Observation]:
@@ -122,7 +133,12 @@ def setup_telemetry(service_name: str) -> None:
     global hubspot_engagements_logged, external_errors, api_requests, errors
     global whatsapp_import_messages, whatsapp_import_handles, whatsapp_import_duration
     global outreach_stage_events, outreach_lost, outreach_sync, outreach_report_runs
-    global outreach_nudges, linkedin_sends, linkedin_queued, linkedin_approval_to_send
+    global \
+        outreach_nudges, \
+        linkedin_sends, \
+        linkedin_queued, \
+        linkedin_approval_to_send, \
+        outreach_qualifications
 
     endpoint = os.environ.get("GRAFANA_OTLP_ENDPOINT")
     if not endpoint:
@@ -197,6 +213,10 @@ def setup_telemetry(service_name: str) -> None:
         "people.outreach_nudges",
         description="Outreach follow-up nudges by channel/source/n (1, 2, 3+)",
     )
+    outreach_qualifications = meter.create_counter(
+        "people.outreach_qualifications",
+        description="Qualified-lead verdicts recorded on buyer opportunities, by verdict",
+    )
     meter.create_observable_gauge(
         "people.outreach_stage_population",
         callbacks=[_observe_population],
@@ -206,6 +226,11 @@ def setup_telemetry(service_name: str) -> None:
         "people.outreach_follow_ups_due",
         callbacks=[_observe_follow_ups_due],
         description="Briefed contacts whose follow-up date has arrived",
+    )
+    meter.create_observable_gauge(
+        "people.outreach_qualified_leads",
+        callbacks=[_observe_qualified],
+        description="Buyer opportunities per current verdict (yes/no/pending) and cohort_week",
     )
 
     linkedin_sends = meter.create_counter(

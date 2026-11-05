@@ -41,7 +41,9 @@ def floors(tmp_path) -> rpt.Floors:
 def counts() -> FunnelCounts:
     return FunnelCounts(
         cohorts=[
-            CohortCounts(date(2026, 9, 7), briefed=20, replied=9, intro=2, conversation=1),
+            CohortCounts(
+                date(2026, 9, 7), briefed=20, replied=9, intro=2, conversation=1, qualified=1
+            ),
             CohortCounts(date(2026, 10, 12), briefed=10, replied=2),
         ],
         lost_reasons={"timing": 1, "no_budget": 1},
@@ -82,14 +84,42 @@ def test_render_without_floors_prints_counts_rates_lost_and_follow_ups(counts):
         "Replied",
         "Intro",
         "Conv",
+        "Qual",
         "Prop",
         "Signed",
         "Reply%",
         "Intro%",
         "Conv%",
+        "Qual%",
     ]
-    assert lines[1].split() == ["2026-09-07", "20", "9", "2", "1", "0", "0", "45%", "10%", "5.0%"]
-    assert lines[3].split() == ["All", "30", "11", "2", "1", "0", "0", "37%", "6.7%", "3.3%"]
+    assert lines[1].split() == [
+        "2026-09-07",
+        "20",
+        "9",
+        "2",
+        "1",
+        "1",
+        "0",
+        "0",
+        "45%",
+        "10%",
+        "5.0%",
+        "5.0%",
+    ]
+    assert lines[3].split() == [
+        "All",
+        "30",
+        "11",
+        "2",
+        "1",
+        "1",
+        "0",
+        "0",
+        "37%",
+        "6.7%",
+        "3.3%",
+        "3.3%",
+    ]
     assert "Floor@n" not in text
     assert "Lost reasons: no_budget 1, timing 1" in text and "Follow-ups due: 9" in text
 

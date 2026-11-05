@@ -300,6 +300,28 @@ def test_cohort_counts_derive_from_the_event_log(conn):
     assert outreach_repo.buyer_cohort_counts(conn, since=w2, until=None) == []
 
 
+def test_qualified_leads_count_by_current_verdict(conn):
+    w1 = datetime(2026, 10, 12).date()
+    a = _person(conn)
+    _brief(conn, a, w1)
+    ids = [
+        outreach_repo.insert_opportunity(
+            conn, referrer_id=a, buyer_id=None, buyer_label=f"B{i}", at=TS
+        )["id"]
+        for i in range(3)
+    ]
+    outreach_repo.update_opportunity(conn, ids[0], {"qualified": True, "qualified_at": TS})
+    outreach_repo.update_opportunity(conn, ids[1], {"qualified": False, "qualified_at": TS})
+    for stage in ("not_qualified", "qualified"):  # the verdict kinds pass the stage CHECK
+        outreach_repo.insert_event(
+            conn, pipeline="buyer", opportunity_id=ids[0], stage=stage, at=TS, source="cli"
+        )
+    pop = {r["qualified"]: r["n"] for r in outreach_repo.qualification_population(conn)}
+    assert pop == {True: 1, False: 1, None: 1}
+    (row,) = outreach_repo.buyer_cohort_counts(conn, since=None, until=None)
+    assert (row["cohort_week"], row["intro"], row["qualified"]) == (w1, 3, 1)
+
+
 def test_seed_source_queries_return_the_columns_the_bars_read(conn):
     pid = _person(
         conn,

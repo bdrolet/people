@@ -16,6 +16,7 @@
   python scripts/outreach.py intro <referrer> "<buyer name, company>" [--buyer <person>] [--at T]
   python scripts/outreach.py conversation|proposal|signed <opportunity-id> [--at T]
   python scripts/outreach.py lost <opportunity-id> --reason R [--at T]
+  python scripts/outreach.py qualify <opportunity-id> yes|no [--at T]
   python scripts/outreach.py followups
   python scripts/outreach.py report [--floors PATH] [--since D] [--until D]
   python scripts/outreach.py sync-asana
@@ -283,6 +284,18 @@ def cmd_buyer(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -
     _sync(conn, res, "buyer", stage, out)
 
 
+def cmd_qualify(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -> None:
+    """Ben's verdict on a lead, made when he meets them. Any stage; a changed verdict
+    overwrites and keeps its history as another event. Never an Asana task."""
+    res = outreach.qualify(conn, args.opportunity, args.verdict == "yes", at=parse_at(args.at, now))
+    conn.commit()
+    verdict = "qualified" if res.row["qualified"] else "not qualified"
+    print(
+        f"opportunity {res.row['id']} ({res.row['buyer_label']}): {verdict}{_changed(res)}",
+        file=out,
+    )
+
+
 def _config_path(flag: str | None, env: str) -> Path | None:
     value = flag or os.environ.get(env)
     return Path(value).expanduser() if value else None
@@ -472,6 +485,7 @@ COMMANDS: dict[str, Callable[[Any, argparse.Namespace, TextIO, datetime], None]]
     "proposal": cmd_buyer,
     "signed": cmd_buyer,
     "lost": cmd_buyer,
+    "qualify": cmd_qualify,
     "followups": cmd_followups,
     "report": cmd_report,
     "sync-asana": cmd_sync_asana,
@@ -535,6 +549,10 @@ def build_parser() -> argparse.ArgumentParser:
     lo.add_argument("opportunity", type=int)
     lo.add_argument("--reason", required=True, choices=LOST_REASONS)
     lo.add_argument("--at")
+    qu = sub.add_parser("qualify")
+    qu.add_argument("opportunity", type=int)
+    qu.add_argument("verdict", choices=("yes", "no"))
+    qu.add_argument("--at")
     sub.add_parser("followups")
     r = sub.add_parser("report")
     r.add_argument("--floors")

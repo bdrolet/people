@@ -341,6 +341,30 @@ def advance_opportunity(
     return Advance(row=updated, changed=True, event_id=event_id)
 
 
+def qualify(conn: Any, opportunity_id: int, qualified: bool, *, at: datetime) -> Advance:
+    """Record Ben's verdict on a lead, made when he meets them (any stage). The same
+    verdict again is a no-op; a changed one overwrites the columns and appends another
+    event, so the history stays in outreach_events."""
+    opp = outreach_repo.lock_opportunity(conn, opportunity_id)
+    if opp is None:
+        raise OpportunityNotFound(str(opportunity_id))
+    if opp["qualified"] is qualified:
+        return Advance(row=opp, changed=False, event_id=None)
+    updated = outreach_repo.update_opportunity(
+        conn, opportunity_id, {"qualified": qualified, "qualified_at": at}
+    )
+    event_id = outreach_repo.insert_event(
+        conn,
+        pipeline="buyer",
+        opportunity_id=opportunity_id,
+        stage="qualified" if qualified else "not_qualified",
+        at=at,
+        source="cli",
+    )
+    otel.outreach_qualifications.add(1, {"verdict": "yes" if qualified else "no"})
+    return Advance(row=updated, changed=True, event_id=event_id)
+
+
 def set_lead(conn: Any, person_id: int, lead: str, *, today: date) -> dict:
     """A name Ben must chase (spec §4.2): a flag and a note, never an opportunity."""
     row = outreach_repo.lock_contact(conn, person_id)
@@ -588,6 +612,16 @@ def record_population(conn: Any, *, today: date) -> None:
         for r in outreach_repo.population(conn)
     ]
     otel.set_outreach_population(rows, outreach_repo.follow_ups_due_count(conn, today))
+    verdicts = {True: "yes", False: "no", None: "pending"}
+    otel.set_outreach_qualified(
+        [
+            (
+                int(r["n"]),
+                {"verdict": verdicts[r["qualified"]], "cohort_week": iso_week(r["cohort_week"])},
+            )
+            for r in outreach_repo.qualification_population(conn)
+        ]
+    )
 
 
 def counts(
@@ -605,6 +639,7 @@ def counts(
     for r in outreach_repo.buyer_cohort_counts(conn, since=since, until=until):
         c = cohort(r["cohort_week"])
         c.intro, c.conversation = int(r["intro"]), int(r["conversation"])
+        c.qualified = int(r["qualified"])
         c.proposal, c.signed = int(r["proposal"]), int(r["signed"])
     cohorts = sorted(
         by_week.values(), key=lambda c: (c.cohort_week is None, c.cohort_week or date.min)
