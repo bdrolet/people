@@ -117,3 +117,21 @@ def test_load_config_defaults_and_overrides():
         p.load_config({"LINKEDIN_GAP_MIN_SECONDS": "500"})
     with pytest.raises(ValueError):
         p.load_config({"LINKEDIN_DAILY_CAP": "lots"})
+
+
+def test_window_seconds_inside_one_day():
+    assert p.window_seconds(at(2026, 11, 3, 9), at(2026, 11, 3, 10, 30), W) == 5400
+
+
+def test_window_seconds_skips_nights_and_weekend():
+    # Approved Friday 19:30, after the window closed: by Monday 08:10 it has waited 10 min.
+    assert p.window_seconds(at(2026, 11, 6, 19, 30), at(2026, 11, 9, 8, 10), W) == 600
+
+
+def test_window_seconds_spans_days():
+    # Tue 18:00 -> Wed 09:00: one hour Tuesday evening, one hour Wednesday morning.
+    assert p.window_seconds(at(2026, 11, 3, 18), at(2026, 11, 4, 9), W) == 7200
+
+
+def test_window_seconds_reversed_is_zero():
+    assert p.window_seconds(at(2026, 11, 3, 10), at(2026, 11, 3, 9), W) == 0

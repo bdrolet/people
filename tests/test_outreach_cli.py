@@ -479,6 +479,18 @@ def test_today_json_from_the_env_var(monkeypatch, run, tmp_path):
     assert code == 0 and data["day"] == "2026-10-13" and data["briefs_week"] == 7
 
 
+def test_today_publishes_the_targets_gauge(monkeypatch, run, tmp_path):
+    path = tmp_path / "targets.toml"
+    path.write_text(TARGETS_TOML)
+    _today_counts(monkeypatch)
+    published: dict = {}
+    monkeypatch.setattr(cli.otel, "set_rows", lambda key, rows: published.update({key: rows}))
+    code, _, _ = run("today", "--targets", str(path))
+    assert code == 0
+    assert (5, {"target": "briefs_per_day"}) in published["outreach_target"]
+    assert (25, {"target": "briefs_per_week"}) in published["outreach_target"]
+
+
 def test_today_without_targets_names_both_options(run):
     code, _, err = run("today")
     assert code == 1 and "--targets" in err and "OUTREACH_TARGETS" in err

@@ -44,6 +44,7 @@ This overrides the default "commit or push only when asked" behavior for code ch
 | **LinkedIn MCP** | `.mcp.json` server `linkedin` — third-party `mcp-server-linkedin@latest` via `uvx` (auto-updates on launch), a headless browser signed in as Ben, session in `~/.linkedin-mcp/` (`uvx mcp-server-linkedin@latest --login` to sign in); reads inbox/threads for `checking-linkedin-messages`, sends for `staging-linkedin-message` only after Ben approves the exact text; `send_message` is the **only** send tool (`reply_to_conversation` does not exist as of 4.29.0; the `.claude/settings.*` entries naming it are harmless and left alone); `.claude/settings.json` puts every LinkedIn write tool on `ask` except `send_message`, which runs unprompted (Ben approves the exact text in chat first, per the skill). Local only; nothing deployed uses it |
 | **LinkedIn send queue** | Approved LinkedIn messages go to `linkedin_outbox` (`outreach linkedin queue`, `scripts/outreach_linkedin.py`); `scripts/linkedin_sender.py` sends at most one per run, run by launchd agent `cloud.drolet.people.linkedin-sender` every 120 s (`scripts/install-linkedin-sender.sh`, `--uninstall`, `--print`; log `~/Library/Logs/people-linkedin-sender.log`); weekdays 08:00–19:00 Pacific, a random 3–8 min gap, ceiling 50/day and 250/week ramping from 30/day over the first 14 days; env `LINKEDIN_DAILY_CAP`, `LINKEDIN_WEEKLY_CAP`, `LINKEDIN_RAMP_START`, `LINKEDIN_RAMP_DAYS`, `LINKEDIN_GAP_MIN_SECONDS`, `LINKEDIN_GAP_MAX_SECONDS`, `LINKEDIN_SEND_WINDOW` (`"Mon-Fri 08:00-19:00 America/Los_Angeles"`), `LINKEDIN_MCP_VERSION` (pinned `4.29.0`: the sender runs `uvx mcp-server-linkedin==<v>`, because `services/linkedin_result.py` maps that version's result contract; bumping it is a hand step after reading the new `send_message` contract); a confirmed send to an outreach person records the brief/nudge (source `linkedin_outbox`); service name `people-linkedin-sender`, metrics `people.linkedin_*`; design `docs/superpowers/specs/2026-11-05-linkedin-send-queue-design.md` |
 | **Observability** | OTel → Grafana Cloud OTLP; metrics prefixed `people_` (outreach instruments are `people.outreach_*`) |
+| **Outreach dashboard** | Grafana Cloud dashboard `Referral outreach` (folder `People`, uid `people-outreach`): results per brief cohort on top, effort against pace in the middle, LinkedIn sender health at the bottom. Built as code by `dashboards/outreach.py` (Grafana Foundation SDK, dev dependency only) into the **committed** `dashboards/build/outreach.json` — run `python -m dashboards.outreach` after any change; CI fails when it is stale — and applied by `terraform/grafana.tf` (`grafana/grafana` provider, token in Secret Manager `grafana-dashboards-token`, `grafana_url` / `alert_email` variables). Panels read DB-derived gauges that match `outreach today` / `outreach report` (`people.outreach_cohort`, `_activity`, `_lost_reasons`, `_target`, `_refreshed`, `people.linkedin_outbox`, `_daily`, `_queue_oldest_window_seconds`; rows built by `services/dashboard_gauges.py`), never the event counters, and keep only the newest run's series (`people_outreach_refreshed`). Email alerts: rule group `linkedin-sender` (sender silent, queue paused, send needs checking, queue stuck) to contact point `ben-email` through each rule's `notification_settings`, muted outside the send window by `linkedin-send-window-closed`; **no** `grafana_notification_policy` (it would replace the stack's UI-made tree). Design `docs/superpowers/specs/2026-11-05-outreach-dashboard-design.md` |
 | **Infra** | `terraform/` — GCS backend `bens-project-462804-tf-state`, state prefix `people` |
 
 **Funded-founder campaign one-time setup:**
@@ -87,7 +88,8 @@ clients/
   hunter.py                 Hunter email finder / verifier — CLI-only (scripts/campaign.py)
   claude_cli.py             `claude -p` prompt wrapper for the fact check — CLI-only
   docs_api.py               docs-api: get / create / replace a doc, filing-catalog folder lookup — CLI-only (outreach-sessions)
-  otel.py                   OTel setup + counters (people.* instruments)
+  otel.py                   OTel setup + counters (people.* instruments); set_rows feeds the dashboard's
+                             DB-derived gauges (DASHBOARD_GAUGES)
   linkedin_mcp.py           LinkedIn MCP over stdio (pinned version) for scripts/linkedin_sender.py only — session check, send_message
 repo/
   schema.sql                people (incl. contact-field columns), sync_state tables
@@ -116,6 +118,8 @@ services/
                              (keeps Ben's notes and the log)
   outreach_doc_write.py     contact-doc write protocol: create, or GET → merge → GET → PUT if_version, one retry
   outreach_sync.py          Asana task payloads, sync_events / sync_pending (durable first, retried nightly)
+  dashboard_gauges.py       pure: counts / today numbers / targets / outbox counts → (value, labels) rows for
+                             the dashboard gauges (cohort rows equal `outreach report`'s table)
   outreach_report.py        pure: floors TOML, stage_verdicts, render
   outreach_seed.py          pure: warm-pool bars over raw rows → SeedPlan; unlinked LinkedIn rows → link / in_google / possible_duplicate / create
   campaign.py               the only campaign_* writer: add_company/add_contact (warm guard), score, advance (transition table), opt-out
@@ -183,7 +187,11 @@ scripts/
   linkedin_sender.py        the launchd sender: one run_once tick, logs one word, never message text
   install-linkedin-sender.sh  install / --uninstall / --print the launchd agent (never run by link-skills.sh)
   outreach_seed.py          propose outreach candidates, link or create LinkedIn-only people — --dry-run
-terraform/                  main, variables, secrets, cloudsql, pubsub, cloud_functions, iam, api, scheduler
+dashboards/
+  outreach.py               the Referral outreach dashboard (Grafana Foundation SDK) → build/outreach.json
+  build/outreach.json       generated, committed; terraform/grafana.tf applies it
+terraform/                  main, variables, secrets, cloudsql, pubsub, cloud_functions, iam, api, scheduler,
+                             grafana (folder, dashboard, ben-email contact point, mute timing, linkedin-sender rules)
 tests/                      one test module per unit
 .github/workflows/          ci.yml, deploy.yml (Functions), deploy-api.yml (Cloud Run)
 .claude/skills/             people-architecture, deploy-people, fetch-people-logs, querying-people-db,
@@ -442,7 +450,10 @@ carries forward, only ownership moves), `google-contacts-refresh-token`
 (minted locally by `scripts/get_google_contacts_token.py`, added by hand —
 never in `terraform.tfvars` or state), `people-db-password`,
 `people-sync-token` (both `random_password`-
-generated by Terraform, not passed in as variables). Read any of them with
+generated by Terraform, not passed in as variables), `grafana-dashboards-token`
+(a Grafana Cloud service-account token, Editor; made by hand in the Grafana UI and
+added with `gcloud`; the grafana provider reads it at plan time, so it must exist
+before the first apply, which imports the secret). Read any of them with
 `gcloud secrets versions access latest --secret=<name>`.
 
 Shared (data sources, owned elsewhere): `grafana-otlp-endpoint`,
@@ -460,7 +471,8 @@ python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 scripts/fetch-env.sh                 # .env from Secret Manager + terraform.tfvars
 .venv/bin/pytest tests/ -q           # unit tests
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
-.venv/bin/mypy clients/ services/ handlers/ models/ repo/ api/ main.py
+.venv/bin/mypy clients/ services/ handlers/ models/ repo/ api/ dashboards/ main.py
+.venv/bin/python -m dashboards.outreach   # regenerate dashboards/build/outreach.json; commit it
 ```
 
 Handler smoke tests against the real DB: see `testing-people-handlers`.
@@ -497,9 +509,10 @@ personal, so it lives in `terraform.tfvars` / a GitHub variable like
 ## Deployment
 
 Push to `main` touching `main.py`, `clients/`, `models/`, `services/`,
-`handlers/`, `repo/`, `requirements.txt`, or `terraform/` auto-deploys
-`people-process`/`people-sync` via `.github/workflows/deploy.yml` (WIF →
-`terraform apply`).
+`handlers/`, `repo/`, `requirements.txt`, `terraform/`, or `dashboards/build/` auto-deploys
+`people-process`/`people-sync` and the Grafana dashboard and alerts via
+`.github/workflows/deploy.yml` (WIF → `terraform apply`; needs the GitHub variables
+`GRAFANA_URL` and `ALERT_EMAIL`).
 
 Push to `main` touching `api/`, `clients/`, `repo/`, `services/`, `models/`,
 `Dockerfile`, or `requirements.txt` auto-deploys `people-api` via

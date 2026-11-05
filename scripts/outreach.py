@@ -56,6 +56,7 @@ import clients.otel as otel
 from clients import inbox_api
 from models.outreach import CHANNELS, LOST_REASONS, REFERRER_STAGES, Advance
 from services import (
+    dashboard_gauges,
     linkedin_outbox,
     linkedin_pacing,
     outreach,
@@ -306,6 +307,7 @@ def cmd_today(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -
     if path is None:
         raise CliError("no targets file: pass --targets PATH or set OUTREACH_TARGETS")
     targets = outreach_targets.load_targets(path)
+    otel.set_rows("outreach_target", dashboard_gauges.target_rows(targets))
     counts = outreach.today_counts(
         conn,
         today=now.astimezone(outreach.TZ).date(),

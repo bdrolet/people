@@ -81,6 +81,52 @@ def _observe_follow_ups_due(options: CallbackOptions) -> list[Observation]:
     return [] if _outreach_follow_ups_due is None else [Observation(_outreach_follow_ups_due)]
 
 
+# The dashboard's DB-derived gauges (outreach dashboard design): rows of (value, labels)
+# per key, replaced whole on every refresh. services/outreach.py::record_population sets
+# the outreach_* ones, the outreach CLI's `today` the target, the LinkedIn sender the
+# linkedin_* ones. A key never set in this process observes nothing.
+DASHBOARD_GAUGES = {
+    "outreach_cohort": (
+        "people.outreach_cohort",
+        "Outreach people per brief cohort_week who ever reached each stage",
+    ),
+    "outreach_activity": (
+        "people.outreach_activity",
+        "First briefs and nudges today and this week (New York), by kind/window",
+    ),
+    "outreach_lost_reasons": (
+        "people.outreach_lost_reasons",
+        "Buyer opportunities lost, by lost_reason",
+    ),
+    "outreach_target": ("people.outreach_target", "Brief pace targets from OUTREACH_TARGETS"),
+    "outreach_refreshed": (
+        "people.outreach_refreshed",
+        "Unix time of the run that published the outreach gauges",
+    ),
+    "linkedin_outbox": ("people.linkedin_outbox", "linkedin_outbox rows by status"),
+    "linkedin_daily": (
+        "people.linkedin_daily",
+        "LinkedIn messages approved and sent per Pacific day, by what/kind/day",
+    ),
+    "linkedin_queue_oldest_window_seconds": (
+        "people.linkedin_queue_oldest_window_seconds",
+        "Seconds the oldest queued LinkedIn message has waited inside the send window",
+    ),
+}
+_rows: dict[str, list[tuple[float, dict[str, str]]]] = {}
+
+
+def set_rows(key: str, rows: list[tuple[float, dict[str, str]]]) -> None:
+    _rows[key] = list(rows)
+
+
+def _observe_rows(key: str) -> Callable[[CallbackOptions], list[Observation]]:
+    def observe(options: CallbackOptions) -> list[Observation]:
+        return [Observation(value, attrs) for value, attrs in _rows.get(key, [])]
+
+    return observe
+
+
 # The sender's gauges, refreshed by services/linkedin_outbox.py on every run and read at
 # export time. Keys: queue_depth, oldest_age_seconds, sends_today, sends_week, cap_today,
 # cap_week, heartbeat, paused.
@@ -248,6 +294,8 @@ def setup_telemetry(service_name: str) -> None:
         meter.create_observable_gauge(
             name, callbacks=[_linkedin_gauge(key)], description=description
         )
+    for key, (name, description) in DASHBOARD_GAUGES.items():
+        meter.create_observable_gauge(name, callbacks=[_observe_rows(key)], description=description)
 
     # --- Logs ---
     log_provider = LoggerProvider(resource=resource)
