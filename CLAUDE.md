@@ -35,13 +35,14 @@ This overrides the default "commit or push only when asked" behavior for code ch
 | **Events CF** | `people-process` — Pub/Sub trigger on the inbox-owned `email-events` topic (data source), entry point `process` in `main.py`; handles `email_classified`, `email_sent` and `email_bounced`, ignores everything else |
 | **Sync CF** | `people-sync` — HTTP trigger, entry point `sync`; POST with `Authorization: Bearer <people-sync-token>`; Cloud Scheduler `people-sync` at `0 4 * * *` America/New_York (before inbox's 5 AM sweep) — Google Contacts incremental sync (**adopts** an email-less contact with a usable phone number or a LinkedIn profile URL, `email IS NULL`; counts the rest `skipped`), then HubSpot reconcile |
 | **API** | `people-api` — Cloud Run FastAPI service (`api/`); auth is Cloud Run IAM — `roles/run.invoker` granted per caller in `terraform/api.tf`; callers send `gcloud auth print-identity-token`; image in Artifact Registry repo `people`, deployed by `.github/workflows/deploy-api.yml`; `https://people-api.drolet.cloud` (Cloud Run domain mapping in `terraform/api.tf`; the CNAME lives in `~/src/infra` `cloudflare/drolet-cloud.tf`); the raw run.app URL is `terraform output -raw people_api_url` |
-| **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people` (incl. editable-contact-field columns `phone_numbers`, `company`, `job_title`, `google_fields`, and the identifier `linkedin_url` — see the source-of-truth table below), `sync_state`, `contact_groups`, `people_labels`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`, `imessage_handles`, `imessage_chats`, `imessage_messages`, `imessage_imports`, `whatsapp_handles`, `whatsapp_chats`, `whatsapp_chat_members`, `whatsapp_messages`, `whatsapp_imports`, `outreach_contacts`, `outreach_opportunities`, `outreach_events`, `campaign_companies`, `campaign_contacts`, `campaign_runs`, `campaign_events`; schema in `repo/schema.sql` |
+| **Database** | `people` DB + `people` user on Cloud SQL instance `inbox` (`bens-project-462804:us-central1:inbox`, data source — instance owned by inbox terraform); tables `people` (incl. editable-contact-field columns `phone_numbers`, `company`, `job_title`, `google_fields`, and the identifier `linkedin_url` — see the source-of-truth table below), `sync_state`, `contact_groups`, `people_labels`, `linkedin_connections`, `linkedin_messages`, `linkedin_recommendations`, `linkedin_imports`, `imessage_handles`, `imessage_chats`, `imessage_messages`, `imessage_imports`, `whatsapp_handles`, `whatsapp_chats`, `whatsapp_chat_members`, `whatsapp_messages`, `whatsapp_imports`, `outreach_contacts`, `outreach_opportunities`, `outreach_events`, `campaign_companies`, `campaign_contacts`, `campaign_runs`, `campaign_events`, `linkedin_outbox`, `linkedin_sender_state` (written only by local scripts, through `services/linkedin_outbox.py`); schema in `repo/schema.sql` |
 | **Google Contacts** | People API v1 via `clients/google_contacts.py` — OAuth refresh-token creds, scope `https://www.googleapis.com/auth/contacts`; reuses schedule's OAuth client (`google-calendar-client-id`/`-secret`, data sources), a people-owned refresh token (`google-contacts-refresh-token`) |
 | **HubSpot** | `clients/hubspot.py` (ported from inbox) — contacts search/create/update/archive, email engagement create; bounded mirror, see §HubSpot below |
 | **Local Graph import** | `clients/graph_local.py` — device-code MSAL auth for `scripts/import_contacts.py` only; people's Cloud Functions never call Graph |
 | **Referral outreach** | `services/outreach.py` stage machine over `outreach_*`; `email_sent` from `OUTREACH_FROM_ADDRESSES` proves *briefed*, `email_classified` proves *replied*; one completed Asana task per countable stage event via `clients/tasks_api.py` (Cloud Run IAM, `TASKS_API_URL`); CLI `scripts/outreach.py`, seed `scripts/outreach_seed.py`; follow-ups are `nudge` events on a `briefed` contact (+7/+14 days from the brief, propose close at +21); `outreach today` checks pace against `OUTREACH_TARGETS` (private TOML); skill `working-outreach-queue`; one machine-maintained Google Doc per pipeline person (`Outreach — <name>`, My Drive `Consulting/Outreach`, link in `outreach_contacts.doc_url`) written only by `outreach-sessions --write-doc` via docs-api (`clients/docs_api.py`, `DOCS_API_URL`); `outreach-sessions` gives each person an agent-deck session (hint `person_id=<id>`, group `outreach`, parent `conductor-outreach`, Opus) via `deck-sessions` (`~/src/scripts/deck-sessions`): reopens a stopped/archived one with the reload prompt or launches a fresh one from the doc; agent-deck's registry is the only state (`~/.claude/outreach-sessions.json` was retired by `--migrate`); `--prune` archives sessions of people at `introduced`/`declined`/`skipped`/`signed`/`lost` |
 | **Funded-founder campaign** | Cold email to technical buyers at freshly funded digital health companies. Tables `campaign_*`; `services/campaign.py` is the only writer (stage machine), with `campaign_verify/factcheck/draft/review/send/followups/report/targets.py` around it; CLI `scripts/campaign.py` (run, company, contact, review, send, resume, followups, weekly, bounced, optout, booked, report); skill `working-funded-founder-campaign`; `CAMPAIGN_TARGETS` private TOML in the consulting repo (`campaign_targets.toml`); env `CAMPAIGN_FROM_ADDRESS`, `CAMPAIGN_POSTAL_ADDRESS`, `APOLLO_API_KEY`, `HUNTER_API_KEY`; Apollo and Hunter clients (`clients/apollo.py`, `clients/hunter.py`) are CLI-only; `handlers/email_bounced.py` consumes inbox `email_bounced` events. One-time setup below. |
-| **LinkedIn MCP** | `.mcp.json` server `linkedin` — third-party `mcp-server-linkedin@latest` via `uvx` (auto-updates on launch), a headless browser signed in as Ben, session in `~/.linkedin-mcp/` (`uvx mcp-server-linkedin@latest --login` to sign in); reads inbox/threads for `checking-linkedin-messages`, sends for `staging-linkedin-message` only after Ben approves the exact text; `.claude/settings.json` puts every LinkedIn write tool on `ask` except `send_message` and `reply_to_conversation`, which run unprompted (Ben approves the exact text in chat first, per the skill). Local only; nothing deployed uses it |
+| **LinkedIn MCP** | `.mcp.json` server `linkedin` — third-party `mcp-server-linkedin@latest` via `uvx` (auto-updates on launch), a headless browser signed in as Ben, session in `~/.linkedin-mcp/` (`uvx mcp-server-linkedin@latest --login` to sign in); reads inbox/threads for `checking-linkedin-messages`, sends for `staging-linkedin-message` only after Ben approves the exact text; `send_message` is the **only** send tool (`reply_to_conversation` does not exist as of 4.29.0; the `.claude/settings.*` entries naming it are harmless and left alone); `.claude/settings.json` puts every LinkedIn write tool on `ask` except `send_message`, which runs unprompted (Ben approves the exact text in chat first, per the skill). Local only; nothing deployed uses it |
+| **LinkedIn send queue** | Approved LinkedIn messages go to `linkedin_outbox` (`outreach linkedin queue`, `scripts/outreach_linkedin.py`); `scripts/linkedin_sender.py` sends at most one per run, run by launchd agent `cloud.drolet.people.linkedin-sender` every 120 s (`scripts/install-linkedin-sender.sh`, `--uninstall`, `--print`; log `~/Library/Logs/people-linkedin-sender.log`); weekdays 08:00–19:00 Pacific, a random 3–8 min gap, ceiling 50/day and 250/week ramping from 30/day over the first 14 days; env `LINKEDIN_DAILY_CAP`, `LINKEDIN_WEEKLY_CAP`, `LINKEDIN_RAMP_START`, `LINKEDIN_RAMP_DAYS`, `LINKEDIN_GAP_MIN_SECONDS`, `LINKEDIN_GAP_MAX_SECONDS`, `LINKEDIN_SEND_WINDOW` (`"Mon-Fri 08:00-19:00 America/Los_Angeles"`), `LINKEDIN_MCP_VERSION` (pinned `4.29.0`: the sender runs `uvx mcp-server-linkedin==<v>`, because `services/linkedin_result.py` maps that version's result contract; bumping it is a hand step after reading the new `send_message` contract); a confirmed send to an outreach person records the brief/nudge (source `linkedin_outbox`); service name `people-linkedin-sender`, metrics `people.linkedin_*`; design `docs/superpowers/specs/2026-11-05-linkedin-send-queue-design.md` |
 | **Observability** | OTel → Grafana Cloud OTLP; metrics prefixed `people_` (outreach instruments are `people.outreach_*`) |
 | **Infra** | `terraform/` — GCS backend `bens-project-462804-tf-state`, state prefix `people` |
 
@@ -65,6 +66,7 @@ main.py                     CF entry points: process (Pub/Sub → email_classifi
 models/
   events.py                 EmailClassifiedEvent / EmailSentEvent TypedDicts — mirror inbox's payload
   linkedin.py               LinkedInConnection/Message/Recommendation/Snapshot dataclasses
+  linkedin_outbox.py        send-queue statuses/kinds/modes, SendConfig, Window
   imessage.py               IMessageHandle/Chat/Message/Batch dataclasses
   whatsapp.py               WhatsAppHandle/Chat/ChatMember/Message/Batch dataclasses
   outreach.py               stage/channel/source/lost-reason tuples, Advance, CohortCounts, FunnelCounts
@@ -86,6 +88,7 @@ clients/
   claude_cli.py             `claude -p` prompt wrapper for the fact check — CLI-only
   docs_api.py               docs-api: get / create / replace a doc, filing-catalog folder lookup — CLI-only (outreach-sessions)
   otel.py                   OTel setup + counters (people.* instruments)
+  linkedin_mcp.py           LinkedIn MCP over stdio (pinned version) for scripts/linkedin_sender.py only — session check, send_message
 repo/
   schema.sql                people (incl. contact-field columns), sync_state tables
   people.py                 all reads/writes on people — takes an open connection
@@ -96,12 +99,17 @@ repo/
   whatsapp.py               whatsapp_* snapshot: upserts, stats recompute, audit and re-point,
                              API read queries
   campaign.py               every SQL statement on campaign_*: companies, contacts, events, runs, reports
+  linkedin_outbox.py        every SQL statement on linkedin_outbox / linkedin_sender_state — decides nothing
   outreach.py               every SQL statement on outreach_*: writes, queue, follow-ups, report counts,
                              population, Asana-sync and seed sources — decides nothing
 services/
-  outreach.py               the only stage writer: transition / advance / advance_from_event / advance_from_sent, nudge, ranks, opportunities, merge_person, queue, follow_ups, today_counts, counts, is_outreach_sender
+  outreach.py               the only stage writer: transition / advance / advance_from_event / record_send (any channel) / advance_from_sent, nudge, ranks, opportunities, merge_person, queue, follow_ups, today_counts, counts, is_outreach_sender
   outreach_targets.py       pure: targets TOML → Targets (per_day, per_week, plan window, workdays)
-  outreach_today.py         pure: TodayCounts + Targets → pace verdicts and the daily screen
+  outreach_today.py         pure: TodayCounts + Targets → pace verdicts and the daily screen (incl. the LinkedIn queue line)
+  linkedin_outbox.py        the only linkedin_outbox writer: queue, apply_result/resolve, record_manual, edit, cancel,
+                             requeue, pause/resume, status, estimates, run_once (one sender tick, MCP injected)
+  linkedin_pacing.py        pure: send window, random gap, ramp-aware ceiling, Pacific day/week, the MCP's message-text rules
+  linkedin_result.py        pure: MCP send result / error code → row status + queue pause (never retries an unknown outcome)
   outreach_session.py       one person's DB snapshot (incl. recent 1:1 message text) → the
                              context block a per-person Claude session boots with
   outreach_doc.py           pure: contact-doc title, Messages render, a session's sections file, merge
@@ -170,7 +178,10 @@ scripts/
   import_imessage.py        import chat.db into the imessage_* tables — --full, --dry-run, --db
   import_whatsapp.py        import ChatStorage.sqlite into the whatsapp_* tables — --full, --dry-run, --db
   campaign.py               funded-founder campaign CLI: run, company, contact, review, send, resume, followups, weekly, bounced, optout, booked, report
-  outreach.py               referral outreach CLI: today, queue, decide, rank, mark, nudge, intro, conversation, lost, lead, doc, draft, followups, report, sync-asana
+  outreach.py               referral outreach CLI: today, queue, decide, rank, mark, nudge, intro, conversation, lost, lead, doc, draft, followups, report, sync-asana, linkedin
+  outreach_linkedin.py      `outreach linkedin` queue|list|cancel|edit|result|record|requeue|pause|resume|status
+  linkedin_sender.py        the launchd sender: one run_once tick, logs one word, never message text
+  install-linkedin-sender.sh  install / --uninstall / --print the launchd agent (never run by link-skills.sh)
   outreach_seed.py          propose outreach candidates, link or create LinkedIn-only people — --dry-run
 terraform/                  main, variables, secrets, cloudsql, pubsub, cloud_functions, iam, api, scheduler
 tests/                      one test module per unit
@@ -223,6 +234,7 @@ exactly as tasks and schedule do.
 | `linkedin_*` tables | LinkedIn data export | Export → DB on manual import (`scripts/import_linkedin.py`). Never written back anywhere; LinkedIn is not a source for any `people` field. |
 | `imessage_*` tables | `chat.db` on Ben's Mac | chat.db → DB on local import (`scripts/import_imessage.py`). Never written back anywhere; iMessage is not a source for any `people` field. |
 | `whatsapp_*` tables | WhatsApp's local store on Ben's Mac | Store → DB on local import (`scripts/import_whatsapp.py`). Never written back anywhere; WhatsApp is not a source for any `people` field. |
+| `linkedin_outbox`, `linkedin_sender_state` | DB (`services/linkedin_outbox.py` is the only writer; local scripts only) | Never derived from anything; the message text stays in the DB (never logged, never a metric label, never Asana). `person_id` is `ON DELETE SET NULL`. |
 | `outreach_*` tables | DB (`services/outreach.py` is the only stage writer) | Never derived from Google; the Asana tasks are derived from `outreach_events` and retried nightly. Pipeline rows CASCADE with their person. |
 | `outreach_contacts.doc_url` and the contact doc | DB holds the link (`services/outreach.py::set_doc`); the doc lives in Drive | `outreach-sessions --write-doc` creates or merges it: Ben's notes and the log are kept, Messages is regenerated from the DB. Never read back into the DB. The doc is the one place message text leaves the machine — Ben's private My Drive, indexed by docs-api (contact-docs spec D6). |
 | `phone_numbers`, `company`, `job_title`, `google_fields` | Google Contacts | Google → DB on link, nightly sync, and after every `PATCH`. Event data never writes them; never pushed to HubSpot (contact-field-edits design §4.1). |
@@ -232,7 +244,7 @@ Contacts plus a full sync; counters rebuild via `scripts/import_contacts.py`.
 The LinkedIn snapshot rebuilds by re-running `scripts/import_linkedin.py` on the latest export.
 The iMessage snapshot rebuilds by re-running `scripts/import_imessage.py --full` against `chat.db`.
 The WhatsApp snapshot rebuilds by re-running `scripts/import_whatsapp.py --full` against the local store.
-The `outreach_*` tables do **not** rebuild from anything. Export them before any `DELETE FROM people`: `pg_dump --data-only -t 'outreach_*'`.
+The `outreach_*` and `linkedin_outbox` tables do **not** rebuild from anything. Export them before any `DELETE FROM people`: `pg_dump --data-only -t 'outreach_*' -t 'linkedin_outbox' -t 'linkedin_sender_state'`.
 
 `scripts/merge_duplicate_contacts.py` calls `repo/whatsapp.py::repoint_person` from its
 `_collapse_rows`, beside its iMessage and LinkedIn re-points (and
@@ -241,6 +253,8 @@ and `whatsapp_chat_members.person_id` are `ON DELETE SET NULL`, so a merge that 
 first silently unlinks WhatsApp handles and memberships rather than moving them.
 It must also call `services/outreach.py::merge_person` there: the `outreach_*` tables
 CASCADE with their person, so deleting first would drop the pipeline history.
+It re-points `linkedin_outbox.person_id` too (`repo/linkedin_outbox.py::repoint_person`), which is
+`ON DELETE SET NULL`.
 
 ### Identity: id, email, phone (2026-09-24 design; adoption 2026-09-28)
 

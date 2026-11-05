@@ -42,8 +42,9 @@ O=".venv/bin/python scripts/outreach.py"
   message", "give me the text"), write it — don't refuse or argue the strategy
   back at him; it's his call (rule changed 2026-10-14). Write in his voice with
   `matching-writing-style`, from the talking points. LinkedIn:
-  `staging-linkedin-message`, which sends through the LinkedIn MCP **only after
-  Ben approves the exact text** (rule changed 2026-11-04). iMessage or WhatsApp:
+  `staging-linkedin-message`, which queues it for the paced LinkedIn sender
+  (or sends it now, on request) **only after Ben approves the exact text** (rule
+  changed 2026-11-04; queue 2026-11-05). iMessage or WhatsApp:
   give him the text to send. Email: dispatch `email-builder` with the consulting
   identity; it leaves a draft. **Never send anything else**, and never put a
   drafted message in the contact doc.
@@ -101,15 +102,29 @@ Then lead with `verdict` (`ON TRACK` / `ON PACE` / `BEHIND`) and the one next
 action: briefs still owed (`need_today`), then overdue nudges, then closes.
 If `low_queue` is true, say so and offer a reassessment.
 
+**`linkedin`** (the `LinkedIn` line, shown only when there's something there) is
+the LinkedIn send queue: `queued` approved messages not sent yet (with the
+oldest's age), `paused` (a reason: `login`, `account_restricted`,
+`set_aside_streak`, an MCP status, or `rate_limited`, which clears itself),
+`check_linkedin` sends whose outcome is unknown, `set_aside` ones that couldn't
+go, and `thread_mismatch` replies that may have opened a new DM. Pace counts a
+LinkedIn brief only once it has **sent**, so a batch approved late in the day
+reads as "N queued", not as behind pace: say so rather than pushing for more
+briefs. Anything `paused` or `check_linkedin` needs Ben: `outreach linkedin
+status` explains a pause (fix it, then `outreach linkedin resume`), and
+**checking-linkedin-messages** → "Resolving a check_linkedin row" handles the
+checks. `outreach linkedin list` shows set-aside rows and why.
+
 ## Brief
 
 1. Take the first item in `next_up` (rank order).
 2. Prep it (**Prep a brief**, below) — or start a session for it
    (**Start sessions**) so it preps in the background.
 3. Ben writes and sends the note himself. **Email** goes from the consulting
-   identity and records itself. **Any other channel:** after he confirms it
-   went, run
-   `$O mark <person> briefed --channel imessage|whatsapp|linkedin|call|in_person`.
+   identity and records itself. **LinkedIn** records itself too, through the
+   send queue (`staging-linkedin-message`; a hand send is recorded with
+   `$O linkedin record …`). **Any other channel:** after he confirms it went, run
+   `$O mark <person> briefed --channel imessage|whatsapp|call|in_person`.
 4. **Verify an email brief:** once Ben says it's sent, re-run
    `$O today --json`. The week's briefs should rise and the person should
    leave `next_up`. If not, it most likely went from the default sender and
@@ -237,9 +252,10 @@ Give Ben talking points for each nudge; write the nudge itself only if he asks
   consulting identity.
 - **`nudge 2`:** use `suggested_channel` when it is set (otherwise the same
   channel). Points for a graceful exit: no pressure, door open.
-- A non-email nudge, after Ben confirms it went:
+- A nudge by iMessage, WhatsApp, call or in person, after Ben confirms it went:
   `$O nudge <person> --channel <c> [--note "..."]`. Email nudges record
-  themselves; verify them against `nudges_week` as for briefs.
+  themselves; verify them against `nudges_week` as for briefs. LinkedIn nudges
+  record themselves when the send queue sends them (`staging-linkedin-message`).
 
 ## Close
 
@@ -264,8 +280,8 @@ The note is free text. A late reply later is `$O mark <person> replied --channel
    The seed creates LinkedIn-only people itself (label `from-linkedin`) and
    lists possible duplicates for Ben to resolve by adding the LinkedIn URL to
    the existing contact with `editing-person`. A LinkedIn-only person has no
-   email, so their brief is never email-proven: record it with
-   `outreach mark <person> briefed --channel linkedin` after Ben confirms.
+   email, so their brief is never email-proven: it goes by LinkedIn through
+   `staging-linkedin-message`, which records it when it sends.
 
 ## Record outcomes
 
