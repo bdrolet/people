@@ -670,3 +670,10 @@ def test_today_summary(env):
     s = svc.today_summary(env["conn"], now=NOW, cfg=CFG)
     assert s["queued"] == 1 and s["oldest_age_hours"] == 5.0
     assert s["paused"] == "login" and s["check_linkedin"] == 0
+
+
+def test_list_rows_filters_by_status(env):
+    _queue(env)
+    _queue(env, send_now=True, message="b")
+    assert [r["id"] for r in svc.list_rows(env["conn"], ("queued",))] == [1]
+    assert len(svc.list_rows(env["conn"], None)) == 2

@@ -19,6 +19,8 @@
   python scripts/outreach.py followups
   python scripts/outreach.py report [--floors PATH] [--since D] [--until D]
   python scripts/outreach.py sync-asana
+  python scripts/outreach.py linkedin queue|list|cancel|edit|result|record|requeue|pause|resume|status
+                                  (scripts/outreach_linkedin.py: the LinkedIn send queue)
 
 <person> is an email, an E.164 phone, or a people id. --at takes YYYY-MM-DD (noon, New
 York time) or a full ISO timestamp; it defaults to now. Every stage change is committed
@@ -53,6 +55,8 @@ import clients.otel as otel
 from clients import inbox_api
 from models.outreach import CHANNELS, LOST_REASONS, REFERRER_STAGES, Advance
 from services import (
+    linkedin_outbox,
+    linkedin_pacing,
     outreach,
     outreach_report,
     outreach_sync,
@@ -62,6 +66,8 @@ from services import (
     person_lookup,
 )
 from services.ingest import parse_ts
+
+from scripts import outreach_linkedin  # noqa: E402  (needs the repo root on sys.path)
 
 LABEL = "consulting-outreach"  # Google Contacts label marking cohort membership (spec §7.1)
 MARK_STAGES = ("briefed", "replied", "declined", "to_contact")
@@ -83,6 +89,7 @@ USER_ERRORS = (
     inbox_api.InboxApiUnavailable,
     httpx.HTTPError,
     ValueError,
+    *outreach_linkedin.ERRORS,
 )
 
 
@@ -294,6 +301,9 @@ def cmd_today(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -
         plan_end=targets.end,
         fresh_since=now - timedelta(hours=outreach_today.FRESH_HOURS),
     )
+    counts.linkedin = linkedin_outbox.today_summary(
+        conn, now=now, cfg=linkedin_pacing.load_config(os.environ)
+    )
     today = outreach_today.build(counts, targets, now=now)
     print(outreach_today.to_json(today) if args.json else outreach_today.render(today), file=out)
 
@@ -465,6 +475,7 @@ COMMANDS: dict[str, Callable[[Any, argparse.Namespace, TextIO, datetime], None]]
     "followups": cmd_followups,
     "report": cmd_report,
     "sync-asana": cmd_sync_asana,
+    "linkedin": outreach_linkedin.cmd_linkedin,
 }
 
 
@@ -530,6 +541,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--since")
     r.add_argument("--until")
     sub.add_parser("sync-asana")
+    outreach_linkedin.register(sub)
     return p
 
 

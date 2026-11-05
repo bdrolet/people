@@ -336,6 +336,10 @@ def resume(conn: Any) -> dict:
     )
 
 
+def list_rows(conn: Any, statuses: tuple[str, ...] | None) -> list[dict]:
+    return repo.list_rows(conn, statuses)
+
+
 def estimate_send_times(conn: Any, *, now: datetime, cfg: SendConfig) -> dict[int, datetime | None]:
     """When each queued row should go, in claim order: the gap after the last send, the
     minimum gap after that, inside the window, under today's cap. Approximate (real gaps

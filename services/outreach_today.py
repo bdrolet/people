@@ -50,6 +50,7 @@ class Today:
     nudges: list[dict]
     closes: list[dict]
     fresh: list[dict]  # who on the list messaged Ben in the last FRESH_HOURS, newest first
+    linkedin: dict | None = None  # services.linkedin_outbox.today_summary
 
 
 def workdays(start: date, end: date, days: frozenset[int]) -> int:
@@ -149,6 +150,7 @@ def build(counts: TodayCounts, targets: Targets, *, now: datetime) -> Today:
         nudges=nudges,
         closes=closes,
         fresh=counts.fresh,
+        linkedin=counts.linkedin,
     )
 
 
@@ -204,6 +206,27 @@ def _fresh_line(item: dict) -> str:
     return f"  {_name(item['person']):<18}{' · '.join(parts)}"
 
 
+def _linkedin_line(s: dict | None) -> str | None:
+    """The send queue's state when there is something to act on or wait for; a pace
+    verdict counts a LinkedIn brief only once it is sent, so this line is what shows
+    approved work that hasn't gone out yet."""
+    if not s:
+        return None
+    parts = []
+    if s["queued"]:
+        age = f" (oldest {s['oldest_age_hours']:.1f}h)" if s["oldest_age_hours"] is not None else ""
+        parts.append(f"{s['queued']} queued{age}")
+    if s["paused"]:
+        parts.append(f"PAUSED: {s['paused']} (outreach linkedin status)")
+    if s["check_linkedin"]:
+        parts.append(f"{s['check_linkedin']} to check on LinkedIn")
+    if s["set_aside"]:
+        parts.append(f"{s['set_aside']} set aside")
+    if s["thread_mismatch"]:
+        parts.append(f"{s['thread_mismatch']} may have opened a new DM")
+    return "LinkedIn " + " · ".join(parts) if parts else None
+
+
 def render(t: Today) -> str:
     head = f"Outreach: {t.day:%a %Y-%m-%d}"
     lines = [f"{head:<60}{t.verdict}", ""]
@@ -232,6 +255,9 @@ def render(t: Today) -> str:
     overdue = f" ({t.nudges_overdue} overdue)" if t.nudges_overdue else ""
     lines.append(f"Nudges   due {t.nudges_due}{overdue} · sent this week {t.nudges_week}")
     lines.append(f"Queue    {t.queue_depth} at to_contact ({t.queue_workdays:.1f} workdays)")
+    linkedin = _linkedin_line(t.linkedin)
+    if linkedin:
+        lines.append(linkedin)
     if t.low_queue:
         lines.append(
             f"Queue low: {t.queue_depth} at to_contact ({t.queue_workdays:.1f} workdays). "

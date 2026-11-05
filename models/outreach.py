@@ -63,3 +63,5 @@ class TodayCounts:
     next_up: list[dict]  # services.outreach.queue_item dicts, rank order
     # services.outreach.fresh_item dicts: who on the list messaged Ben recently, newest first
     fresh: list[dict] = field(default_factory=list)
+    # services.linkedin_outbox.today_summary: the LinkedIn send queue's state, or None
+    linkedin: dict | None = None
