@@ -49,6 +49,7 @@ def run(monkeypatch):
     monkeypatch.setattr(cli.otel, "flush", lambda: None)
     monkeypatch.setattr(cli.outreach, "record_population", lambda c, today: None)
     monkeypatch.setattr(cli.person_lookup, "resolve", lambda c, ident: dict(ALICE))
+    monkeypatch.setattr(cli.linkedin_outbox, "today_summary", lambda c, now, cfg: None)
 
     def sync_events(c, ids):
         conn.log.append(("sync", list(ids)))

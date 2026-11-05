@@ -1037,3 +1037,35 @@ def test_today_counts_without_a_window_reads_no_messages(monkeypatch):
     repo = _QuietRepo([FRESH_ROW])
     monkeypatch.setattr(svc, "outreach_repo", repo)
     assert _today().fresh == [] and repo.seen == []
+
+
+def test_record_send_briefs_to_contact_on_linkedin(repo):
+    _at(repo, 1, "to_contact")
+    got = svc.record_send(None, 1, at=TS, channel="linkedin", source="linkedin_outbox")
+    assert got == ("briefed", 1)
+    assert repo.contacts[1]["stage"] == "briefed" and repo.contacts[1]["channel"] == "linkedin"
+    assert repo.events[0]["channel"] == "linkedin"
+    assert repo.events[0]["source"] == "linkedin_outbox"
+
+
+def test_record_send_nudges_briefed(repo):
+    _briefed(repo)
+    at = BRIEF + timedelta(days=7)
+    got = svc.record_send(None, 1, at=at, channel="linkedin", source="linkedin_outbox")
+    assert got == ("nudge", 1)
+    assert repo.events[0]["stage"] == "nudge" and repo.events[0]["channel"] == "linkedin"
+
+
+@pytest.mark.parametrize("stage", ["candidate", "replied", "introduced", "declined", "skipped"])
+def test_record_send_ignores_other_stages(repo, stage):
+    _briefed(repo)
+    repo.contacts[1]["stage"] = stage
+    at = BRIEF + timedelta(days=8)
+    assert svc.record_send(None, 1, at=at, channel="linkedin", source="linkedin_outbox") is None
+    assert repo.events == []
+
+
+def test_linkedin_outbox_is_an_event_source():
+    from models.outreach import SOURCES
+
+    assert "linkedin_outbox" in SOURCES

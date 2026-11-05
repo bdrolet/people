@@ -1,5 +1,6 @@
 import logging
 import os
+from collections.abc import Callable
 
 from opentelemetry import metrics, trace
 from opentelemetry._logs import set_logger_provider
@@ -43,6 +44,11 @@ outreach_sync: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop"
 outreach_report_runs: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
 outreach_nudges: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
 
+# LinkedIn send queue (send-queue design, "Metrics"). No person, username or text in labels.
+linkedin_sends: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
+linkedin_queued: metrics.Counter = metrics.NoOpMeter("noop").create_counter("noop")
+linkedin_approval_to_send: metrics.Histogram = metrics.NoOpMeter("noop").create_histogram("noop")
+
 # Observable gauges read these at export time (each flush). services/outreach.py's
 # record_population() refreshes them from the DB on every people-sync run and every
 # outreach CLI invocation (outreach spec §12.2).
@@ -64,6 +70,47 @@ def _observe_follow_ups_due(options: CallbackOptions) -> list[Observation]:
     return [] if _outreach_follow_ups_due is None else [Observation(_outreach_follow_ups_due)]
 
 
+# The sender's gauges, refreshed by services/linkedin_outbox.py on every run and read at
+# export time. Keys: queue_depth, oldest_age_seconds, sends_today, sends_week, cap_today,
+# cap_week, heartbeat, paused.
+_linkedin_gauges: dict[str, float] = {}
+_linkedin_paused_reason: str | None = None
+
+
+def set_linkedin_gauges(values: dict[str, float], paused_reason: str | None) -> None:
+    global _linkedin_gauges, _linkedin_paused_reason
+    _linkedin_gauges = dict(values)
+    _linkedin_paused_reason = paused_reason
+
+
+def _linkedin_gauge(key: str) -> Callable[[CallbackOptions], list[Observation]]:
+    def observe(options: CallbackOptions) -> list[Observation]:
+        if key not in _linkedin_gauges:
+            return []
+        if key == "paused":
+            return [
+                Observation(_linkedin_gauges[key], {"reason": _linkedin_paused_reason or "none"})
+            ]
+        return [Observation(_linkedin_gauges[key])]
+
+    return observe
+
+
+_LINKEDIN_GAUGES = {
+    "queue_depth": ("people.linkedin_queue_depth", "Queued LinkedIn messages"),
+    "oldest_age_seconds": (
+        "people.linkedin_queue_oldest_age_seconds",
+        "Age of the oldest queued LinkedIn message",
+    ),
+    "sends_today": ("people.linkedin_sends_today", "LinkedIn sends counted today (Pacific)"),
+    "sends_week": ("people.linkedin_sends_week", "LinkedIn sends counted this week (Pacific)"),
+    "cap_today": ("people.linkedin_cap_today", "Today's LinkedIn ceiling, ramp included"),
+    "cap_week": ("people.linkedin_cap_week", "This week's LinkedIn ceiling, ramp included"),
+    "heartbeat": ("people.linkedin_sender_heartbeat", "Unix time of the last sender run"),
+    "paused": ("people.linkedin_sender_paused", "1 while the LinkedIn queue is paused"),
+}
+
+
 def setup_telemetry(service_name: str) -> None:
     """
     Initialize OTel MeterProvider, TracerProvider, and LoggerProvider targeting
@@ -75,7 +122,7 @@ def setup_telemetry(service_name: str) -> None:
     global hubspot_engagements_logged, external_errors, api_requests, errors
     global whatsapp_import_messages, whatsapp_import_handles, whatsapp_import_duration
     global outreach_stage_events, outreach_lost, outreach_sync, outreach_report_runs
-    global outreach_nudges
+    global outreach_nudges, linkedin_sends, linkedin_queued, linkedin_approval_to_send
 
     endpoint = os.environ.get("GRAFANA_OTLP_ENDPOINT")
     if not endpoint:
@@ -160,6 +207,22 @@ def setup_telemetry(service_name: str) -> None:
         callbacks=[_observe_follow_ups_due],
         description="Briefed contacts whose follow-up date has arrived",
     )
+
+    linkedin_sends = meter.create_counter(
+        "people.linkedin_sends", description="LinkedIn send outcomes by outcome/mode/kind"
+    )
+    linkedin_queued = meter.create_counter(
+        "people.linkedin_queued", description="LinkedIn messages approved, by kind/mode"
+    )
+    linkedin_approval_to_send = meter.create_histogram(
+        "people.linkedin_approval_to_send_seconds",
+        unit="s",
+        description="Approval to confirmed LinkedIn send",
+    )
+    for key, (name, description) in _LINKEDIN_GAUGES.items():
+        meter.create_observable_gauge(
+            name, callbacks=[_linkedin_gauge(key)], description=description
+        )
 
     # --- Logs ---
     log_provider = LoggerProvider(resource=resource)

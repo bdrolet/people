@@ -17,7 +17,8 @@ BUYER_STAGES = ("intro", "conversation", "proposal", "signed", "lost")
 # never stored in outreach_contacts.stage, never a CLI stage choice, never an Asana task.
 ACTIVITY_KINDS = ("nudge",)
 CHANNELS = ("email", "imessage", "whatsapp", "linkedin", "call", "in_person")
-SOURCES = ("event", "cli", "hubspot", "seed")
+# linkedin_outbox: a LinkedIn send recorded by the send queue (send-queue design).
+SOURCES = ("event", "cli", "hubspot", "seed", "linkedin_outbox")
 LOST_REASONS = ("no_budget", "no_fit", "price", "scope", "timing", "no_response", "other")
 # The stages `outreach report` measures against the floors (spec §9), in funnel order.
 REPORT_STAGES = ("replied", "intro", "conversation", "proposal", "signed")
@@ -62,3 +63,5 @@ class TodayCounts:
     next_up: list[dict]  # services.outreach.queue_item dicts, rank order
     # services.outreach.fresh_item dicts: who on the list messaged Ben recently, newest first
     fresh: list[dict] = field(default_factory=list)
+    # services.linkedin_outbox.today_summary: the LinkedIn send queue's state, or None
+    linkedin: dict | None = None

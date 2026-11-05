@@ -56,6 +56,7 @@ load_dotenv()
 from clients import google_contacts as gc
 from repo import imessage as imessage_repo
 from repo import linkedin as linkedin_repo
+from repo import linkedin_outbox as linkedin_outbox_repo
 from repo import people as people_repo
 from repo import whatsapp as whatsapp_repo
 from services import outreach
@@ -323,6 +324,10 @@ def _collapse_rows(conn: Any, survivor: dict, loser_rns: list[str]) -> dict[str,
         # outreach_* rows are ON DELETE CASCADE, not SET NULL: deleting first would
         # erase the loser's referral stage, events and opportunities outright.
         counts["links_repointed"] += outreach.merge_person(conn, row["id"], keeper["id"])
+        # linkedin_outbox.person_id is ON DELETE SET NULL: move the send history too.
+        counts["links_repointed"] += linkedin_outbox_repo.repoint_person(
+            conn, row["id"], keeper["id"]
+        )
         people_repo.delete(conn, row["id"])
         counts["rows_deleted"] += 1
     return counts

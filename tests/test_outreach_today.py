@@ -249,3 +249,36 @@ def test_fresh_messages_lead_the_screen():
 def test_no_fresh_section_when_nobody_wrote():
     text = render(build(_counts(), TARGETS, now=_at(date(2026, 10, 14))))
     assert text.splitlines()[2].startswith("Briefs") and "Fresh" not in text
+
+
+def test_today_renders_linkedin_line():
+    linkedin = {
+        "queued": 3,
+        "oldest_age_hours": 5.0,
+        "paused": "login",
+        "check_linkedin": 1,
+        "set_aside": 2,
+        "thread_mismatch": 1,
+    }
+    t = build(_counts(linkedin=linkedin), TARGETS, now=_at(date(2026, 10, 13)))
+    text = render(t)
+    line = next(ln for ln in text.splitlines() if ln.startswith("LinkedIn"))
+    assert "3 queued (oldest 5.0h)" in line
+    assert "PAUSED: login" in line and "1 to check" in line and "2 set aside" in line
+    assert "1 may have opened a new DM" in line
+    assert json.loads(to_json(t))["linkedin"]["queued"] == 3
+
+
+def test_today_omits_a_quiet_linkedin_line():
+    quiet = {
+        "queued": 0,
+        "oldest_age_hours": None,
+        "paused": None,
+        "check_linkedin": 0,
+        "set_aside": 0,
+        "thread_mismatch": 0,
+    }
+    t = build(_counts(linkedin=quiet), TARGETS, now=_at(date(2026, 10, 13)))
+    assert "LinkedIn" not in render(t)
+    t = build(_counts(), TARGETS, now=_at(date(2026, 10, 13)))
+    assert "LinkedIn" not in render(t)

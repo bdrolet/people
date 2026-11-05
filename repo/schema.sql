@@ -612,3 +612,61 @@ CREATE INDEX IF NOT EXISTS campaign_events_status_at_idx ON campaign_events (sta
 
 -- A hard bounce (inbox non-delivery report, spec §10.2) marks the address, not the contact.
 ALTER TABLE people ADD COLUMN IF NOT EXISTS email_bounced_at TIMESTAMPTZ;
+
+-- LinkedIn send queue (docs/superpowers/specs/2026-11-05-linkedin-send-queue-design.md).
+-- One row per approved LinkedIn message, written only by local scripts through
+-- services/linkedin_outbox.py. `message` is the exact approved text, already normalized
+-- the way the MCP sends it; it is personal data, never logged or put in a metric.
+CREATE TABLE IF NOT EXISTS linkedin_outbox (
+    id                 BIGSERIAL PRIMARY KEY,
+    person_id          BIGINT REFERENCES people(id) ON DELETE SET NULL,
+    linkedin_username  TEXT NOT NULL,          -- the recipient slug passed to send_message
+    profile_urn        TEXT,                   -- optional, for the MCP's recipient check
+    thread_id          TEXT,                   -- the thread a reply was meant for
+    message            TEXT NOT NULL,
+    kind               TEXT NOT NULL CHECK (kind IN ('brief','nudge','reply','other')),
+    mode               TEXT NOT NULL CHECK (mode IN ('queued','send_now','manual')),
+    status             TEXT NOT NULL CHECK (status IN
+                         ('queued','sending','sent','set_aside','check_linkedin','cancelled')),
+    reason             TEXT,                   -- MCP status or error code behind the status
+    approved_at        TIMESTAMPTZ NOT NULL,
+    not_before         TIMESTAMPTZ,
+    attempted_at       TIMESTAMPTZ,
+    sent_at            TIMESTAMPTZ,
+    sent_thread_id     TEXT,                   -- the thread the MCP saw the sent message in
+    thread_mismatch    BOOLEAN NOT NULL DEFAULT FALSE,  -- sent, but not into thread_id
+    outreach_event_id  BIGINT REFERENCES outreach_events(id) ON DELETE SET NULL,
+    session_hint       TEXT,                   -- which agent-deck session queued it
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS linkedin_outbox_status_idx ON linkedin_outbox (status, approved_at);
+CREATE INDEX IF NOT EXISTS linkedin_outbox_person_idx ON linkedin_outbox (person_id);
+
+-- Queue-wide sender state: exactly one row.
+CREATE TABLE IF NOT EXISTS linkedin_sender_state (
+    id                      SMALLINT PRIMARY KEY CHECK (id = 1),
+    paused_until            TIMESTAMPTZ,       -- rate_limited backoff; clears itself
+    paused_reason           TEXT,              -- a hold only `outreach linkedin resume` clears
+    last_sent_at            TIMESTAMPTZ,
+    next_gap_seconds        INTEGER,
+    ramp_started_on         DATE,              -- America/Los_Angeles date of the first row
+    consecutive_set_asides  SMALLINT NOT NULL DEFAULT 0,
+    last_error              TEXT,              -- a status or error code, never message text
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- outreach_events.source gains 'linkedin_outbox'. Replaced once: a database whose CHECK
+-- already names it is left alone, so the file stays safe to re-run.
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'outreach_events'::regclass
+          AND conname = 'outreach_events_source_check'
+          AND position('linkedin_outbox' in pg_get_constraintdef(oid)) > 0
+    ) THEN
+        ALTER TABLE outreach_events DROP CONSTRAINT IF EXISTS outreach_events_source_check;
+        ALTER TABLE outreach_events ADD CONSTRAINT outreach_events_source_check CHECK (source IN
+            ('event','cli','hubspot','seed','linkedin_outbox'));
+    END IF;
+END $$;

@@ -40,8 +40,9 @@ clicked row **read**. Opening a thread by `thread_id` marks that thread read too
    references.
 3. Tell Ben which threads you opened, because they won't show as unread anymore.
 
-**Never** call `archive_conversation`, `send_message`, `reply_to_conversation`
-or `connect_with_person` from this skill. Replying is **staging-linkedin-message**.
+**Never** call `archive_conversation`, `send_message` or `connect_with_person`
+from this skill (`send_message` is the only send tool; there is no
+`reply_to_conversation`). Replying is **staging-linkedin-message**.
 
 ## Login problems
 
@@ -79,6 +80,28 @@ ToolSearch call, `tabs_context_mcp` first, new tab). Open
 Find the thread with the messaging search box (never the composer), read it with
 `get_page_text`, then close the tab. Never type in the composer or click anything
 that changes state.
+
+## Resolving a check_linkedin row
+
+The LinkedIn send queue (`outreach linkedin …`, see **staging-linkedin-message**)
+marks a send `check_linkedin` when its outcome is unknown: `send_unconfirmed`,
+`outcome_unknown`, a sender run that crashed mid-send (`stale_sending`), or an
+error that can strike after submission. It is never retried automatically,
+because that could deliver it twice. `outreach today` and
+`outreach linkedin list --status check_linkedin` show them.
+
+For each one:
+
+1. `outreach linkedin list --status check_linkedin --show-text` for the
+   recipient (`linkedin_username`), the approval time and the exact text.
+2. Read that person's thread (`get_conversation` with the `linkedin_username`,
+   or a `thread_id` from `get_inbox`; it marks the thread read) and look for the
+   text after the approval time.
+3. It's there: `outreach linkedin result <id> --status sent [--thread-id <id>]`.
+   This records the brief or nudge, exactly as a confirmed send would.
+4. It's not there: `outreach linkedin requeue <id>` puts it back in line. Only
+   requeue once you've seen the thread without it.
+5. Can't tell (the MCP is down, the thread won't load): leave it and tell Ben.
 
 ## Reporting
 
