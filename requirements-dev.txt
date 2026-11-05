@@ -2,6 +2,8 @@
 msal>=1.28
 requests>=2.31
 google-auth-oauthlib>=1.2
+# LinkedIn send queue's local sender (clients/linkedin_mcp.py) — never in requirements.txt:
+mcp>=2.3,<3
 
 ruff>=0.4
 mypy>=1.10

@@ -41,7 +41,7 @@ RESOLVE_STATUSES = ("sent", "set_aside", "check_linkedin")
 
 
 class Sender(Protocol):
-    def session_usable(self) -> bool: ...
+    def session_problem(self) -> str | None: ...
 
     def send(self, username: str, message: str, profile_urn: str | None) -> dict: ...
 
@@ -508,7 +508,7 @@ def _send(
     stack = contextlib.ExitStack()
     try:
         sender = stack.enter_context(sender_factory())
-        usable = sender.session_usable()
+        problem = sender.session_problem()
     except Exception as e:  # nothing was submitted: put it back, try next tick
         stack.close()
         logger.warning("linkedin sender: MCP unavailable (%s)", type(e).__name__)
@@ -517,8 +517,8 @@ def _send(
         conn.commit()
         return "mcp_unavailable"
     try:
-        if not usable:
-            outcome = Outcome("queued", "login", "paused", pause="hold")
+        if problem is not None:
+            outcome = Outcome("queued", problem, "paused", pause="hold")
         else:
             try:
                 result = sender.send(row["linkedin_username"], row["message"], row["profile_urn"])
@@ -532,4 +532,4 @@ def _send(
             stack.close()
     apply_outcome(conn, row, outcome, now=now, cfg=cfg, rng=rng)
     conn.commit()
-    return "login" if not usable else outcome.metric
+    return problem if problem is not None else outcome.metric

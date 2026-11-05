@@ -136,8 +136,8 @@ class FakeSender:
         self.calls: list = []
         self.commits_before_send: int | None = None
 
-    def session_usable(self):
-        return self.usable
+    def session_problem(self):
+        return None if self.usable is True else (self.usable or "login")
 
     def send(self, username, message, profile_urn):
         self.calls.append((username, message, profile_urn))
@@ -377,6 +377,14 @@ def test_run_once_login_not_usable_holds_queue_and_keeps_row(env):
     assert env["repo"].state["paused_reason"] == "login"
     word, _ = _run(env)
     assert word == "paused"
+
+
+def test_restricted_account_holds_with_its_reason(env):
+    _queue(env)
+    sender = FakeSender(env["conn"], usable="account_restricted")
+    word, _ = _run(env, sender)
+    assert word == "account_restricted" and sender.calls == []
+    assert env["repo"].state["paused_reason"] == "account_restricted"
 
 
 def test_mcp_that_will_not_start_requeues_without_pause(env):
