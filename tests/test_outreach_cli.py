@@ -614,3 +614,24 @@ def test_queue_table_marks_people_with_a_doc(monkeypatch, run):
     assert code == 0 and "doc" in lines[0]
     assert "✓" in next(line for line in lines if "Alice" in line)
     assert "✓" not in next(line for line in lines if "Bob" in line)
+
+
+@pytest.mark.parametrize("word,verdict", [("yes", True), ("no", False)])
+def test_qualify_records_the_verdict(monkeypatch, run, word, verdict):
+    seen = {}
+
+    def qualify(c, oid, v, **kw):
+        seen.update(oid=oid, verdict=v, **kw)
+        return Advance({"id": oid, "buyer_label": "Bo, Co", "qualified": v}, True, 31)
+
+    monkeypatch.setattr(cli.outreach, "qualify", qualify)
+    code, out, _ = run("qualify", "4", word)
+    assert code == 0 and seen == {"oid": 4, "verdict": verdict, "at": NOW}
+    assert out.strip() == f"opportunity 4 (Bo, Co): {'qualified' if verdict else 'not qualified'}"
+    assert "commit" in run.conn.log
+    assert not any(isinstance(e, tuple) for e in run.conn.log)  # a verdict makes no task
+
+
+def test_qualify_refuses_anything_but_yes_or_no(run):
+    with pytest.raises(SystemExit):
+        run("qualify", "4", "maybe")

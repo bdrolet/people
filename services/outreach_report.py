@@ -112,7 +112,7 @@ def table(headers: list[str], rows: list[list]) -> str:
 def _total(counts: FunnelCounts) -> CohortCounts:
     t = CohortCounts(cohort_week=None)
     for c in counts.cohorts:
-        for stage in ("briefed", *REPORT_STAGES):
+        for stage in ("briefed", "qualified", *REPORT_STAGES):
             setattr(t, stage, getattr(t, stage) + getattr(c, stage))
     return t
 
@@ -124,11 +124,13 @@ def _cohort_row(label: str, c: CohortCounts) -> list:
         c.replied,
         c.intro,
         c.conversation,
+        c.qualified,
         c.proposal,
         c.signed,
         pct(c.replied, c.briefed),
         pct(c.intro, c.briefed),
         pct(c.conversation, c.briefed),
+        pct(c.qualified, c.briefed),
     ]
 
 
@@ -143,11 +145,13 @@ def render(counts: FunnelCounts, verdicts: list[StageVerdict] | None = None) -> 
                 "Replied",
                 "Intro",
                 "Conv",
+                "Qual",
                 "Prop",
                 "Signed",
                 "Reply%",
                 "Intro%",
                 "Conv%",
+                "Qual%",
             ],
             rows,
         )

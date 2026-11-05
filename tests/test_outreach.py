@@ -163,6 +163,8 @@ class FakeRepo:
             "proposal_at": None,
             "signed_at": None,
             "lost_at": None,
+            "qualified": None,
+            "qualified_at": None,
         }
         return dict(self.opps[oid])
 
@@ -230,7 +232,12 @@ class Recorder:
 def repo(monkeypatch):
     fake = FakeRepo()
     monkeypatch.setattr(svc, "outreach_repo", fake)
-    for name in ("outreach_stage_events", "outreach_lost", "outreach_nudges"):
+    for name in (
+        "outreach_stage_events",
+        "outreach_lost",
+        "outreach_nudges",
+        "outreach_qualifications",
+    ):
         monkeypatch.setattr(svc.otel, name, Recorder())
     return fake
 
@@ -530,6 +537,8 @@ def test_record_population_labels_cohorts_by_iso_week(monkeypatch):
     monkeypatch.setattr(
         svc.otel, "set_outreach_population", lambda rows, due: seen.update(rows=rows, due=due)
     )
+    monkeypatch.setattr(svc.outreach_repo, "qualification_population", lambda c: [])
+    monkeypatch.setattr(svc.otel, "set_outreach_qualified", lambda rows: None)
     svc.record_population(None, today=date(2026, 10, 20))
     assert seen == {
         "rows": [
@@ -554,7 +563,14 @@ def test_counts_merges_referrer_and_buyer_rows_by_cohort(monkeypatch):
         svc.outreach_repo,
         "buyer_cohort_counts",
         lambda c, since, until: [
-            {"cohort_week": w1, "intro": 2, "conversation": 1, "proposal": 0, "signed": 0}
+            {
+                "cohort_week": w1,
+                "intro": 2,
+                "conversation": 1,
+                "qualified": 1,
+                "proposal": 0,
+                "signed": 0,
+            }
         ],
     )
     monkeypatch.setattr(
@@ -566,6 +582,7 @@ def test_counts_merges_referrer_and_buyer_rows_by_cohort(monkeypatch):
     out = svc.counts(None, today=date(2026, 10, 21))
     assert [c.cohort_week for c in out.cohorts] == [w1, w2]
     assert (out.cohorts[0].briefed, out.cohorts[0].replied, out.cohorts[0].intro) == (2, 1, 2)
+    assert out.cohorts[0].qualified == 1
     assert out.lost_reasons == {"timing": 1} and out.follow_ups_due == 4
 
 
@@ -1069,3 +1086,85 @@ def test_linkedin_outbox_is_an_event_source():
     from models.outreach import SOURCES
 
     assert "linkedin_outbox" in SOURCES
+
+
+def _opp(repo):
+    _at(repo, 1, "replied")
+    return svc.open_opportunity(None, 1, "Buyer, Co", at=TS).row["id"]
+
+
+def test_qualify_records_the_verdict_and_an_event(repo):
+    oid = _opp(repo)
+    res = svc.qualify(None, oid, True, at=TS)
+    assert res.changed and res.row["qualified"] is True and res.row["qualified_at"] == TS
+    ev = repo.events[-1]
+    assert (ev["pipeline"], ev["opportunity_id"], ev["stage"], ev["at"]) == (
+        "buyer",
+        oid,
+        "qualified",
+        TS,
+    )
+    assert svc.otel.outreach_qualifications.calls == [(1, {"verdict": "yes"})]
+
+
+def test_qualify_no_writes_a_not_qualified_event(repo):
+    oid = _opp(repo)
+    res = svc.qualify(None, oid, False, at=TS)
+    assert res.row["qualified"] is False and repo.events[-1]["stage"] == "not_qualified"
+    assert svc.otel.outreach_qualifications.calls == [(1, {"verdict": "no"})]
+
+
+def test_a_changed_verdict_keeps_its_history(repo):
+    oid = _opp(repo)
+    svc.qualify(None, oid, False, at=TS)
+    later = TS + timedelta(days=3)
+    res = svc.qualify(None, oid, True, at=later)
+    assert res.changed and res.row["qualified"] is True and res.row["qualified_at"] == later
+    assert [e["stage"] for e in repo.events if e.get("opportunity_id") == oid] == [
+        "intro",
+        "not_qualified",
+        "qualified",
+    ]
+
+
+def test_the_same_verdict_again_is_a_noop(repo):
+    oid = _opp(repo)
+    svc.qualify(None, oid, True, at=TS)
+    n = len(repo.events)
+    res = svc.qualify(None, oid, True, at=TS + timedelta(days=1))
+    assert not res.changed and res.event_id is None and len(repo.events) == n
+    assert res.row["qualified_at"] == TS
+
+
+def test_qualify_works_at_any_stage(repo):
+    oid = _opp(repo)
+    svc.advance_opportunity(None, oid, "lost", at=TS, lost_reason="timing")
+    assert svc.qualify(None, oid, False, at=TS).changed
+
+
+def test_qualify_unknown_opportunity(repo):
+    with pytest.raises(svc.OpportunityNotFound):
+        svc.qualify(None, 99, True, at=TS)
+
+
+def test_record_population_publishes_opportunities_by_verdict(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(svc.outreach_repo, "population", lambda c: [])
+    monkeypatch.setattr(svc.outreach_repo, "follow_ups_due_count", lambda c, today: 0)
+    monkeypatch.setattr(
+        svc.outreach_repo,
+        "qualification_population",
+        lambda c: [
+            {"qualified": True, "cohort_week": date(2026, 10, 12), "n": 2},
+            {"qualified": False, "cohort_week": date(2026, 10, 12), "n": 1},
+            {"qualified": None, "cohort_week": None, "n": 4},
+        ],
+    )
+    monkeypatch.setattr(svc.otel, "set_outreach_population", lambda rows, due: None)
+    monkeypatch.setattr(svc.otel, "set_outreach_qualified", lambda rows: seen.update(rows=rows))
+    svc.record_population(None, today=date(2026, 10, 20))
+    assert seen["rows"] == [
+        (2, {"verdict": "yes", "cohort_week": "2026-W42"}),
+        (1, {"verdict": "no", "cohort_week": "2026-W42"}),
+        (4, {"verdict": "pending", "cohort_week": "none"}),
+    ]

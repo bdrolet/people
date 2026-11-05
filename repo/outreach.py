@@ -12,8 +12,8 @@ _CONTACT_COLUMNS = """
 """
 _OPPORTUNITY_COLUMNS = """
     id, referrer_id, buyer_id, buyer_label, stage, lost_reason, intro_at,
-    conversation_at, proposal_at, signed_at, lost_at, hubspot_deal_id, notes,
-    created_at, updated_at
+    conversation_at, proposal_at, signed_at, lost_at, qualified, qualified_at,
+    hubspot_deal_id, notes, created_at, updated_at
 """
 _CONTACT_UPDATABLE = frozenset(
     {
@@ -39,6 +39,8 @@ _OPPORTUNITY_UPDATABLE = frozenset(
         "proposal_at",
         "signed_at",
         "lost_at",
+        "qualified",
+        "qualified_at",
         "buyer_id",
         "notes",
     }
@@ -466,6 +468,19 @@ def population(conn: Any) -> list[dict]:
     ).fetchall()
 
 
+def qualification_population(conn: Any) -> list[dict]:
+    """Opportunities per current verdict (TRUE, FALSE, NULL = pending) and referrer cohort
+    week, for the qualified-leads gauge."""
+    return conn.execute(
+        """
+        SELECT o.qualified, c.cohort_week, COUNT(*) AS n
+        FROM outreach_opportunities o
+        LEFT JOIN outreach_contacts c ON c.person_id = o.referrer_id
+        GROUP BY o.qualified, c.cohort_week
+        """
+    ).fetchall()
+
+
 # A cohort filter both bounds may leave open: NULL means "no bound". Each bound is passed
 # twice because pg8000 takes positional parameters only.
 _COHORT_FILTER = """
@@ -496,7 +511,8 @@ def referrer_cohort_counts(conn: Any, *, since: date | None, until: date | None)
 
 
 def buyer_cohort_counts(conn: Any, *, since: date | None, until: date | None) -> list[dict]:
-    """Opportunities per referrer cohort that ever reached each buyer stage."""
+    """Opportunities per referrer cohort that ever reached each buyer stage, plus those
+    whose current verdict is qualified."""
 
     def reached(stage: str) -> str:
         return (
@@ -507,7 +523,8 @@ def buyer_cohort_counts(conn: Any, *, since: date | None, until: date | None) ->
     return conn.execute(
         f"""
         SELECT c.cohort_week, COUNT(*) AS intro,
-               {reached("conversation")}, {reached("proposal")}, {reached("signed")}
+               {reached("conversation")}, {reached("proposal")}, {reached("signed")},
+               COUNT(*) FILTER (WHERE o.qualified) AS qualified
         FROM outreach_opportunities o
         LEFT JOIN outreach_contacts c ON c.person_id = o.referrer_id
         WHERE {_COHORT_FILTER}

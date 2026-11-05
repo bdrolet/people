@@ -291,6 +291,11 @@ The note is free text. A late reply later is `$O mark <person> replied --channel
 - An introduction: `$O intro <referrer> "<buyer name, company>" [--buyer <person>]`.
   It prints the opportunity id.
 - Buyer stages: `$O conversation|proposal|signed <opportunity-id>`.
+- Qualified lead: Ben decides when he meets them. After recording `conversation`,
+  ask him "qualified: yes or no?" and record exactly his answer with
+  `$O qualify <opportunity-id> yes|no`. Never guess or infer a verdict. It works at any
+  stage, and he can change it later (the history is kept). It makes no Asana task.
+  This is referral outreach only; the funded-founder campaign is a separate funnel.
 - Lost: `$O lost <opportunity-id> --reason no_budget|no_fit|price|scope|timing|no_response|other`.
 - After any recorded outcome — `mark`, `nudge`, `intro`, `lead`,
   `decide --skip` — update the contact doc: a Log line for what happened
