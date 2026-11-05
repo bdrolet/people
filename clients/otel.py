@@ -103,6 +103,15 @@ DASHBOARD_GAUGES = {
         "people.outreach_refreshed",
         "Unix time of the run that published the outreach gauges",
     ),
+    "linkedin_outbox": ("people.linkedin_outbox", "linkedin_outbox rows by status"),
+    "linkedin_daily": (
+        "people.linkedin_daily",
+        "LinkedIn messages approved and sent per Pacific day, by what/kind/day",
+    ),
+    "linkedin_queue_oldest_window_seconds": (
+        "people.linkedin_queue_oldest_window_seconds",
+        "Seconds the oldest queued LinkedIn message has waited inside the send window",
+    ),
 }
 _rows: dict[str, list[tuple[float, dict[str, str]]]] = {}
 

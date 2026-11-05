@@ -83,3 +83,28 @@ def test_target_rows():
         (150, {"target": "briefs_total"}),
         (4, {"target": "queue_low_water_days"}),
     ]
+
+
+def test_outbox_status_rows_fill_statuses():
+    rows = {a["status"]: v for v, a in g.outbox_status_rows({"queued": 3, "check_linkedin": 1})}
+    assert rows == {
+        "queued": 3,
+        "sending": 0,
+        "sent": 0,
+        "set_aside": 0,
+        "check_linkedin": 1,
+        "cancelled": 0,
+    }
+
+
+def test_linkedin_daily_rows_zero_filled():
+    today = date(2026, 11, 5)
+    rows = g.linkedin_daily_rows(
+        [{"what": "sent", "day": date(2026, 11, 4), "kind": "brief", "n": 6}], today=today
+    )
+    assert len(rows) == 14 * 2 * 4
+    by = {(a["what"], a["day"], a["kind"]): v for v, a in rows}
+    assert by[("sent", "2026-11-04", "brief")] == 6
+    assert by[("approved", "2026-11-04", "brief")] == 0
+    assert min(a["day"] for _, a in rows) == "2026-10-23"
+    assert max(a["day"] for _, a in rows) == "2026-11-05"

@@ -14,13 +14,13 @@ import contextlib
 import logging
 import random
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any, ContextManager, Protocol
 
 import clients.otel as otel
 from models.linkedin_outbox import KINDS, SendConfig
 from repo import linkedin_outbox as repo
-from services import outreach
+from services import dashboard_gauges, outreach
 from services.linkedin_pacing import (
     caps,
     day_bounds,
@@ -29,6 +29,7 @@ from services.linkedin_pacing import (
     next_window_start,
     normalize_message,
     week_bounds,
+    window_seconds,
 )
 from services.linkedin_result import Outcome, map_result
 
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 STALE_AFTER = timedelta(minutes=15)
 SET_ASIDE_STREAK = 3
 MISMATCH_LOOKBACK = timedelta(days=7)
+DAILY_DAYS = 14  # days of approved/sent history on the dashboard
 RESOLVE_STATUSES = ("sent", "set_aside", "check_linkedin")
 
 
@@ -437,6 +439,19 @@ def _emit_gauges(conn: Any, now: datetime, cfg: SendConfig) -> None:
             "paused": 1.0 if paused else 0.0,
         },
         paused,
+    )
+    today = _today(now, cfg)
+    since = datetime.combine(today - timedelta(days=DAILY_DAYS - 1), time(0), tzinfo=cfg.window.tz)
+    otel.set_rows("linkedin_outbox", dashboard_gauges.outbox_status_rows(repo.status_counts(conn)))
+    otel.set_rows(
+        "linkedin_daily",
+        dashboard_gauges.linkedin_daily_rows(
+            repo.daily_counts(conn, since=since, tz=cfg.window.tz.key), today=today, days=DAILY_DAYS
+        ),
+    )
+    otel.set_rows(
+        "linkedin_queue_oldest_window_seconds",
+        [(window_seconds(oldest, now, cfg.window) if oldest else 0.0, {})],
     )
 
 

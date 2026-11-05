@@ -3,8 +3,9 @@ Pure: each function turns numbers the CLIs already compute into (value, labels) 
 clients/otel.py::set_rows. Zero rows are kept so a stage or reason never drops out of a
 sum. No person, username or message text ever becomes a label."""
 
-from datetime import date
+from datetime import date, timedelta
 
+from models.linkedin_outbox import KINDS, STATUSES
 from models.outreach import LOST_REASONS, FunnelCounts
 from services.outreach_targets import Targets
 
@@ -12,6 +13,7 @@ Row = tuple[float, dict[str, str]]
 
 # The stages `outreach report` prints, in its column order.
 COHORT_STAGES = ("briefed", "replied", "intro", "conversation", "qualified", "proposal", "signed")
+DAILY_WHAT = ("approved", "sent")
 
 
 def iso_week(d: date | None) -> str:
@@ -55,3 +57,21 @@ def target_rows(t: Targets) -> list[Row]:
         (t.total, {"target": "briefs_total"}),
         (t.low_water_days, {"target": "queue_low_water_days"}),
     ]
+
+
+def outbox_status_rows(counts: dict[str, int]) -> list[Row]:
+    return [(counts.get(s, 0), {"status": s}) for s in STATUSES]
+
+
+def linkedin_daily_rows(rows: list[dict], *, today: date, days: int = 14) -> list[Row]:
+    """Approved and sent per day and kind for the last `days` days (today included),
+    zero-filled. `rows` carry what, day, kind and n (repo/linkedin_outbox.py::daily_counts)."""
+    n = {(r["what"], r["day"], r["kind"]): int(r["n"]) for r in rows}
+    out: list[Row] = []
+    for offset in range(days - 1, -1, -1):
+        day = today - timedelta(days=offset)
+        for what in DAILY_WHAT:
+            for kind in KINDS:
+                labels = {"what": what, "kind": kind, "day": day.isoformat()}
+                out.append((n.get((what, day, kind), 0), labels))
+    return out
