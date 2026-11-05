@@ -1,0 +1,1150 @@
+{
+  "annotations": {},
+  "description": "Is referral outreach working? Results on top, effort in the middle, the LinkedIn sender at the bottom. Built by dashboards/outreach.py in the people repo.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 0,
+      "panels": [],
+      "title": "Is outreach producing results?",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Last 12 brief cohorts. Qualified = current verdict yes.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "options": null,
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (cohort_week, stage) (last_over_time(people_outreach_cohort{stage=~\"intro|qualified\",cohort_week!=\"none\",cohort_week=~\"$cohort\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h])))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Qualified leads and introductions per brief week",
+      "transformations": [
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "desc": true,
+                "field": "cohort_week"
+              }
+            ]
+          }
+        },
+        {
+          "id": "groupingToMatrix",
+          "options": {
+            "columnField": "stage",
+            "rowField": "cohort_week",
+            "valueField": "Value"
+          }
+        },
+        {
+          "id": "limit",
+          "options": {
+            "limitField": 12
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "desc": false,
+                "field": "cohort_week\\stage"
+              }
+            ]
+          }
+        }
+      ],
+      "transparent": false,
+      "type": "barchart"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "People in the selected cohorts who ever reached each stage. With all cohorts selected this is `outreach report`'s All row.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "options": {
+        "displayMode": "gradient",
+        "minVizHeight": 10,
+        "minVizWidth": 0,
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": []
+        },
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (cohort_week) (last_over_time(people_outreach_cohort{stage=\"briefed\",cohort_week=~\"$cohort\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h]))))",
+          "instant": true,
+          "legendFormat": "Briefed",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (cohort_week) (last_over_time(people_outreach_cohort{stage=\"replied\",cohort_week=~\"$cohort\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h]))))",
+          "instant": true,
+          "legendFormat": "Replied",
+          "range": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (cohort_week) (last_over_time(people_outreach_cohort{stage=\"intro\",cohort_week=~\"$cohort\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h]))))",
+          "instant": true,
+          "legendFormat": "Intro",
+          "range": false,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (cohort_week) (last_over_time(people_outreach_cohort{stage=\"conversation\",cohort_week=~\"$cohort\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h]))))",
+          "instant": true,
+          "legendFormat": "Conversation",
+          "range": false,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (cohort_week) (last_over_time(people_outreach_cohort{stage=\"qualified\",cohort_week=~\"$cohort\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h]))))",
+          "instant": true,
+          "legendFormat": "Qualified",
+          "range": false,
+          "refId": "E"
+        }
+      ],
+      "title": "Conversion chain",
+      "transformations": [],
+      "transparent": false,
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "`outreach report`'s Reply%, Intro%, Conv% and Qual%.",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1,
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "options": null,
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (cohort_week) (last_over_time(people_outreach_cohort{stage=\"replied\",cohort_week=~\"$cohort\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h])))) / sum(max by (cohort_week) (last_over_time(people_outreach_cohort{stage=\"briefed\",cohort_week=~\"$cohort\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h]))))",
+          "instant": true,
+          "legendFormat": "Reply",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (cohort_week) (last_over_time(people_outreach_cohort{stage=\"intro\",cohort_week=~\"$cohort\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h])))) / sum(max by (cohort_week) (last_over_time(people_outreach_cohort{stage=\"briefed\",cohort_week=~\"$cohort\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h]))))",
+          "instant": true,
+          "legendFormat": "Intro",
+          "range": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (cohort_week) (last_over_time(people_outreach_cohort{stage=\"conversation\",cohort_week=~\"$cohort\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h])))) / sum(max by (cohort_week) (last_over_time(people_outreach_cohort{stage=\"briefed\",cohort_week=~\"$cohort\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h]))))",
+          "instant": true,
+          "legendFormat": "Conversation",
+          "range": false,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (cohort_week) (last_over_time(people_outreach_cohort{stage=\"qualified\",cohort_week=~\"$cohort\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h])))) / sum(max by (cohort_week) (last_over_time(people_outreach_cohort{stage=\"briefed\",cohort_week=~\"$cohort\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h]))))",
+          "instant": true,
+          "legendFormat": "Qualified",
+          "range": false,
+          "refId": "D"
+        }
+      ],
+      "title": "Conversion rates (per briefed)",
+      "transformations": [],
+      "transparent": false,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      },
+      "options": null,
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (verdict) (max by (verdict, cohort_week) (last_over_time(people_outreach_qualified_leads[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h]))))",
+          "instant": true,
+          "legendFormat": "{{verdict}}",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Qualified verdicts",
+      "transformations": [],
+      "transparent": false,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "options": {
+        "displayMode": "gradient",
+        "minVizHeight": 10,
+        "minVizWidth": 0,
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": []
+        },
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (lost_reason) (last_over_time(people_outreach_lost_reasons[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h])))",
+          "instant": true,
+          "legendFormat": "{{lost_reason}}",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Lost reasons",
+      "transformations": [],
+      "transparent": false,
+      "type": "bargauge"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "id": 0,
+      "panels": [],
+      "title": "Am I putting in the effort?",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "First briefs, as `outreach today` counts them, against the target.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 0,
+        "y": 15
+      },
+      "options": null,
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (last_over_time(people_outreach_activity{kind=\"first_briefs\",window=\"today\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h])))",
+          "instant": true,
+          "legendFormat": "Done",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(last_over_time(people_outreach_target{target=\"briefs_per_day\"}[8d]))",
+          "instant": true,
+          "legendFormat": "Target",
+          "range": false,
+          "refId": "B"
+        }
+      ],
+      "title": "First briefs today",
+      "transformations": [],
+      "transparent": false,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "First briefs, as `outreach today` counts them, against the target.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 4,
+        "y": 15
+      },
+      "options": null,
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (last_over_time(people_outreach_activity{kind=\"first_briefs\",window=\"week\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h])))",
+          "instant": true,
+          "legendFormat": "Done",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(last_over_time(people_outreach_target{target=\"briefs_per_week\"}[8d]))",
+          "instant": true,
+          "legendFormat": "Target",
+          "range": false,
+          "refId": "B"
+        }
+      ],
+      "title": "First briefs this week",
+      "transformations": [],
+      "transparent": false,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 8,
+        "y": 15
+      },
+      "options": null,
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (last_over_time(people_outreach_activity{kind=\"nudges\",window=\"week\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h])))",
+          "instant": true,
+          "legendFormat": "Nudges",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Nudges this week",
+      "transformations": [],
+      "transparent": false,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 12,
+        "y": 15
+      },
+      "options": null,
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (last_over_time(people_outreach_follow_ups_due[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h])))",
+          "instant": true,
+          "legendFormat": "Due",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Follow-ups due",
+      "transformations": [],
+      "transparent": false,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Referrers at to_contact: who is left to brief.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 15
+      },
+      "options": null,
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (cohort_week) (last_over_time(people_outreach_stage_population{pipeline=\"referrer\",stage=\"to_contact\"}[26h]) and on(job, instance) topk(1, last_over_time(people_outreach_refreshed[26h]))))",
+          "instant": true,
+          "legendFormat": "To contact",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Warm pool left",
+      "transformations": [],
+      "transparent": false,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Pacific days, from the outbox table, split by kind.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "options": {
+        "barRadius": 0,
+        "barWidth": 0.97,
+        "fullHighlight": false,
+        "groupWidth": 0.7,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "orientation": "auto",
+        "showValue": "auto",
+        "stacking": "normal",
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        },
+        "xTickLabelMaxLength": 0,
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
+      },
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (day, kind) (last_over_time(people_linkedin_daily{what=\"approved\"}[26h]))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "LinkedIn approved per day",
+      "transformations": [
+        {
+          "id": "groupingToMatrix",
+          "options": {
+            "columnField": "kind",
+            "rowField": "day",
+            "valueField": "Value"
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "desc": false,
+                "field": "day\\kind"
+              }
+            ]
+          }
+        }
+      ],
+      "transparent": false,
+      "type": "barchart"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Pacific days, from the outbox table, split by kind.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "options": {
+        "barRadius": 0,
+        "barWidth": 0.97,
+        "fullHighlight": false,
+        "groupWidth": 0.7,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "orientation": "auto",
+        "showValue": "auto",
+        "stacking": "normal",
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        },
+        "xTickLabelMaxLength": 0,
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
+      },
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (day, kind) (last_over_time(people_linkedin_daily{what=\"sent\"}[26h]))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "LinkedIn sent per day",
+      "transformations": [
+        {
+          "id": "groupingToMatrix",
+          "options": {
+            "columnField": "kind",
+            "rowField": "day",
+            "valueField": "Value"
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "desc": false,
+                "field": "day\\kind"
+              }
+            ]
+          }
+        }
+      ],
+      "transparent": false,
+      "type": "barchart"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "id": 0,
+      "panels": [],
+      "title": "Is the LinkedIn sender healthy?",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 0,
+        "y": 29
+      },
+      "options": null,
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(last_over_time(people_linkedin_queue_depth[26h]))",
+          "instant": true,
+          "legendFormat": "Queued",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Queue depth",
+      "transformations": [],
+      "transparent": false,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 4,
+        "y": 29
+      },
+      "options": null,
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(last_over_time(people_linkedin_queue_oldest_age_seconds[26h]))",
+          "instant": true,
+          "legendFormat": "Age",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(last_over_time(people_linkedin_queue_oldest_window_seconds[26h]))",
+          "instant": true,
+          "legendFormat": "Waited in window",
+          "range": false,
+          "refId": "B"
+        }
+      ],
+      "title": "Oldest queued",
+      "transformations": [],
+      "transparent": false,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 8,
+        "y": 29
+      },
+      "options": null,
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(last_over_time(people_linkedin_sends_today[26h]))",
+          "instant": true,
+          "legendFormat": "Sent",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(last_over_time(people_linkedin_cap_today[26h]))",
+          "instant": true,
+          "legendFormat": "Ceiling",
+          "range": false,
+          "refId": "B"
+        }
+      ],
+      "title": "Sends today vs ceiling",
+      "transformations": [],
+      "transparent": false,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 12,
+        "y": 29
+      },
+      "options": null,
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(last_over_time(people_linkedin_sends_week[26h]))",
+          "instant": true,
+          "legendFormat": "Sent",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(last_over_time(people_linkedin_cap_week[26h]))",
+          "instant": true,
+          "legendFormat": "Ceiling",
+          "range": false,
+          "refId": "B"
+        }
+      ],
+      "title": "Sends this week vs ceiling",
+      "transformations": [],
+      "transparent": false,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "The sender runs every 2 minutes while the Mac is awake.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 16,
+        "y": 29
+      },
+      "options": null,
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "time() - max(last_over_time(people_linkedin_sender_heartbeat[7d]))",
+          "instant": true,
+          "legendFormat": "Age",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Since last heartbeat",
+      "transformations": [],
+      "transparent": false,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "1 while the queue is paused; the label is the reason.",
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "sender not reporting"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 20,
+        "y": 29
+      },
+      "options": null,
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (reason) (last_over_time(people_linkedin_sender_paused[15m]))",
+          "instant": true,
+          "legendFormat": "{{reason}}",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Paused",
+      "transformations": [],
+      "transparent": false,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 34
+      },
+      "options": {
+        "displayMode": "gradient",
+        "minVizHeight": 10,
+        "minVizWidth": 0,
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": []
+        },
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (status) (last_over_time(people_linkedin_outbox[26h]))",
+          "instant": true,
+          "legendFormat": "{{status}}",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Outbox by status",
+      "transformations": [],
+      "transparent": false,
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "From the people_linkedin_sends counter. Short-lived sender runs make it undercount; the outbox panels are the source of truth.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 34
+      },
+      "options": null,
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (outcome) (increase(people_linkedin_sends_total[1d]))",
+          "instant": false,
+          "legendFormat": "{{outcome}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Send outcomes per day (rough)",
+      "transformations": [],
+      "transparent": false,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 34
+      },
+      "options": null,
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (increase(people_linkedin_approval_to_send_seconds_bucket[7d])))",
+          "instant": true,
+          "legendFormat": "p50",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.9, sum by (le) (increase(people_linkedin_approval_to_send_seconds_bucket[7d])))",
+          "instant": true,
+          "legendFormat": "p90",
+          "range": false,
+          "refId": "B"
+        }
+      ],
+      "title": "Approval to send",
+      "transformations": [],
+      "transparent": false,
+      "type": "stat"
+    }
+  ],
+  "refresh": "5m",
+  "schemaVersion": 36,
+  "style": "dark",
+  "tags": [
+    "people",
+    "outreach"
+  ],
+  "templating": {
+    "list": [
+      {
+        "auto": false,
+        "auto_count": 30,
+        "auto_min": "10s",
+        "hide": 0,
+        "id": "00000000-0000-0000-0000-000000000000",
+        "includeAll": false,
+        "label": "Data source",
+        "multi": false,
+        "name": "datasource",
+        "query": "prometheus",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "allValue": ".*",
+        "auto": false,
+        "auto_count": 30,
+        "auto_min": "10s",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "hide": 0,
+        "id": "00000000-0000-0000-0000-000000000000",
+        "includeAll": true,
+        "label": "Brief cohort",
+        "multi": true,
+        "name": "cohort",
+        "query": "label_values(people_outreach_cohort, cohort_week)",
+        "refresh": 2,
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "timezone": "America/New_York",
+  "title": "Referral outreach",
+  "uid": "people-outreach"
+}

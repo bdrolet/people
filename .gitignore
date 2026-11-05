@@ -10,6 +10,8 @@ venv/
 *.egg-info/
 dist/
 build/
+# Generated dashboard JSON is committed: Terraform applies it, CI checks it is current.
+!dashboards/build/
 
 # Terraform
 .terraform/
