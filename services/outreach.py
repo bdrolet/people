@@ -682,28 +682,59 @@ def nudge(
     return event_id
 
 
-def advance_from_sent(
-    conn: Any, person_id: int, *, at: datetime, graph_message_id: str | None
+def record_send(
+    conn: Any,
+    person_id: int,
+    *,
+    at: datetime,
+    channel: str,
+    source: str,
+    graph_message_id: str | None = None,
 ) -> tuple[str, int] | None:
-    """Mail from an outreach address to a pipeline contact (working-queue spec §3.3): it
-    briefs a `to_contact` row and nudges a `briefed` one. Any other stage, or no row, is
-    ignored. Returns the kind and the new event id, if one was written."""
+    """The one stage decision for a message Ben sent a pipeline contact, on any channel
+    (working-queue spec §3.3; LinkedIn send-queue design, "Pipeline events"): it briefs a
+    `to_contact` row and nudges a `briefed` one. Any other stage, or no row, is ignored.
+    Returns the kind and the new event id, if one was written."""
     row = outreach_repo.lock_contact(conn, person_id)
     if row is None:
         return None
     if row["stage"] == "to_contact":
-        event_id = advance_from_event(
-            conn, person_id, "briefed", at=at, graph_message_id=graph_message_id
-        )
-        return ("briefed", event_id) if event_id is not None else None
+        try:
+            res = advance(
+                conn,
+                person_id,
+                "briefed",
+                at=at,
+                channel=channel,
+                source=source,
+                graph_message_id=graph_message_id,
+            )
+        except InvalidTransition:
+            return None
+        return ("briefed", res.event_id) if res and res.event_id is not None else None
     if row["stage"] == "briefed":
         event_id = nudge(
             conn,
             person_id,
             at=at,
-            channel="email",
-            source="event",
+            channel=channel,
+            source=source,
             graph_message_id=graph_message_id,
         )
         return ("nudge", event_id) if event_id is not None else None
     return None
+
+
+def advance_from_sent(
+    conn: Any, person_id: int, *, at: datetime, graph_message_id: str | None
+) -> tuple[str, int] | None:
+    """Mail from an outreach address to a pipeline contact: record_send on the email
+    channel, proven by the event feed."""
+    return record_send(
+        conn,
+        person_id,
+        at=at,
+        channel="email",
+        source="event",
+        graph_message_id=graph_message_id,
+    )
