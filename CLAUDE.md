@@ -42,6 +42,9 @@ This overrides the default "commit or push only when asked" behavior for code ch
 | **Referral outreach** | `services/outreach.py` stage machine over `outreach_*`; `email_sent` from `OUTREACH_FROM_ADDRESSES` proves *briefed*, `email_classified` proves *replied*; one completed Asana task per countable stage event via `clients/tasks_api.py` (Cloud Run IAM, `TASKS_API_URL`); CLI `scripts/outreach.py`, seed `scripts/outreach_seed.py`; follow-ups are `nudge` events on a `briefed` contact (+7/+14 days from the brief, propose close at +21); a buyer opportunity carries Ben's qualified-lead verdict (`outreach qualify <id> yes|no`, recorded when he meets them; `outreach_opportunities.qualified`/`qualified_at`, NULL = not judged; each verdict is also a `qualified`/`not_qualified` event, never an Asana task; gauge `people.outreach_qualified_leads`); `outreach today` checks pace against `OUTREACH_TARGETS` (private TOML); skill `working-outreach-queue`; one machine-maintained Google Doc per pipeline person (`Outreach — <name>`, My Drive `Consulting/Outreach`, link in `outreach_contacts.doc_url`) written only by `outreach-sessions --write-doc` via docs-api (`clients/docs_api.py`, `DOCS_API_URL`); `outreach-sessions` gives each person an agent-deck session (hint `person_id=<id>`, group `outreach`, parent `conductor-outreach`, Opus) via `deck-sessions` (`~/src/scripts/deck-sessions`): reopens a stopped/archived one with the reload prompt or launches a fresh one from the doc; agent-deck's registry is the only state (`~/.claude/outreach-sessions.json` was retired by `--migrate`); `--prune` archives sessions of people at `introduced`/`declined`/`skipped`/`signed`/`lost` |
 | **Funded-founder campaign** | Cold email to technical buyers at freshly funded digital health companies. Tables `campaign_*`; `services/campaign.py` is the only writer (stage machine), with `campaign_verify/factcheck/draft/review/send/followups/report/targets.py` around it; CLI `scripts/campaign.py` (run, company, contact, review, send, resume, followups, weekly, bounced, optout, booked, report); skill `working-funded-founder-campaign`; `CAMPAIGN_TARGETS` private TOML in the consulting repo (`campaign_targets.toml`); env `CAMPAIGN_FROM_ADDRESS`, `CAMPAIGN_POSTAL_ADDRESS`, `APOLLO_API_KEY`, `HUNTER_API_KEY`; Apollo and Hunter clients (`clients/apollo.py`, `clients/hunter.py`) are CLI-only; `handlers/email_bounced.py` consumes inbox `email_bounced` events. One-time setup below. |
 | **LinkedIn MCP** | `.mcp.json` server `linkedin` — third-party `mcp-server-linkedin@latest` via `uvx` (auto-updates on launch), a headless browser signed in as Ben, session in `~/.linkedin-mcp/` (`uvx mcp-server-linkedin@latest --login` to sign in); reads inbox/threads for `checking-linkedin-messages`, sends for `staging-linkedin-message` only after Ben approves the exact text; `send_message` is the **only** send tool (`reply_to_conversation` does not exist as of 4.29.0; the `.claude/settings.*` entries naming it are harmless and left alone); `.claude/settings.json` puts every LinkedIn write tool on `ask` except `send_message`, which runs unprompted (Ben approves the exact text in chat first, per the skill). Local only; nothing deployed uses it |
+| **iMessage MCP** | `.mcp.json` server `imessage` — in-repo, `.venv/bin/python -m mcp_servers.imessage` (`mcp_servers/imessage.py`, logic in `services/imessage_live.py`): `list_chats`, `get_messages`, `search_messages` read `chat.db` live and read-only through `clients/imessage_local.py` (Full Disk Access on the terminal; never marks anything read; `IMESSAGE_DB` overrides the path); `send_message` dry-runs unless `confirm_send: true`, sends through Messages.app with osascript (`clients/imessage_send.py`, text passed as an argument, never spliced into the script; Automation permission for Messages), then reads chat.db back for `sent`/`delivered`/`read`/`failed`/`unconfirmed` and never retries. Skills `checking-text-messages`, `staging-text-message`. Local only |
+| **WhatsApp MCP** | `.mcp.json` server `whatsapp` — third-party lharries/whatsapp-mcp at a pinned commit plus `scripts/whatsapp-mcp/whatsapp-mcp.patch` (send API on `127.0.0.1:${WHATSAPP_BRIDGE_PORT:-18765}` only, refuses a browser `Origin` or non-JSON body, never logs message text, current whatsmeow — the pinned one is rejected by WhatsApp), installed in `~/.whatsapp-mcp` by `scripts/install-whatsapp-mcp.sh` (`--login` to scan the QR code, `--status`, `--uninstall`, `--print`); a Go bridge (whatsmeow linked device) kept up by launchd agent `cloud.drolet.people.whatsapp-bridge` (log `~/Library/Logs/people-whatsapp-bridge.log`) stores messages in its own SQLite (`~/.whatsapp-mcp/src/whatsapp-bridge/store/`), separate from the imported `whatsapp_*` snapshot; the Python MCP server reads that and sends through the bridge. Bumping the pin means regenerating the patch. Local only |
+| **Text-message sends** | `mcp__imessage__send_message` and `mcp__whatsapp__send_message` run unprompted (allowed in `.claude/settings.local.json`, as LinkedIn's is): Ben approves the exact text in chat first, per `staging-text-message`; WhatsApp's `send_file` / `send_audio_message` stay on `ask` in `.claude/settings.json`. iMessage/WhatsApp sends never record outreach events themselves: `staging-text-message` runs `outreach mark … briefed` / `outreach nudge` after a confirmed send |
 | **LinkedIn send queue** | Approved LinkedIn messages go to `linkedin_outbox` (`outreach linkedin queue`, `scripts/outreach_linkedin.py`); `scripts/linkedin_sender.py` sends at most one per run, run by launchd agent `cloud.drolet.people.linkedin-sender` every 120 s (`scripts/install-linkedin-sender.sh`, `--uninstall`, `--print`; log `~/Library/Logs/people-linkedin-sender.log`); weekdays 08:00–19:00 Pacific, a random 3–8 min gap, ceiling 50/day and 250/week ramping from 30/day over the first 14 days; env `LINKEDIN_DAILY_CAP`, `LINKEDIN_WEEKLY_CAP`, `LINKEDIN_RAMP_START`, `LINKEDIN_RAMP_DAYS`, `LINKEDIN_GAP_MIN_SECONDS`, `LINKEDIN_GAP_MAX_SECONDS`, `LINKEDIN_SEND_WINDOW` (`"Mon-Fri 08:00-19:00 America/Los_Angeles"`), `LINKEDIN_MCP_VERSION` (pinned `4.29.0`: the sender runs `uvx mcp-server-linkedin==<v>`, because `services/linkedin_result.py` maps that version's result contract; bumping it is a hand step after reading the new `send_message` contract); a confirmed send to an outreach person records the brief/nudge (source `linkedin_outbox`); service name `people-linkedin-sender`, metrics `people.linkedin_*`; design `docs/superpowers/specs/2026-11-05-linkedin-send-queue-design.md` |
 | **Observability** | OTel → Grafana Cloud OTLP; metrics prefixed `people_` (outreach instruments are `people.outreach_*`) |
 | **Infra** | `terraform/` — GCS backend `bens-project-462804-tf-state`, state prefix `people` |
@@ -77,7 +80,9 @@ clients/
   google_contacts.py        People API v1 — search, create, groups, biography
   hubspot.py                contacts search/create/update/archive, engagements
   graph_local.py            device-code MSAL for scripts/import_contacts.py only
-  imessage_local.py         read-only chat.db access for scripts/import_imessage.py only
+  imessage_local.py         read-only chat.db access for scripts/import_imessage.py and the
+                             imessage MCP server's live reads (chat_index, chat_messages, …)
+  imessage_send.py          osascript send through Messages.app — mcp_servers/imessage.py only
   whatsapp_local.py         read-only ChatStorage.sqlite + ContactsV2.sqlite access for scripts/import_whatsapp.py only
   gcp_auth.py               Google ID tokens for Cloud Run callers (tasks-api, inbox-api)
   tasks_api.py              create_task / complete_task / configured — Asana tasks via tasks-api
@@ -140,6 +145,7 @@ services/
   linkedin_export.py        parse a LinkedIn data export (dir/zip) → snapshot; match_people
   imessage_export.py        pure chat.db logic: timestamps, attributedBody decode, handle
                              normalization, filtering, 1:1/group classification, handle matching
+  imessage_live.py          pure: render chat.db rows, resolve a send target, confirm a send
   whatsapp_export.py        pure ChatStorage.sqlite logic: JID/phone normalization, media
                              classification, batch building, handle matching
 handlers/
@@ -159,7 +165,12 @@ api/
     linkedin.py              GET /linkedin/connections[/{slug}], GET /linkedin/imports/latest
     imessage.py              GET /imessage/handles[/{handle}], GET /imessage/imports/latest
     whatsapp.py              GET /whatsapp/handles[/{handle}], /whatsapp/chats, /whatsapp/imports/latest
+mcp_servers/
+  imessage.py               local stdio MCP server (.mcp.json `imessage`): list_chats, get_messages,
+                             search_messages, send_message — thin transport over services/imessage_live.py
 scripts/
+  install-whatsapp-mcp.sh   install the pinned, patched WhatsApp MCP + its bridge launchd agent
+  whatsapp-mcp/whatsapp-mcp.patch  the patch applied on top of the pinned upstream commit
   import_contacts.py        bulk backfill (spec §12) — --dry-run, --reset-counters
   get_google_contacts_token.py  mint the Google refresh token (contacts scope)
   migrate_db.py             apply repo/schema.sql
@@ -167,7 +178,7 @@ scripts/
                              run does a full pass (one-time, after adoption shipped)
   fetch-env.sh               populate .env from Secret Manager + terraform.tfvars
   test-api-local.py          smoke test people-api
-  link-skills.sh             symlink searching-people/fetching-person/editing-person/creating-person/working-outreach-queue/working-funded-founder-campaign/checking-linkedin-messages/staging-linkedin-message into ~/.claude/skills/,
+  link-skills.sh             symlink searching-people/fetching-person/editing-person/creating-person/working-outreach-queue/working-funded-founder-campaign/checking-linkedin-messages/staging-linkedin-message/checking-text-messages/staging-text-message into ~/.claude/skills/,
                              the outreach-launcher agent into ~/.claude/agents/, outreach-sessions into ~/.local/bin/
   outreach_sessions.py      one agent-deck session per outreach person via `deck-sessions`: reopen a stopped one
                              (with the reload prompt), or launch one preloaded with the snapshot and contact doc;
@@ -192,7 +203,7 @@ tests/                      one test module per unit
                              searching-people, fetching-person, editing-person, creating-person,
                              importing-linkedin, importing-imessage, importing-whatsapp,
                              working-outreach-queue, working-funded-founder-campaign, checking-linkedin-messages,
-                             staging-linkedin-message
+                             staging-linkedin-message, checking-text-messages, staging-text-message
 .claude/agents/             outreach-launcher (linked into ~/.claude/agents/)
 ```
 
@@ -434,6 +445,7 @@ are counted; **Bcc is excluded**.
   called only from `api/main.py`)
 - `models/` — pure types, no imports from other layers
 - `main.py` — CF entry points only; always `otel.flush()` in `finally`
+- `mcp_servers/` — local stdio MCP servers for Claude Code; thin transport like `api/routers/`, never deployed
 
 ## Secrets
 
@@ -460,7 +472,7 @@ python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 scripts/fetch-env.sh                 # .env from Secret Manager + terraform.tfvars
 .venv/bin/pytest tests/ -q           # unit tests
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
-.venv/bin/mypy clients/ services/ handlers/ models/ repo/ api/ main.py
+.venv/bin/mypy clients/ services/ handlers/ models/ repo/ api/ mcp_servers/ main.py
 ```
 
 Handler smoke tests against the real DB: see `testing-people-handlers`.
