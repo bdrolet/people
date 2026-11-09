@@ -1,11 +1,22 @@
 {
   "permissions": {
-    "allow": ["Bash(gcloud:*)", "Bash(terraform:*)"],
+    "allow": [
+      "Bash(gcloud:*)",
+      "Bash(terraform:*)"
+    ],
     "ask": [
       "mcp__linkedin__connect_with_person",
       "mcp__linkedin__archive_conversation",
-      "mcp__linkedin__dismiss_job"
+      "mcp__linkedin__dismiss_job",
+      "mcp__whatsapp__send_message",
+      "mcp__whatsapp__send_file",
+      "mcp__whatsapp__send_audio_message",
+      "mcp__imessage__send_message"
     ]
   },
-  "enabledMcpjsonServers": ["linkedin"]
+  "enabledMcpjsonServers": [
+    "linkedin",
+    "whatsapp",
+    "imessage"
+  ]
 }
