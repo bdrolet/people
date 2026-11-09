@@ -1,5 +1,12 @@
 {
   "mcpServers": {
+    "imessage": {
+      "command": ".venv/bin/python",
+      "args": [
+        "-m",
+        "mcp_servers.imessage"
+      ]
+    },
     "linkedin": {
       "command": "uvx",
       "args": [
@@ -17,13 +24,6 @@
         "run",
         "--frozen",
         "main.py"
-      ]
-    },
-    "imessage": {
-      "command": ".venv/bin/python",
-      "args": [
-        "-m",
-        "mcp_servers.imessage"
       ]
     }
   }
