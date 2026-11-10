@@ -12,6 +12,10 @@ terraform {
     random = {
       source = "hashicorp/random"
     }
+    grafana = {
+      source  = "grafana/grafana"
+      version = "~> 4.51.0"
+    }
   }
 
   backend "gcs" {

@@ -156,6 +156,31 @@ def queue_stats(conn: Any, *, mismatch_since: datetime) -> dict:
     ).fetchone()
 
 
+def status_counts(conn: Any) -> dict[str, int]:
+    rows = conn.execute(
+        "SELECT status, count(*) AS n FROM linkedin_outbox GROUP BY status"
+    ).fetchall()
+    return {r["status"]: int(r["n"]) for r in rows}
+
+
+def daily_counts(conn: Any, *, since: datetime, tz: str) -> list[dict]:
+    """Approved (by approved_at, any status) and sent (status sent, by sent_at) per day in
+    `tz` and kind, from `since` on."""
+    return conn.execute(
+        """
+        SELECT 'approved' AS what, (approved_at AT TIME ZONE %(tz)s)::date AS day, kind,
+               count(*) AS n
+        FROM linkedin_outbox WHERE approved_at >= %(since)s
+        GROUP BY 2, 3
+        UNION ALL
+        SELECT 'sent', (sent_at AT TIME ZONE %(tz)s)::date, kind, count(*)
+        FROM linkedin_outbox WHERE status = 'sent' AND sent_at >= %(since)s
+        GROUP BY 2, 3
+        """,
+        {"tz": tz, "since": since},
+    ).fetchall()
+
+
 def get_state(conn: Any) -> dict:
     conn.execute("INSERT INTO linkedin_sender_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
     return conn.execute(

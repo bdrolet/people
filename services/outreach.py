@@ -5,7 +5,7 @@ caller, so the event handlers keep it inside their durable transaction (spec §6
 
 import os
 import re
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -21,6 +21,8 @@ from models.outreach import (
     TodayCounts,
 )
 from repo import outreach as outreach_repo
+from services import dashboard_gauges
+from services.dashboard_gauges import iso_week
 
 TZ = ZoneInfo("America/New_York")
 FOLLOW_UP_DAYS = 7
@@ -138,13 +140,6 @@ def cohort_week(at: datetime) -> date:
 
 def follow_up_date(at: datetime) -> date:
     return at.astimezone(TZ).date() + timedelta(days=FOLLOW_UP_DAYS)
-
-
-def iso_week(d: date | None) -> str:
-    if d is None:
-        return "none"
-    year, week, _ = d.isocalendar()
-    return f"{year}-W{week:02d}"
 
 
 def _outreach_addresses() -> list[str]:
@@ -597,9 +592,11 @@ def shared_briefs(conn: Any) -> list[dict]:
     return outreach_repo.shared_briefs(conn)
 
 
-def record_population(conn: Any, *, today: date) -> None:
-    """Refresh the funnel-shape gauges (spec §12.2). The cohort label is an ISO week,
-    the only per-cohort attribute, so cardinality stays one series per stage per week."""
+def record_population(conn: Any, *, today: date, now: datetime | None = None) -> None:
+    """Refresh the funnel-shape gauges (spec §12.2) and the dashboard's DB-derived ones
+    (outreach dashboard design). The cohort label is an ISO week, the only per-cohort
+    attribute, so cardinality stays one series per stage per week. `outreach_refreshed`
+    stamps this run, so a panel can keep only the newest run's series."""
     rows = [
         (
             int(r["n"]),
@@ -622,6 +619,20 @@ def record_population(conn: Any, *, today: date) -> None:
             for r in outreach_repo.qualification_population(conn)
         ]
     )
+    funnel = counts(conn, today=today)
+    otel.set_rows("outreach_cohort", dashboard_gauges.cohort_rows(funnel))
+    otel.set_rows("outreach_lost_reasons", dashboard_gauges.lost_reason_rows(funnel.lost_reasons))
+    week_start = today - timedelta(days=today.weekday())
+    otel.set_rows(
+        "outreach_activity",
+        dashboard_gauges.activity_rows(
+            briefs_today=outreach_repo.first_briefs_between(conn, since=today, until=today),
+            briefs_week=outreach_repo.first_briefs_between(conn, since=week_start, until=today),
+            nudges_today=outreach_repo.nudges_between(conn, since=today, until=today),
+            nudges_week=outreach_repo.nudges_between(conn, since=week_start, until=today),
+        ),
+    )
+    otel.set_rows("outreach_refreshed", [((now or datetime.now(UTC)).timestamp(), {})])
 
 
 def counts(

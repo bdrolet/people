@@ -44,6 +44,21 @@ variable "google_contact_group" {
   default = "Inbox"
 }
 
+variable "grafana_url" {
+  description = "Grafana Cloud stack URL, e.g. https://<stack>.grafana.net (tfvars / GRAFANA_URL GitHub variable)"
+  type        = string
+}
+variable "alert_email" {
+  description = "Where the linkedin-sender alerts are emailed (ben-email contact point). Personal: tfvars / ALERT_EMAIL GitHub variable only."
+  type        = string
+  sensitive   = true
+}
+variable "prometheus_datasource_uid" {
+  description = "UID of the stack's Prometheus data source, which the alert rules query"
+  type        = string
+  default     = "grafanacloud-prom"
+}
+
 variable "api_invoker_users" {
   description = "Google accounts granted roles/run.invoker on people-api (laptop skills, scripts)"
   type        = list(string)

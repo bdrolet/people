@@ -38,12 +38,17 @@ jobs:
         run: ruff format --check .
 
       - name: Type check
-        run: mypy clients/ services/ handlers/ models/ repo/ api/ main.py
+        run: mypy clients/ services/ handlers/ models/ repo/ api/ dashboards/ main.py
 
       - name: Tests
         env:
           TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
         run: pytest tests/ -q
+
+      - name: Dashboard JSON is current
+        run: |
+          python -m dashboards.outreach
+          git diff --exit-code dashboards/build/
 
       - uses: hashicorp/setup-terraform@v4
         with:

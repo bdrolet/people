@@ -2,7 +2,7 @@
 (a throwaway container: docker run -d --rm -p 55432:5432 -e POSTGRES_PASSWORD=x postgres:16)."""
 
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import psycopg
@@ -142,3 +142,27 @@ def test_repoint_person(conn):
     _row(conn, person_id=a)
     assert repo.repoint_person(conn, a, b) == 2
     assert {r["person_id"] for r in repo.list_rows(conn, None)} == {b}
+
+
+def test_status_counts(conn):
+    _row(conn)
+    _row(conn)
+    _row(conn, status="check_linkedin")
+    assert repo.status_counts(conn) == {"queued": 2, "check_linkedin": 1}
+
+
+def test_daily_counts_use_pacific_days(conn):
+    evening = datetime.fromisoformat("2026-11-04T17:30:00-08:00")  # 01:30 UTC on the 5th
+    _row(conn, approved_at=evening, kind="nudge")
+    _row(conn, approved_at=evening, status="sent", sent_at=evening)
+    _row(conn, approved_at=evening, status="set_aside", attempted_at=evening)
+    _row(conn, approved_at=evening - timedelta(days=30))  # before `since`
+    rows = repo.daily_counts(
+        conn, since=datetime.fromisoformat("2026-10-23T00:00:00-07:00"), tz="America/Los_Angeles"
+    )
+    got = sorted((r["what"], r["day"], r["kind"], r["n"]) for r in rows)
+    assert got == [
+        ("approved", date(2026, 11, 4), "brief", 2),
+        ("approved", date(2026, 11, 4), "nudge", 1),
+        ("sent", date(2026, 11, 4), "brief", 1),
+    ]

@@ -55,6 +55,25 @@ def in_window(now: datetime, w: Window) -> bool:
     return local.weekday() in w.days and w.start <= local.time() < w.end
 
 
+def window_seconds(start: datetime, end: datetime, w: Window) -> float:
+    """Seconds of [start, end) that fall inside the send window: how long a queued
+    message has waited while the sender could have sent it."""
+    if end <= start:
+        return 0.0
+    total = 0.0
+    d = start.astimezone(w.tz).date()
+    last = end.astimezone(w.tz).date()
+    while d <= last:
+        if d.weekday() in w.days:
+            opens = datetime.combine(d, w.start, tzinfo=w.tz)
+            closes = datetime.combine(d, w.end, tzinfo=w.tz)
+            lo, hi = max(start, opens), min(end, closes)
+            if hi > lo:
+                total += (hi - lo).total_seconds()
+        d += timedelta(days=1)
+    return total
+
+
 def next_window_start(now: datetime, w: Window) -> datetime:
     """`now` when inside the window, else the next opening."""
     if in_window(now, w):

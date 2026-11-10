@@ -523,7 +523,26 @@ def test_queue_rejects_an_unknown_stage():
         svc.queue(None, stage="pinged")
 
 
+def _quiet_population(monkeypatch):
+    """Stub every read record_population makes, so a test can look at one gauge."""
+    for name in (
+        "population",
+        "qualification_population",
+        "referrer_cohort_counts",
+        "buyer_cohort_counts",
+        "lost_reasons",
+    ):
+        monkeypatch.setattr(svc.outreach_repo, name, lambda c, *a, **kw: [])
+    monkeypatch.setattr(svc.outreach_repo, "follow_ups_due_count", lambda c, today: 0)
+    monkeypatch.setattr(svc.outreach_repo, "first_briefs_between", lambda c, since, until: 0)
+    monkeypatch.setattr(svc.outreach_repo, "nudges_between", lambda c, since, until: 0)
+    monkeypatch.setattr(svc.otel, "set_outreach_population", lambda rows, due: None)
+    monkeypatch.setattr(svc.otel, "set_outreach_qualified", lambda rows: None)
+    monkeypatch.setattr(svc.otel, "set_rows", lambda key, rows: None)
+
+
 def test_record_population_labels_cohorts_by_iso_week(monkeypatch):
+    _quiet_population(monkeypatch)
     seen = {}
     monkeypatch.setattr(
         svc.outreach_repo,
@@ -1148,6 +1167,7 @@ def test_qualify_unknown_opportunity(repo):
 
 
 def test_record_population_publishes_opportunities_by_verdict(monkeypatch):
+    _quiet_population(monkeypatch)
     seen = {}
     monkeypatch.setattr(svc.outreach_repo, "population", lambda c: [])
     monkeypatch.setattr(svc.outreach_repo, "follow_ups_due_count", lambda c, today: 0)
@@ -1168,3 +1188,39 @@ def test_record_population_publishes_opportunities_by_verdict(monkeypatch):
         (1, {"verdict": "no", "cohort_week": "2026-W42"}),
         (4, {"verdict": "pending", "cohort_week": "none"}),
     ]
+
+
+def test_record_population_publishes_dashboard_gauges(monkeypatch):
+    _quiet_population(monkeypatch)
+    published: dict = {}
+    monkeypatch.setattr(svc.otel, "set_rows", lambda key, rows: published.update({key: rows}))
+    monkeypatch.setattr(
+        svc.outreach_repo,
+        "referrer_cohort_counts",
+        lambda c, since, until: [{"cohort_week": date(2026, 10, 12), "briefed": 2, "replied": 1}],
+    )
+    monkeypatch.setattr(
+        svc.outreach_repo,
+        "lost_reasons",
+        lambda c, since, until: [{"lost_reason": "price", "n": 1}],
+    )
+    windows = []
+
+    def first_briefs(c, since, until):
+        windows.append((since, until))
+        return 3 if since == until else 8
+
+    monkeypatch.setattr(svc.outreach_repo, "first_briefs_between", first_briefs)
+    monkeypatch.setattr(svc.outreach_repo, "nudges_between", lambda c, since, until: 5)
+    now = datetime(2026, 10, 22, 15, 0, tzinfo=UTC)
+    svc.record_population(None, today=date(2026, 10, 22), now=now)
+
+    assert (2, {"cohort_week": "2026-W42", "stage": "briefed"}) in published["outreach_cohort"]
+    assert (1, {"lost_reason": "price"}) in published["outreach_lost_reasons"]
+    assert (8, {"kind": "first_briefs", "window": "week"}) in published["outreach_activity"]
+    assert (3, {"kind": "first_briefs", "window": "today"}) in published["outreach_activity"]
+    assert sorted(windows) == [
+        (date(2026, 10, 19), date(2026, 10, 22)),
+        (date(2026, 10, 22), date(2026, 10, 22)),
+    ]
+    assert published["outreach_refreshed"] == [(now.timestamp(), {})]
