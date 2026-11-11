@@ -724,6 +724,10 @@ def main_with(
     projects_dir: Path = PROJECTS_DIR,
 ) -> int:
     args = build_parser().parse_args(argv)
+    if outreach.writes_disabled():
+        # Retired (OUTREACH_WRITES_DISABLED): sessions, docs and prunes belong to pipelines now.
+        print(outreach.RETIRED_MESSAGE, file=err)
+        return 1
     today = today or datetime.now(UTC).astimezone(outreach.TZ).date()
     with get_conn() as conn:
         try:
