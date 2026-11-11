@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 def _record_outreach(conn, event: dict, results: list, sent_at) -> tuple[list[int], int]:
     """Brief or nudge each To recipient in the pipeline. Returns the brief event ids
     (they go on to the Asana sync) and the number of nudges."""
+    if outreach.writes_disabled():
+        return [], 0  # retired (OUTREACH_WRITES_DISABLED): pipelines records outreach mail
     if not outreach.is_outreach_sender(event.get("from") or ""):
         return [], 0
     to = {eligibility.normalize(a) for a in event.get("to") or []}

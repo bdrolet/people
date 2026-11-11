@@ -15,6 +15,8 @@ locals {
     GOOGLE_CONTACT_GROUP      = var.google_contact_group
     OUTREACH_FROM_ADDRESSES   = var.outreach_from_addresses
     TASKS_API_URL             = var.tasks_api_url
+    # The outreach pipeline moved to pipelines: stage writers refuse (services/outreach.py).
+    OUTREACH_WRITES_DISABLED = "1"
   }
 }
 

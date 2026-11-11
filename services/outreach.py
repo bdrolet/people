@@ -112,6 +112,26 @@ class OpportunityNotFound(LookupError):
     pass
 
 
+RETIRED_MESSAGE = "the outreach pipeline has moved to pipelines; use `pipelines`"
+
+
+class OutreachRetired(RuntimeError):
+    """The outreach pipeline has moved to the pipelines service: OUTREACH_WRITES_DISABLED is
+    set, so no stage, rank, lead, doc link or opportunity is written here any more."""
+
+
+def writes_disabled() -> bool:
+    """True once the outreach pipeline has moved to pipelines (env OUTREACH_WRITES_DISABLED set
+    to anything but empty or 0). Read on every call. Readers, the LinkedIn send queue and
+    merge_person never check it."""
+    return os.environ.get("OUTREACH_WRITES_DISABLED", "").strip() not in ("", "0")
+
+
+def _refuse_if_retired() -> None:
+    if writes_disabled():
+        raise OutreachRetired(RETIRED_MESSAGE)
+
+
 def transition(pipeline: str, current: str, target: str, *, force: bool = False) -> Transition:
     """Classify a move. `force` reopens a declined or skipped referrer: it may target any
     stage but candidate, e.g. `mark replied --force` records a late reply after a
@@ -176,6 +196,7 @@ def get_contact(conn: Any, person_id: int) -> dict | None:
 def ensure_contact(conn: Any, person_id: int, *, at: datetime, source: str) -> int | None:
     """Put a person in the pipeline at `candidate` (the seed, or `decide` for someone the
     seed never proposed). Returns the candidate event's id, or None if they were already in."""
+    _refuse_if_retired()
     if outreach_repo.insert_contact_if_missing(conn, person_id) is None:
         return None
     _count_event("referrer", "candidate", None, source)
@@ -199,6 +220,7 @@ def advance(
 ) -> Advance | None:
     """Move a referrer to `stage` (spec §6.1). None when the person has no pipeline row;
     a no-op Advance when they are already at or past it; InvalidTransition otherwise."""
+    _refuse_if_retired()
     row = outreach_repo.lock_contact(conn, person_id)
     if row is None:
         return None
@@ -242,6 +264,7 @@ def advance_from_event(
 ) -> int | None:
     """The event handlers' entry (spec §6.2, §6.3): a move outside the table and a person
     with no pipeline row are both ignored silently. Returns the new event's id, if any."""
+    _refuse_if_retired()
     if stage == "replied":
         # Spec §6.3: a reply counts only if it came after the brief. Inbox's sweep
         # republishes older mail, so a pre-brief email can arrive after the brief.
@@ -276,6 +299,7 @@ def open_opportunity(
     """An introduction with the buyer on the thread (spec §4.2). The referrer moves to
     `introduced`; from `briefed`, the implied `replied` is appended first. Advance.row is
     the new opportunity and Advance.event_id its `intro` event."""
+    _refuse_if_retired()
     label = (buyer_label or "").strip()
     if not label:
         raise ValueError('a buyer label ("Name, Company") is required')
@@ -310,6 +334,7 @@ def advance_opportunity(
     lost_reason: str | None = None,
     source: str = "cli",
 ) -> Advance:
+    _refuse_if_retired()
     if stage == "lost":
         if lost_reason not in LOST_REASONS:
             raise ValueError(f"lost needs a reason, one of: {', '.join(LOST_REASONS)}")
@@ -340,6 +365,7 @@ def qualify(conn: Any, opportunity_id: int, qualified: bool, *, at: datetime) ->
     """Record Ben's verdict on a lead, made when he meets them (any stage). The same
     verdict again is a no-op; a changed one overwrites the columns and appends another
     event, so the history stays in outreach_events."""
+    _refuse_if_retired()
     opp = outreach_repo.lock_opportunity(conn, opportunity_id)
     if opp is None:
         raise OpportunityNotFound(str(opportunity_id))
@@ -362,6 +388,7 @@ def qualify(conn: Any, opportunity_id: int, qualified: bool, *, at: datetime) ->
 
 def set_lead(conn: Any, person_id: int, lead: str, *, today: date) -> dict:
     """A name Ben must chase (spec §4.2): a flag and a note, never an opportunity."""
+    _refuse_if_retired()
     row = outreach_repo.lock_contact(conn, person_id)
     if row is None:
         raise NotInPipeline(str(person_id))
@@ -381,6 +408,7 @@ def doc_id(url: str) -> str:
 def set_doc(conn: Any, person_id: int, url: str | None) -> dict:
     """Record the person's contact doc, or clear it with None (contact-docs spec D8). The
     link is the only record of which doc belongs to whom."""
+    _refuse_if_retired()
     if url is not None:
         doc_id(url)
         url = url.strip()
@@ -470,6 +498,7 @@ def queue(conn: Any, *, stage: str = "to_contact", limit: int = 50) -> list[dict
 
 
 def set_rank(conn: Any, person_id: int, rank: int) -> dict:
+    _refuse_if_retired()
     if rank < 1:
         raise ValueError("rank must be 1 or more")
     row = outreach_repo.lock_contact(conn, person_id)
@@ -483,6 +512,7 @@ def set_rank(conn: Any, person_id: int, rank: int) -> dict:
 def set_ranks(conn: Any, person_ids: list[int]) -> None:
     """Rank 1..N in the given order and clear every other rank (working-queue spec §6.2).
     The caller commits, so a failure part-way leaves nothing behind."""
+    _refuse_if_retired()
     if len(set(person_ids)) != len(person_ids):
         raise ValueError("a person appears more than once")
     outreach_repo.clear_ranks(conn)
@@ -491,6 +521,7 @@ def set_ranks(conn: Any, person_ids: list[int]) -> None:
 
 
 def clear_ranks(conn: Any) -> int:
+    _refuse_if_retired()
     return outreach_repo.clear_ranks(conn)
 
 
@@ -688,6 +719,7 @@ def nudge(
     event, not a stage: the contact stays at `briefed`. Returns the event id, or None when
     the person is not at `briefed`, `at` is less than a day after the brief (a same-day
     correction is not a follow-up), or this email was already recorded for them."""
+    _refuse_if_retired()
     if channel not in CHANNELS:
         raise ValueError(f"unknown channel {channel!r}; one of {', '.join(CHANNELS)}")
     row = outreach_repo.lock_contact(conn, person_id)
@@ -741,6 +773,8 @@ def record_send(
     (working-queue spec §3.3; LinkedIn send-queue design, "Pipeline events"): it briefs a
     `to_contact` row and nudges a `briefed` one. Any other stage, or no row, is ignored.
     Returns the kind and the new event id, if one was written."""
+    if writes_disabled():
+        return None  # retired: the stage lives in pipelines; the send queue still records the send
     row = outreach_repo.lock_contact(conn, person_id)
     if row is None:
         return None
