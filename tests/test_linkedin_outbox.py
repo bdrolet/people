@@ -4,6 +4,7 @@ here talks to LinkedIn."""
 import contextlib
 import random
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -101,6 +102,24 @@ class FakeRepo:
             ),
         }
 
+    def status_counts(self, conn):
+        out: dict[str, int] = {}
+        for r in self.rows.values():
+            out[r["status"]] = out.get(r["status"], 0) + 1
+        return out
+
+    def daily_counts(self, conn, *, since, tz):
+        zone = ZoneInfo(tz)
+        out: dict[tuple, int] = {}
+        for r in self.rows.values():
+            if r["approved_at"] >= since:
+                key = ("approved", r["approved_at"].astimezone(zone).date(), r["kind"])
+                out[key] = out.get(key, 0) + 1
+            if r["status"] == "sent" and r["sent_at"] and r["sent_at"] >= since:
+                key = ("sent", r["sent_at"].astimezone(zone).date(), r["kind"])
+                out[key] = out.get(key, 0) + 1
+        return [{"what": w, "day": d, "kind": k, "n": n} for (w, d, k), n in out.items()]
+
     def get_state(self, conn):
         return dict(self.state)
 
@@ -173,6 +192,8 @@ def env(monkeypatch):
         "get_state",
         "lock_state",
         "update_state",
+        "status_counts",
+        "daily_counts",
     ):
         monkeypatch.setattr(svc.repo, name, getattr(repo, name))
     events: list = []
@@ -189,7 +210,15 @@ def env(monkeypatch):
     gauges: list = []
     monkeypatch.setattr(svc.otel, "set_linkedin_gauges", lambda v, r: gauges.append((v, r)))
     conn = Conn()
-    return {"repo": repo, "events": events, "metrics": metrics, "gauges": gauges, "conn": conn}
+    monkeypatch.setattr(svc.otel, "set_rows", lambda key, rows: None)
+    return {
+        "repo": repo,
+        "events": events,
+        "metrics": metrics,
+        "gauges": gauges,
+        "conn": conn,
+        "monkeypatch": monkeypatch,
+    }
 
 
 def _queue(env, *, person_id=7, message="Hi Alice", at=NOW, **kw):
@@ -677,3 +706,20 @@ def test_list_rows_filters_by_status(env):
     _queue(env, send_now=True, message="b")
     assert [r["id"] for r in svc.list_rows(env["conn"], ("queued",))] == [1]
     assert len(svc.list_rows(env["conn"], None)) == 2
+
+
+def test_gauges_publish_outbox_rows_and_window_wait(env):
+    _queue(env)  # approved Tue 10:00 Pacific
+    _queue(env, person_id=8, message="b")
+    env["repo"].rows[2].update(status="check_linkedin", attempted_at=NOW)
+    published: dict = {}
+    env["monkeypatch"].setattr(
+        svc.otel, "set_rows", lambda key, rows: published.update({key: rows})
+    )
+    # Called directly: run_once suppresses gauge errors, which would hide a failure here.
+    svc._emit_gauges(env["conn"], datetime(2026, 11, 3, 20, 0, tzinfo=UTC), CFG)  # 12:00 PT
+    status = {a["status"]: v for v, a in published["linkedin_outbox"]}
+    assert status["check_linkedin"] == 1
+    assert published["linkedin_queue_oldest_window_seconds"] == [(7200.0, {})]
+    daily = {(a["what"], a["day"], a["kind"]): v for v, a in published["linkedin_daily"]}
+    assert daily[("approved", "2026-11-03", "brief")] == 2

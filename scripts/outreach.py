@@ -33,6 +33,9 @@ after a no-response decline). `today` reads its targets from --targets or OUTREA
 `--note` goes on `decide --skip`, `mark ... declined` and `nudge`, and is never sent anywhere.
 Runs against whatever DB clients/db.py
 resolves from env, like the import scripts.
+
+Retired: with OUTREACH_WRITES_DISABLED set the pipeline lives in pipelines, and only `today`,
+`queue`, `followups`, `report` and the `linkedin` group run; every other command exits 1.
 """
 
 import argparse
@@ -56,6 +59,7 @@ import clients.otel as otel
 from clients import inbox_api
 from models.outreach import CHANNELS, LOST_REASONS, REFERRER_STAGES, Advance
 from services import (
+    dashboard_gauges,
     linkedin_outbox,
     linkedin_pacing,
     outreach,
@@ -306,6 +310,7 @@ def cmd_today(conn: Any, args: argparse.Namespace, out: TextIO, now: datetime) -
     if path is None:
         raise CliError("no targets file: pass --targets PATH or set OUTREACH_TARGETS")
     targets = outreach_targets.load_targets(path)
+    otel.set_rows("outreach_target", dashboard_gauges.target_rows(targets))
     counts = outreach.today_counts(
         conn,
         today=now.astimezone(outreach.TZ).date(),
@@ -470,6 +475,11 @@ def cmd_sync_asana(conn: Any, args: argparse.Namespace, out: TextIO, now: dateti
     )
 
 
+# Commands that still run once the pipeline has moved to pipelines (OUTREACH_WRITES_DISABLED):
+# the read-only ones, and the whole `linkedin` send-queue group, which the pipelines worker uses
+# (queue, list, status, result, resume). Every other command writes and is refused.
+STILL_RUN = frozenset({"today", "queue", "followups", "report", "linkedin"})
+
 COMMANDS: dict[str, Callable[[Any, argparse.Namespace, TextIO, datetime], None]] = {
     "today": cmd_today,
     "queue": cmd_queue,
@@ -572,6 +582,9 @@ def main_with(
     now: datetime | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
+    if args.command not in STILL_RUN and outreach.writes_disabled():
+        print(outreach.RETIRED_MESSAGE, file=err)
+        return 1
     now = now or datetime.now(UTC)
     otel.setup_telemetry("people-outreach-local")
     try:

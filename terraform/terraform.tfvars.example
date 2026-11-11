@@ -4,3 +4,6 @@ own_addresses            = "you@example.com,alias@example.com"
 outreach_from_addresses  = "consulting@example.com"   # consulting identity; `outreach draft` sends from the first, only these count as a brief
 automated_sender_domains = "group.calendar.google.com,bcc.na2.hubspot.com"
 # hubspot_writes_enabled = true   # Phase C
+grafana_url              = "https://<stack>.grafana.net"
+alert_email              = "you@example.com"   # linkedin-sender alerts (ben-email contact point)
+# prometheus_datasource_uid = "grafanacloud-prom"

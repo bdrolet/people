@@ -28,8 +28,10 @@ def handle(event: dict) -> None:
         graph_message_id = event.get("graph_message_id") or event.get("message_id")
         # Outreach spec §6.3: any non-ignore mail from a briefed contact proves `replied`.
         # An out-of-office is filed `ignore` by inbox and does not count.
+        # Retired (OUTREACH_WRITES_DISABLED): pipelines records replies itself.
         if (
-            row.get("id") is not None
+            not outreach.writes_disabled()
+            and row.get("id") is not None
             and event.get("category") != "ignore"
             and not row.get("automated")
         ):

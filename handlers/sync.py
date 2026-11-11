@@ -17,7 +17,10 @@ def run() -> dict:
         conn.commit()
         hubspot = hubspot_mirror.reconcile(conn)
         conn.commit()
-        asana = outreach_sync.sync_pending(conn).as_dict()  # commits its own progress
+        if outreach.writes_disabled():
+            asana = {"skipped": "outreach retired"}  # the pipeline lives in pipelines now
+        else:
+            asana = outreach_sync.sync_pending(conn).as_dict()  # commits its own progress
         try:
             outreach.record_population(conn, today=datetime.now(outreach.TZ).date())
         except Exception:

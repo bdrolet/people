@@ -4,6 +4,9 @@ requests>=2.31
 google-auth-oauthlib>=1.2
 # LinkedIn send queue's local sender (clients/linkedin_mcp.py) — never in requirements.txt:
 mcp>=2.3,<3
+# Builds dashboards/build/outreach.json (dashboards/outreach.py). Terraform applies the
+# committed JSON, so nothing deployed needs it — never in requirements.txt:
+grafana-foundation-sdk==1769699998!10.1.0
 
 ruff>=0.4
 mypy>=1.10

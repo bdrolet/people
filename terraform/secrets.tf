@@ -44,6 +44,25 @@ resource "google_secret_manager_secret" "hunter_api_key" {
   }
 }
 
+# Grafana Cloud service-account token (Editor: dashboards and alerting) for the grafana
+# provider (grafana.tf). Created by hand in the Grafana UI. The provider reads it at plan
+# time, so the secret and a version must exist before the first apply that includes
+# grafana.tf; this import block then adopts the hand-made secret into state. Rotate with
+# `gcloud secrets versions add grafana-dashboards-token --data-file=-`.
+import {
+  to = google_secret_manager_secret.grafana_dashboards_token
+  id = "projects/bens-project-462804/secrets/grafana-dashboards-token"
+}
+resource "google_secret_manager_secret" "grafana_dashboards_token" {
+  secret_id = "grafana-dashboards-token"
+  replication {
+    auto {}
+  }
+}
+data "google_secret_manager_secret_version" "grafana_dashboards_token" {
+  secret = google_secret_manager_secret.grafana_dashboards_token.id
+}
+
 resource "random_password" "people_db_password" {
   length  = 64
   special = false
