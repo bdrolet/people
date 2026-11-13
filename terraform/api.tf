@@ -205,6 +205,19 @@ resource "google_cloud_run_v2_service_iam_member" "api_invoker_users" {
   member   = "user:${each.value}"
 }
 
+# pipelines-api (~/src/pipelines) calls this service with a Google identity token.
+data "google_service_account" "pipelines_api" {
+  account_id = "pipelines-api"
+}
+
+resource "google_cloud_run_v2_service_iam_member" "api_invoker_pipelines" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.api.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${data.google_service_account.pipelines_api.email}"
+}
+
 resource "google_cloud_run_v2_service_iam_member" "api_invoker_inbox_process" {
   project  = var.project_id
   location = var.region
