@@ -110,7 +110,7 @@ def test_load_config_defaults_and_overrides():
     cfg = p.load_config({})
     assert cfg == SendConfig()
     assert (cfg.daily_cap, cfg.weekly_cap, cfg.ramp_start, cfg.ramp_days) == (50, 250, 30, 14)
-    assert (cfg.gap_min, cfg.gap_max, cfg.mcp_version) == (180, 480, "4.29.0")
+    assert (cfg.gap_min, cfg.gap_max, cfg.mcp_version) == (180, 480, "4.30.0")
     assert cfg.window == W
     assert p.load_config({"LINKEDIN_DAILY_CAP": "60"}).daily_cap == 60
     with pytest.raises(ValueError):

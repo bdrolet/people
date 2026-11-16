@@ -141,8 +141,43 @@ class Conn:
         self.log.append("rollback")
 
 
+UNRESOLVED = {
+    "status": "recipient_resolution_failed",
+    "sent": False,
+    "retry_safe": True,
+    "recipient_selected": False,
+}
+ONLY_ONE = {
+    "error": {
+        "code": "internal",
+        "retry_after": None,
+        "text": "index 1 out of range: only 1 thread(s) exist for alice.",
+    }
+}
+
+
+def thread_url(tid):
+    return {"url": f"https://www.linkedin.com/messaging/thread/{tid}/", "sections": {}}
+
+
+def replied(tid, **kw):
+    return {"status": "sent", "sent": True, "retry_safe": False, "thread_id": tid, **kw}
+
+
 class FakeSender:
-    def __init__(self, conn, result=None, usable=True, raises=None):
+    """The MCP as services.linkedin_outbox sees it. `conversations` maps an index to
+    get_conversation's result (or an exception); `reply_result` is reply_to_conversation's."""
+
+    def __init__(
+        self,
+        conn,
+        result=None,
+        usable=True,
+        raises=None,
+        reply_result=None,
+        reply_raises=None,
+        conversations=None,
+    ):
         self.conn = conn
         self.result = result or {
             "status": "sent",
@@ -152,7 +187,12 @@ class FakeSender:
         }
         self.usable = usable
         self.raises = raises
+        self.reply_result = reply_result
+        self.reply_raises = reply_raises
+        self.conversations = conversations or {}
         self.calls: list = []
+        self.replies: list = []
+        self.lookups: list = []
         self.commits_before_send: int | None = None
 
     def session_problem(self):
@@ -164,6 +204,21 @@ class FakeSender:
         if self.raises:
             raise self.raises
         return self.result
+
+    def reply(self, thread_id, message):
+        self.replies.append((thread_id, message))
+        if self.reply_raises:
+            raise self.reply_raises
+        return self.reply_result or replied(thread_id)
+
+    def conversation(self, username, index):
+        self.lookups.append((username, index))
+        got = self.conversations.get(
+            index, {"error": {"code": "internal", "retry_after": None, "text": "none"}}
+        )
+        if isinstance(got, Exception):
+            raise got
+        return got
 
 
 class Recorder:
@@ -351,6 +406,7 @@ def test_run_once_sends_one_and_records_brief(env):
         "outcome": "sent",
         "mode": "queued",
         "kind": "brief",
+        "path": "profile",
     }
     assert env["metrics"]["latency"].calls  # approval → send recorded
     assert env["conn"].log[-1] == "commit"
@@ -510,8 +566,197 @@ def test_stale_sweep_runs_outside_the_window(env):
 
 def test_thread_mismatch_is_flagged(env):
     _queue(env, kind="reply", thread_id="t-old")
-    _run(env)
+    _run(env, FakeSender(env["conn"], reply_result=replied("t-other")))
     assert env["repo"].rows[1]["thread_mismatch"] is True
+    assert env["repo"].rows[1]["reason"] == "thread_mismatch"
+
+
+# --- thread replies and the profile → thread fallback -----------------------
+
+
+def _paths(env):
+    return [a.get("path") for a in env["metrics"]["sends"].calls]
+
+
+def test_a_row_with_a_thread_replies_in_it_and_never_opens_the_profile(env):
+    _queue(env, kind="reply", thread_id="t-old")
+    word, sender = _run(env)
+    assert word == "sent"
+    assert sender.calls == [] and sender.lookups == []
+    assert sender.replies == [("t-old", "Hi Alice")]
+    row = env["repo"].rows[1]
+    assert row["status"] == "sent" and row["sent_thread_id"] == "t-old"
+    assert row["thread_mismatch"] is False
+    assert _paths(env) == ["thread"]
+
+
+def test_a_percent_encoded_row_thread_is_not_a_mismatch(env):
+    _queue(env, kind="reply", thread_id="2-abc%3D%3D")
+    _run(env, FakeSender(env["conn"], reply_result=replied("2-abc==")))
+    assert env["repo"].rows[1]["thread_mismatch"] is False
+
+
+def test_profile_send_is_the_default_path(env):
+    _queue(env)
+    _, sender = _run(env)
+    assert sender.replies == [] and sender.lookups == []
+    assert _paths(env) == ["profile"]
+
+
+def test_unresolved_recipient_falls_back_to_the_one_thread(env):
+    _queue(env)
+    sender = FakeSender(
+        env["conn"], result=UNRESOLVED, conversations={0: thread_url("t-1"), 1: ONLY_ONE}
+    )
+    word, _ = _run(env, sender)
+    assert word == "sent"
+    assert sender.calls == [("alice", "Hi Alice", None)]
+    assert sender.lookups == [("alice", 0), ("alice", 1)]
+    assert sender.replies == [("t-1", "Hi Alice")]
+    row = env["repo"].rows[1]
+    assert row["status"] == "sent" and row["sent_thread_id"] == "t-1"
+    assert row["thread_mismatch"] is False and row["reason"] is None
+    assert env["events"] and env["events"][0][3] == "linkedin_outbox"
+    assert _paths(env) == ["thread_fallback"]
+
+
+def test_fallback_thread_id_is_decoded(env):
+    _queue(env)
+    sender = FakeSender(
+        env["conn"], result=UNRESOLVED, conversations={0: thread_url("2-abc%3D%3D"), 1: ONLY_ONE}
+    )
+    _run(env, sender)
+    assert sender.replies == [("2-abc==", "Hi Alice")]
+
+
+def test_fallback_reply_into_another_thread_is_flagged(env):
+    _queue(env)
+    sender = FakeSender(
+        env["conn"],
+        result=UNRESOLVED,
+        reply_result=replied("t-9"),
+        conversations={0: thread_url("t-1"), 1: ONLY_ONE},
+    )
+    _run(env, sender)
+    row = env["repo"].rows[1]
+    assert row["status"] == "sent" and row["thread_mismatch"] is True
+    assert row["sent_thread_id"] == "t-9"
+
+
+@pytest.mark.parametrize(
+    "conversations",
+    [
+        {},  # no conversation with them
+        {0: thread_url("t-1"), 1: thread_url("t-2")},  # two threads
+        {0: thread_url("t-1"), 1: {"error": {"code": "internal", "text": "not verified"}}},
+        {0: {"url": "https://www.linkedin.com/messaging/", "sections": {}}, 1: ONLY_ONE},
+        {0: RuntimeError("pipe closed")},
+        {0: thread_url("t-1"), 1: RuntimeError("pipe closed")},
+    ],
+)
+def test_no_single_thread_sets_aside_with_the_original_reason(env, conversations):
+    _queue(env)
+    sender = FakeSender(env["conn"], result=UNRESOLVED, conversations=conversations)
+    word, _ = _run(env, sender)
+    assert word == "set_aside"
+    assert sender.replies == []
+    row = env["repo"].rows[1]
+    assert row["status"] == "set_aside" and row["reason"] == "recipient_resolution_failed"
+    assert env["repo"].state["consecutive_set_asides"] == 1
+    assert _paths(env) == ["profile"]
+
+
+def test_no_lookup_after_a_first_thread_error(env):
+    _queue(env)
+    sender = FakeSender(env["conn"], result=UNRESOLVED)
+    _run(env, sender)
+    assert sender.lookups == [("alice", 0)]
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {**UNRESOLVED, "retry_safe": False},  # a submission may have been attempted
+        {**UNRESOLVED, "retry_safe": None},
+        {k: v for k, v in UNRESOLVED.items() if k != "retry_safe"},
+        {**UNRESOLVED, "sent": True},
+        {"status": "message_unavailable", "sent": False, "retry_safe": True},
+        {"status": "composer_occupied", "sent": False, "retry_safe": True},
+        {"status": "send_unconfirmed", "sent": False, "retry_safe": False},
+        {"error": {"code": "outcome_unknown", "retry_after": None}},
+        {"error": {"code": "not_found", "retry_after": None}},
+    ],
+)
+def test_only_an_explicitly_safe_unresolved_result_falls_back(env, result):
+    _queue(env)
+    sender = FakeSender(
+        env["conn"], result=result, conversations={0: thread_url("t-1"), 1: ONLY_ONE}
+    )
+    _run(env, sender)
+    assert sender.lookups == [] and sender.replies == []
+
+
+def test_a_raised_profile_send_never_falls_back(env):
+    _queue(env)
+    sender = FakeSender(
+        env["conn"],
+        raises=RuntimeError("pipe closed"),
+        conversations={0: thread_url("t-1"), 1: ONLY_ONE},
+    )
+    word, _ = _run(env, sender)
+    assert word == "check_linkedin"
+    assert sender.lookups == [] and sender.replies == []
+
+
+def test_the_fallback_reply_is_tried_once(env):
+    _queue(env)
+    sender = FakeSender(
+        env["conn"],
+        result=UNRESOLVED,
+        reply_result=dict(UNRESOLVED),
+        conversations={0: thread_url("t-1"), 1: ONLY_ONE},
+    )
+    word, _ = _run(env, sender)
+    assert word == "set_aside"
+    assert len(sender.calls) == 1 and len(sender.replies) == 1
+    assert _paths(env) == ["thread_fallback"]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"raises": RuntimeError("pipe closed")},
+        {"reply_result": {"status": "send_unconfirmed", "sent": False, "retry_safe": False}},
+    ],
+)
+def test_a_fallback_reply_that_may_have_gone_out_is_check_linkedin(env, reply):
+    _queue(env)
+    kw = {"reply_raises": reply["raises"]} if "raises" in reply else reply
+    sender = FakeSender(
+        env["conn"], result=UNRESOLVED, conversations={0: thread_url("t-1"), 1: ONLY_ONE}, **kw
+    )
+    word, _ = _run(env, sender)
+    assert word == "check_linkedin"
+    assert env["repo"].rows[1]["status"] == "check_linkedin"
+    assert len(sender.replies) == 1
+
+
+def test_a_fallback_send_resets_the_set_aside_streak(env):
+    for i in range(3):
+        _queue(env, person_id=i, message=f"m{i}", at=NOW - timedelta(minutes=10 - i))
+    bad = {"status": "message_unavailable", "sent": False, "retry_safe": True}
+    _run(env, FakeSender(env["conn"], result=bad))
+    _run(
+        env, FakeSender(env["conn"], result=bad, conversations={0: thread_url("t-1"), 1: ONLY_ONE})
+    )
+    assert env["repo"].state["consecutive_set_asides"] == 2
+    later = NOW + timedelta(hours=1)
+    fallback = FakeSender(
+        env["conn"], result=UNRESOLVED, conversations={0: thread_url("t-1"), 1: ONLY_ONE}
+    )
+    assert _run(env, fallback, at=later)[0] == "sent"
+    assert env["repo"].state["consecutive_set_asides"] == 0
+    assert env["repo"].state["paused_reason"] is None
 
 
 def test_gauges_every_run_without_identity(env):
@@ -538,7 +783,7 @@ def test_metrics_carry_no_identity(env):
     _run(env)
     for rec in env["metrics"].values():
         for attrs in rec.calls:
-            assert set(attrs) <= {"outcome", "mode", "kind"}
+            assert set(attrs) <= {"outcome", "mode", "kind", "path"}
 
 
 # --- apply_result / resolve / record / edit ---------------------------------

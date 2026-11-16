@@ -62,4 +62,55 @@ def test_session_problem():
 
 
 def test_server_args_pin_the_version():
-    assert linkedin_mcp.server_args("4.29.0") == ["mcp-server-linkedin==4.29.0"]
+    assert linkedin_mcp.server_args("4.30.0") == ["mcp-server-linkedin==4.30.0"]
+
+
+def test_error_text_joins_text_blocks():
+    r = _result(
+        is_error=True,
+        content=[TextContent(type="text", text="a"), TextContent(type="text", text="b")],
+    )
+    assert linkedin_mcp.error_text(r) == "a\nb"
+
+
+def test_server_env_turns_off_remote_tools_and_update_checks():
+    assert linkedin_mcp.SERVER_ENV["LINKEDIN_MCP_REMOTE_TOOLS"] == "off"
+    assert linkedin_mcp.SERVER_ENV["LINKEDIN_MCP_CHECK_FOR_UPDATES"] == "off"
+
+
+class _Portal:
+    def call(self, fn):
+        return fn()
+
+
+class _Session:
+    def __init__(self, result):
+        self.result = result
+        self.calls: list = []
+
+    def call_tool(self, name, arguments, read_timeout_seconds=None):
+        self.calls.append((name, arguments))
+        return self.result
+
+
+def test_reply_calls_reply_to_conversation_with_confirm():
+    body = {"status": "sent", "sent": True, "retry_safe": False, "thread_id": "t"}
+    s = _Session(_result(structured_content=body))
+    out = linkedin_mcp.McpSender(_Portal(), s).reply("t", "hi")  # type: ignore[arg-type]
+    assert out == body
+    assert s.calls == [
+        ("reply_to_conversation", {"thread_id": "t", "message": "hi", "confirm_send": True})
+    ]
+
+
+def test_conversation_keeps_an_error_results_text():
+    r = _result(
+        is_error=True,
+        content=[TextContent(type="text", text="index 1 out of range: only 1 thread(s)")],
+        meta={"linkedin.dev/error": {"code": "internal"}},
+    )
+    s = _Session(r)
+    out = linkedin_mcp.McpSender(_Portal(), s).conversation("u", 1)  # type: ignore[arg-type]
+    assert out["error"]["code"] == "internal"
+    assert "only 1 thread" in out["error"]["text"]
+    assert s.calls == [("get_conversation", {"linkedin_username": "u", "index": 1})]

@@ -31,7 +31,7 @@ from services.linkedin_pacing import (
     week_bounds,
     window_seconds,
 )
-from services.linkedin_result import Outcome, map_result
+from services.linkedin_result import Outcome, fallback_eligible, map_result, single_thread
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +40,20 @@ SET_ASIDE_STREAK = 3
 MISMATCH_LOOKBACK = timedelta(days=7)
 DAILY_DAYS = 14  # days of approved/sent history on the dashboard
 RESOLVE_STATUSES = ("sent", "set_aside", "check_linkedin")
+# How the sender sent a row (people.linkedin_sends `path`): to the profile, into the row's
+# own thread, or into the one thread the lookup found after the profile failed. A row the
+# sender didn't send itself (send-now session, by hand, stale sweep) is `external`.
+PATHS = ("profile", "thread", "thread_fallback", "external")
 
 
 class Sender(Protocol):
     def session_problem(self) -> str | None: ...
 
     def send(self, username: str, message: str, profile_urn: str | None) -> dict: ...
+
+    def reply(self, thread_id: str, message: str) -> dict: ...
+
+    def conversation(self, username: str, index: int) -> dict: ...
 
 
 class OutboxNotFound(LookupError):
@@ -98,8 +106,8 @@ def _start_ramp(conn: Any, state: dict, now: datetime, cfg: SendConfig) -> None:
         repo.update_state(conn, {"ramp_started_on": _today(now, cfg)})
 
 
-def _attrs(row: dict, outcome: str) -> dict[str, str]:
-    return {"outcome": outcome, "mode": row["mode"], "kind": row["kind"]}
+def _attrs(row: dict, outcome: str, path: str = "external") -> dict[str, str]:
+    return {"outcome": outcome, "mode": row["mode"], "kind": row["kind"], "path": path}
 
 
 def queue(
@@ -164,6 +172,7 @@ def apply_outcome(
     rng: random.Random,
     at: datetime | None = None,
     manual: bool = False,
+    path: str = "external",
 ) -> dict:
     """Record what happened to a row, and to the queue. `at` is when it was sent (a hand
     send recorded later); `manual` is Ben resolving by hand, which never pauses."""
@@ -210,7 +219,7 @@ def apply_outcome(
     updated = repo.update(conn, row["id"], changes)
     if state_changes:
         repo.update_state(conn, state_changes)
-    otel.linkedin_sends.add(1, _attrs(row, outcome.metric))
+    otel.linkedin_sends.add(1, _attrs(row, outcome.metric, path))
     return updated
 
 
@@ -458,7 +467,7 @@ def _emit_gauges(conn: Any, now: datetime, cfg: SendConfig) -> None:
 def _sweep_stale(conn: Any, now: datetime) -> None:
     for row in repo.stale_sending(conn, now - STALE_AFTER):
         repo.update(conn, row["id"], {"status": "check_linkedin", "reason": "stale_sending"})
-        otel.linkedin_sends.add(1, _attrs(row, "check_linkedin"))
+        otel.linkedin_sends.add(1, _attrs(row, "check_linkedin", "external"))
 
 
 def _gate(conn: Any, now: datetime, cfg: SendConfig) -> str | None:
@@ -535,20 +544,59 @@ def _send(
         repo.update_state(conn, {"last_error": "mcp_unavailable"})
         conn.commit()
         return "mcp_unavailable"
+    path = "thread" if row["thread_id"] else "profile"
     try:
         if problem is not None:
             outcome = Outcome("queued", problem, "paused", pause="hold")
         else:
-            try:
-                result = sender.send(row["linkedin_username"], row["message"], row["profile_urn"])
-            except Exception as e:
-                logger.warning("linkedin sender: send raised %s", type(e).__name__)
-                result = {"error": {"code": "outcome_unknown", "retry_after": None}}
-            outcome = map_result(result, row_thread_id=row["thread_id"])
+            outcome, path = _deliver(sender, row)
     finally:
         # Shutting the MCP down must never lose the outcome of a send.
         with contextlib.suppress(Exception):
             stack.close()
-    apply_outcome(conn, row, outcome, now=now, cfg=cfg, rng=rng)
+    apply_outcome(conn, row, outcome, now=now, cfg=cfg, rng=rng, path=path)
     conn.commit()
     return problem if problem is not None else outcome.metric
+
+
+def _attempt(call: Callable[[], dict], what: str) -> dict:
+    try:
+        return call()
+    except Exception as e:
+        logger.warning("linkedin sender: %s raised %s", what, type(e).__name__)
+        return {"error": {"code": "outcome_unknown", "retry_after": None}}
+
+
+def _lookup_thread(sender: Sender, username: str) -> str | None:
+    """The one conversation with this person, or None (none, several, or unverifiable).
+    Reads only; a lookup that fails for any reason is None."""
+    try:
+        first = sender.conversation(username, 0)
+        if "error" in first:
+            return None
+        return single_thread(first, sender.conversation(username, 1))
+    except Exception as e:
+        logger.warning("linkedin sender: thread lookup raised %s", type(e).__name__)
+        return None
+
+
+def _deliver(sender: Sender, row: dict) -> tuple[Outcome, str]:
+    """Send one claimed row; (what happened, which path). A row with a thread is a reply
+    into it. Otherwise the profile send, and, only when that typed nothing because the
+    recipient could not be resolved, one reply into the person's single thread. Anything
+    that may have gone out is never tried again."""
+    if row["thread_id"]:
+        result = _attempt(lambda: sender.reply(row["thread_id"], row["message"]), "reply")
+        return map_result(result, row_thread_id=row["thread_id"]), "thread"
+    result = _attempt(
+        lambda: sender.send(row["linkedin_username"], row["message"], row["profile_urn"]),
+        "send",
+    )
+    first = map_result(result, row_thread_id=None)
+    if not fallback_eligible(result):
+        return first, "profile"
+    thread_id = _lookup_thread(sender, row["linkedin_username"])
+    if thread_id is None:
+        return first, "profile"
+    reply = _attempt(lambda: sender.reply(thread_id, row["message"]), "reply")
+    return map_result(reply, row_thread_id=thread_id), "thread_fallback"

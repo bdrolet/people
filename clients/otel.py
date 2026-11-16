@@ -280,7 +280,7 @@ def setup_telemetry(service_name: str) -> None:
     )
 
     linkedin_sends = meter.create_counter(
-        "people.linkedin_sends", description="LinkedIn send outcomes by outcome/mode/kind"
+        "people.linkedin_sends", description="LinkedIn send outcomes by outcome/mode/kind/path"
     )
     linkedin_queued = meter.create_counter(
         "people.linkedin_queued", description="LinkedIn messages approved, by kind/mode"

@@ -115,7 +115,7 @@ def week_bounds(now: datetime, tz: ZoneInfo) -> tuple[datetime, datetime]:
     return start, datetime.combine(monday + timedelta(days=7), time(0), tzinfo=tz)
 
 
-# The MCP's own rules (mcp-server-linkedin 4.29.0, linkedin/contracts.py): refuse every C0
+# The MCP's own rules (mcp-server-linkedin 4.29.0 and 4.30.0, linkedin/contracts.py): refuse every C0
 # control but CR/LF, DEL, NEL and the Unicode line/paragraph separators; then end lines on
 # CR/CRLF/LF, blank whitespace-only lines, and trim the whole text. JS whitespace, since
 # LinkedIn trims in the browser.
