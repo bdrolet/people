@@ -20,6 +20,33 @@ def db(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture
+def messages(monkeypatch):
+    """Fake Messages: which chat ids it can address, and every send handed to it."""
+    state = {"known": {ALICE_CHAT, GROUP_CHAT}, "sent": []}
+    monkeypatch.setattr(imessage_send, "_run", lambda *a: pytest.fail("real osascript"))
+    monkeypatch.setattr(imessage_send, "chat_known", lambda guid: guid in state["known"])
+    monkeypatch.setattr(
+        imessage_send, "send_to_chat", lambda t, g: state["sent"].append(("chat", t, g))
+    )
+    monkeypatch.setattr(
+        imessage_send,
+        "send_to_handle",
+        lambda t, h, svc="iMessage": state["sent"].append(("handle", t, h, svc)),
+    )
+    monkeypatch.setattr(server, "CONFIRM_SECONDS", 0.0)
+    return state
+
+
+def _set_service(path, chat_rowid, service):
+    conn = sqlite3.connect(path)
+    if "service_name" not in {r[1] for r in conn.execute("PRAGMA table_info(chat)")}:
+        conn.execute("ALTER TABLE chat ADD COLUMN service_name TEXT")
+    conn.execute("UPDATE chat SET service_name = ? WHERE ROWID = ?", (service, chat_rowid))
+    conn.commit()
+    conn.close()
+
+
 def _insert_from_me(path, rowid, text, chat_id, *, delivered=0, error=0, handle_id=0):
     conn = sqlite3.connect(path)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(message)")}
@@ -147,6 +174,18 @@ def test_send_passes_text_as_an_argument_never_in_the_script(monkeypatch):
     assert text not in kwargs["input"]
 
 
+def test_send_to_handle_passes_the_service_as_an_argument(monkeypatch):
+    run, calls = _fake_run()
+    monkeypatch.setattr(subprocess, "run", run)
+    imessage_send.send_to_handle("hi", ALICE, "SMS")
+    args, kwargs = calls[0]
+    assert args == ["osascript", "-", "hi", ALICE, "SMS"]
+    assert "SMS" in kwargs["input"] and ALICE not in kwargs["input"]
+    with pytest.raises(imessage_send.SendError):
+        imessage_send.send_to_handle("hi", ALICE, "Fax")
+    assert len(calls) == 1
+
+
 def test_send_error_and_permission_problems(monkeypatch):
     run, _ = _fake_run(1, stderr="execution error: Can't get chat id. (-1728)")
     monkeypatch.setattr(subprocess, "run", run)
@@ -184,15 +223,16 @@ def test_search_messages_names_the_chat(db):
     assert hits[0]["chat"] == GROUP_CHAT
 
 
-def test_send_message_dry_run_sends_nothing(db, monkeypatch):
-    monkeypatch.setattr(imessage_send, "_run", lambda *a: pytest.fail("sent on a dry run"))
+def test_send_message_dry_run_sends_nothing(db, messages):
     out = server.send_message(ALICE, "hello")
     assert out["status"] == "dry_run"
     assert out["would_send_to"]["kind"] == "existing chat"
     assert out["would_send_to"]["chat"] == ALICE_CHAT
+    assert out["would_send_to"]["send"] == {"via": "chat", "chat": ALICE_CHAT}
+    assert messages["sent"] == []
 
 
-def test_send_message_confirms_from_chat_db(db, monkeypatch):
+def test_send_message_confirms_from_chat_db(db, messages, monkeypatch):
     def fake_send(text, chat_guid):
         assert chat_guid == ALICE_CHAT
         _insert_from_me(db, 11, text, 1, delivered=1)
@@ -202,16 +242,13 @@ def test_send_message_confirms_from_chat_db(db, monkeypatch):
     assert out["status"] == "delivered" and out["message_id"] == 11
 
 
-def test_send_message_new_conversation_goes_to_the_handle(db, monkeypatch):
-    sent = []
-    monkeypatch.setattr(imessage_send, "send_to_handle", lambda t, h: sent.append((t, h)))
-    monkeypatch.setattr(server, "CONFIRM_SECONDS", 0.0)
+def test_send_message_new_conversation_goes_to_the_handle(db, messages):
     out = server.send_message("Carol@Example.com", "hello", confirm_send=True)
-    assert sent == [("hello", "carol@example.com")]
+    assert messages["sent"] == [("handle", "hello", "carol@example.com", "iMessage")]
     assert out["status"] == "unconfirmed"
 
 
-def test_send_message_reports_failure_without_retrying(db, monkeypatch):
+def test_send_message_reports_failure_without_retrying(db, messages, monkeypatch):
     calls = []
 
     def fail(text, chat_guid):
@@ -220,7 +257,73 @@ def test_send_message_reports_failure_without_retrying(db, monkeypatch):
 
     monkeypatch.setattr(imessage_send, "send_to_chat", fail)
     out = server.send_message(ALICE, "hello", confirm_send=True)
-    assert out["status"] == "error" and calls == ["hello"]
+    # A refused chat send is never followed by a send to the number.
+    assert out["status"] == "error" and calls == ["hello"] and messages["sent"] == []
+
+
+def test_dry_run_reports_the_fallback_to_the_number(db, messages):
+    _set_service(db, 1, "SMS")
+    messages["known"] = set()
+    out = server.send_message(ALICE, "hello")
+    assert out["status"] == "dry_run"
+    assert out["would_send_to"]["chat"] == ALICE_CHAT
+    send = out["would_send_to"]["send"]
+    assert send["via"] == "participant" and send["handle"] == ALICE
+    assert send["service"] == "SMS" and "note" in send
+    assert messages["sent"] == []
+
+
+def test_unknown_one_to_one_chat_sends_once_to_the_number_and_confirms_by_handle(
+    db, messages, monkeypatch
+):
+    _set_service(db, 1, "SMS")
+    messages["known"] = set()
+    real = messages["sent"].append
+
+    def lands(item):
+        real(item)
+        # Messages may write the message into a different chat row: confirm by handle.
+        _insert_from_me(db, 11, item[1], 2, delivered=1, handle_id=1)
+
+    monkeypatch.setattr(
+        imessage_send, "send_to_handle", lambda t, h, svc="iMessage": lands(("handle", t, h, svc))
+    )
+    out = server.send_message(ALICE, "hello", confirm_send=True)
+    assert messages["sent"] == [("handle", "hello", ALICE, "SMS")]
+    assert out["status"] == "delivered" and out["message_id"] == 11
+    assert out["sent_to"]["send"]["via"] == "participant"
+
+
+def test_unknown_group_chat_is_an_error_and_sends_nothing(db, messages):
+    messages["known"] = set()
+    for confirm in (False, True):
+        out = server.send_message(GROUP_CHAT, "hello", confirm_send=confirm)
+        assert out["status"] == "error"
+        assert out["error"] == "conversation not found in Messages"
+    assert messages["sent"] == []
+
+
+def test_messages_unavailable_is_an_error_never_a_fallback(db, messages, monkeypatch):
+    def unavailable(guid):
+        raise imessage_send.MessagesUnavailable("no answer")
+
+    monkeypatch.setattr(imessage_send, "chat_known", unavailable)
+    for confirm in (False, True):
+        out = server.send_message(ALICE, "hello", confirm_send=confirm)
+        assert out == {"status": "error", "error": "no answer"}
+    assert messages["sent"] == []
+
+
+def test_route_keeps_the_chat_service_and_defaults_to_imessage(db):
+    _set_service(db, 1, "RCS")
+    index = imessage_local.chat_index(db)
+    target = imessage_live.resolve_target(index, ALICE)
+    assert imessage_live.route(index, target, chat_known=False).service == "RCS"
+    _set_service(db, 1, "Weird")
+    index = imessage_local.chat_index(db)
+    target = imessage_live.resolve_target(index, ALICE)
+    assert imessage_live.route(index, target, chat_known=False).service == "iMessage"
+    assert imessage_live.route(index, target, chat_known=True).chat_guid == ALICE_CHAT
 
 
 def test_send_message_rejects_empty_and_bad_recipients(db):
