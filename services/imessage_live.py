@@ -127,6 +127,53 @@ def resolve_target(index: ChatIndex, recipient: str) -> Target:
     return Target(handle=handle, chat=chats[0] if chats else None)
 
 
+NOT_IN_MESSAGES = "conversation not found in Messages"
+_SERVICES = ("iMessage", "SMS", "RCS")
+
+
+@dataclass
+class Route:
+    """How a send is handed to Messages: to the chat by id, or to a person (`handle`) on
+    `service`. `error` set means nothing may be sent."""
+
+    chat_guid: str | None = None
+    handle: str | None = None
+    service: str = "iMessage"
+    fallback: bool = False
+    error: str | None = None
+
+    def describe(self) -> dict[str, Any]:
+        if self.error:
+            return {"error": self.error}
+        if self.chat_guid is not None:
+            return {"via": "chat", "chat": self.chat_guid}
+        out: dict[str, Any] = {"via": "participant", "handle": self.handle, "service": self.service}
+        if self.fallback:
+            out["note"] = "Messages can't address the existing chat, so this goes to the person"
+        return out
+
+
+def route(index: ChatIndex, target: Target, *, chat_known: bool | None) -> Route:
+    """Where the send goes. `chat_known` is whether Messages itself resolves the target chat's
+    id (None when there is no chat). A known chat is sent to by id. An unknown 1:1 chat is sent
+    to its one participant on the service the chat used, so it lands in the same thread; an
+    unknown group can't be reached any other way, so it is an error and nothing is sent."""
+    chat = target.chat
+    if chat is None:
+        return Route(handle=target.handle, service="iMessage")
+    if chat_known:
+        return Route(chat_guid=chat["guid"])
+    who = participants(index, chat["ROWID"])
+    if chat.get("style") == GROUP_STYLE or len(who) != 1:
+        return Route(error=NOT_IN_MESSAGES)
+    service = chat.get("service_name")
+    return Route(
+        handle=who[0],
+        service=service if service in _SERVICES else "iMessage",
+        fallback=True,
+    )
+
+
 def _same_text(a: str | None, b: str) -> bool:
     return (a or "").strip() == b.strip()
 

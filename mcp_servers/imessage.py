@@ -81,10 +81,13 @@ def search_messages(query: str, limit: int = 20, scan: int = 5000) -> dict[str, 
 def send_message(recipient: str, message: str, confirm_send: bool = False) -> dict[str, Any]:
     """Send `message` as Ben. `recipient` is a chat id from list_chats (a group or an existing
     thread), or a phone number (E.164) or email: that goes to the most recent 1:1 thread with
-    them, or starts a new iMessage conversation.
+    them, or starts a new iMessage conversation. When Messages can't address that existing
+    chat by id, a 1:1 thread is sent to the person's number or email on the chat's service
+    instead (the result's `send` says so); a group it can't address is an `error`
+    ("conversation not found in Messages") and nothing is sent.
 
     confirm_send=false (the default) sends nothing: it reports exactly where the message would
-    go. Only pass confirm_send=true for the recipient and text Ben approved.
+    go, including any fallback to the number. Only pass confirm_send=true for the recipient and text Ben approved.
 
     Result status: `sent` / `delivered` / `read` (chat.db has the outgoing message), `failed`
     (Messages marked it failed), `unconfirmed` (Messages took it but it isn't in chat.db yet —
@@ -97,27 +100,37 @@ def send_message(recipient: str, message: str, confirm_send: bool = False) -> di
         target = imessage_live.resolve_target(index, recipient)
     except imessage_live.RecipientError as e:
         return {"status": "error", "error": str(e)}
-    where = target.describe(index)
+    known: bool | None = None
+    if target.chat is not None:
+        # Messages can address only some of the chats in chat.db; ask it (read-only) before
+        # sending rather than recover from a refused send.
+        try:
+            known = imessage_send.chat_known(target.chat["guid"])
+        except imessage_send.MessagesUnavailable as e:
+            return {"status": "error", "error": str(e)}
+    how = imessage_live.route(index, target, chat_known=known)
+    where = {**target.describe(index), "send": how.describe()}
+    if how.error:
+        return {"status": "error", "error": how.error, "sent_to": where}
     if not confirm_send:
         return {"status": "dry_run", "would_send_to": where, "message": message}
 
     before = imessage_local.max_message_rowid(db)
     try:
-        if target.chat is not None:
-            imessage_send.send_to_chat(message, target.chat["guid"])
+        if how.chat_guid is not None:
+            imessage_send.send_to_chat(message, how.chat_guid)
         else:
-            assert target.handle is not None
-            imessage_send.send_to_handle(message, target.handle)
+            assert how.handle is not None
+            imessage_send.send_to_handle(message, how.handle, how.service)
     except imessage_send.SendError as e:
         return {"status": "error", "error": str(e), "sent_to": where}
 
-    chat_rowid = target.chat["ROWID"] if target.chat is not None else None
+    # A send to a person may land in the existing chat or a new one: confirm by handle.
+    chat_rowid = target.chat["ROWID"] if how.chat_guid and target.chat else None
     deadline = time.monotonic() + CONFIRM_SECONDS
     while True:
         rows = imessage_local.messages_after(db, before)
-        found = imessage_live.confirm_send(
-            rows, message, chat_rowid=chat_rowid, handle=target.handle
-        )
+        found = imessage_live.confirm_send(rows, message, chat_rowid=chat_rowid, handle=how.handle)
         # A bare `sent` may still turn into `delivered` or `failed`: keep watching until the
         # deadline.
         if (found and found["status"] != "sent") or time.monotonic() >= deadline:
