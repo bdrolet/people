@@ -26,17 +26,28 @@ _SEND_TO_CHAT = """on run argv
   end tell
 end run"""
 
-# Nobody to reply to yet: a new conversation over iMessage.
+# To a person rather than a chat: a new conversation, or a 1:1 chat Messages can't address by id
+# (AppleScript sees only some of the chats in chat.db). The service is an argument too, picked
+# inside the script, so nothing but this fixed source is ever compiled.
 _SEND_TO_HANDLE = """on run argv
   set theText to item 1 of argv
   set theHandle to item 2 of argv
+  set theServiceName to item 3 of argv
   tell application "Messages"
     with timeout of 30 seconds
-      set theService to 1st account whose service type = iMessage
+      if theServiceName is "SMS" then
+        set theService to 1st account whose service type = SMS
+      else if theServiceName is "RCS" then
+        set theService to 1st account whose service type = RCS
+      else
+        set theService to 1st account whose service type = iMessage
+      end if
       send theText to participant theHandle of theService
     end timeout
   end tell
 end run"""
+
+SERVICES = ("iMessage", "SMS", "RCS")
 
 _CHAT_EXISTS = """on run argv
   tell application "Messages"
@@ -90,5 +101,8 @@ def send_to_chat(text: str, chat_guid: str) -> None:
     _run(_SEND_TO_CHAT, text, chat_guid)
 
 
-def send_to_handle(text: str, handle: str) -> None:
-    _run(_SEND_TO_HANDLE, text, handle)
+def send_to_handle(text: str, handle: str, service: str = "iMessage") -> None:
+    """Send to a phone number or email on `service` (iMessage, SMS or RCS)."""
+    if service not in SERVICES:
+        raise SendError(f"unknown service {service!r}")
+    _run(_SEND_TO_HANDLE, text, handle, service)
