@@ -33,4 +33,4 @@ class SendConfig:
     gap_min: int = 180
     gap_max: int = 480
     window: Window = field(default_factory=_default_window)
-    mcp_version: str = "4.29.0"
+    mcp_version: str = "4.30.0"

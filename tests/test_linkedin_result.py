@@ -119,3 +119,57 @@ def test_outcome_unknown_error_is_check_without_pause():
 def test_other_errors_check_and_hold(code):
     o = map_result(err(code), row_thread_id=None)
     assert (o.row_status, o.reason, o.pause, o.metric) == ("check_linkedin", code, "hold", "paused")
+
+
+# --- the thread fallback (4.30.0) -----------------------------------------
+
+from services.linkedin_result import fallback_eligible, single_thread  # noqa: E402
+
+UNRESOLVED = {"status": "recipient_resolution_failed", "sent": False, "retry_safe": True}
+ONLY_ONE = err("internal") | {
+    "error": {"code": "internal", "text": "index 1 out of range: only 1 thread(s) exist for x."}
+}
+
+
+def test_percent_encoded_thread_ids_compare_decoded():
+    assert not map_result(sent("2-abc=="), row_thread_id="2-abc%3D%3D").thread_mismatch
+    assert map_result(sent("2-abd=="), row_thread_id="2-abc%3D%3D").thread_mismatch
+
+
+def test_fallback_eligible_only_for_a_safe_unsent_unresolved_recipient():
+    assert fallback_eligible(UNRESOLVED)
+    assert not fallback_eligible({**UNRESOLVED, "retry_safe": False})
+    assert not fallback_eligible({**UNRESOLVED, "retry_safe": "true"})
+    assert not fallback_eligible({k: v for k, v in UNRESOLVED.items() if k != "retry_safe"})
+    assert not fallback_eligible({**UNRESOLVED, "sent": True})
+    assert not fallback_eligible({**UNRESOLVED, "error": {"code": "internal"}})
+    assert not fallback_eligible(refused("message_unavailable"))
+    assert not fallback_eligible(err("outcome_unknown"))
+
+
+def _url(tid, rest="/"):
+    return {"url": f"https://www.linkedin.com/messaging/thread/{tid}{rest}", "sections": {}}
+
+
+def test_single_thread_needs_a_thread_and_the_only_one_refusal():
+    assert single_thread(_url("2-abc"), ONLY_ONE) == "2-abc"
+    assert single_thread(_url("2-abc%3D%3D"), ONLY_ONE) == "2-abc=="
+    assert single_thread(_url("2-abc", "/?x=1"), ONLY_ONE) == "2-abc"
+    assert single_thread(_url("2-abc", ""), ONLY_ONE) == "2-abc"
+
+
+@pytest.mark.parametrize(
+    "first,second",
+    [
+        (_url("2-abc"), _url("2-def")),  # two threads
+        (_url("2-abc"), err("internal")),  # refused, but not for that reason
+        (_url("2-abc"), {"error": {"code": "internal", "text": "index 1 out of range: only 2"}}),
+        (_url("2-abc"), {"error": {"code": "internal", "text": "row 1 could not be verified"}}),
+        ({"url": "https://www.linkedin.com/messaging/", "sections": {}}, ONLY_ONE),
+        ({"url": "https://www.linkedin.com/messaging/thread/new/x", "sections": {}}, ONLY_ONE),
+        ({"sections": {}}, ONLY_ONE),
+        (err("internal"), ONLY_ONE),
+    ],
+)
+def test_single_thread_is_none_when_ambiguous(first, second):
+    assert single_thread(first, second) is None

@@ -222,3 +222,14 @@ No person, username or text appears in any label. Each run calls `otel.flush()` 
 - The `source` value for outbox events, subject to the counting rule above.
 - The launchd plist details and how it is installed and uninstalled.
 - The test split. Pure logic (window, gap, ceiling with ramp, result → status mapping) belongs in a pure service with unit tests. MCP calls are faked in tests.
+
+## Addendum 2026-11-16: thread replies and the profile → thread fallback
+
+From mid-November, 4.29.0's `send_message` returned `recipient_resolution_failed` for 1st-degree contacts Ben already had threads with: the profile probe takes the top card to be the first visible `main section` with no nested `section`, and on profiles whose top card holds a nested card (a volunteering-causes card, a banner image) it reads the inner one and gives up, typing nothing. 4.30.0 keeps that probe and adds `reply_to_conversation(thread_id, message, confirm_send)`, which opens `/messaging/thread/<id>/` and never touches the profile. Its result is `send_message`'s shape plus `participant`; `send_message`'s statuses, shape and message-text rules are unchanged from 4.29.0.
+
+- The sender pins 4.30.0, with `LINKEDIN_MCP_REMOTE_TOOLS` and `LINKEDIN_MCP_CHECK_FOR_UPDATES` off (4.30.0 otherwise fetches a remote tool catalog at start).
+- A row with `thread_id` is sent with `reply_to_conversation` into that thread; the profile is never opened.
+- Otherwise `send_message` as before. Only a result that is `recipient_resolution_failed`, `retry_safe` exactly `true` and not `sent` falls back: `get_conversation(linkedin_username, index=0)` must land on a thread, and `index=1` must be refused with "only 1 thread(s) exist" (the server's refusal when the scan verified every matching row and found one). Then one `reply_to_conversation` into that thread, in the same run. No thread, two threads, an unverifiable scan or any lookup error leaves the row set aside with the original reason, as before.
+- The reply goes through the same `map_result`; its `thread_id` must equal the one requested (compared percent-decoded), otherwise `thread_mismatch`. A reply that may have gone out is `check_linkedin` and never retried.
+- A fallback send is a send: it resets the set-aside streak and records the brief/nudge. `people.linkedin_sends` gains `path` (`profile`, `thread`, `thread_fallback`, or `external` for rows the sender did not send itself).
+- The lookup clicks the person's rows in LinkedIn's conversation list, which may mark that thread read; it runs only for a row about to be replied to.
