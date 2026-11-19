@@ -61,8 +61,19 @@ def test_session_problem():
     assert linkedin_mcp.session_problem(restricted) == "account_restricted"
 
 
-def test_server_args_pin_the_version():
-    assert linkedin_mcp.server_args("4.30.0") == ["mcp-server-linkedin==4.30.0"]
+def test_server_args_pin_the_version_and_share_one_browser():
+    assert linkedin_mcp.server_args("4.30.0") == ["mcp-server-linkedin==4.30.0", "--daemon"]
+
+
+def test_mcp_json_pins_the_senders_version():
+    """A newer frontend replaces the shared owner, so sessions must run the sender's pin."""
+    import json
+    from pathlib import Path
+
+    from models.linkedin_outbox import SendConfig
+
+    args = json.loads(Path(".mcp.json").read_text())["mcpServers"]["linkedin"]["args"]
+    assert args == linkedin_mcp.server_args(SendConfig().mcp_version)
 
 
 def test_error_text_joins_text_blocks():
