@@ -11,10 +11,10 @@ DEST="$HOME/.claude/skills"
 mkdir -p "$DEST"
 
 # The outreach skills (working-outreach-queue, checking-linkedin-messages,
-# staging-linkedin-message), the outreach-launcher agent and the outreach-sessions
+# staging-linkedin-message, staging-text-message), the outreach-launcher agent and the outreach-sessions
 # command are retired: the pipeline moved to pipelines, whose scripts/link-skills.sh
 # links its own skills. Remove their old links by hand (pipelines cutover runbook).
-for skill in searching-people fetching-person editing-person creating-person working-funded-founder-campaign; do
+for skill in searching-people fetching-person editing-person creating-person working-funded-founder-campaign checking-text-messages; do
   # ln -sfn onto a real (non-symlink) directory fails and set -e aborts the
   # loop half-linked; guard so a pre-existing real copy fails loudly instead.
   if [[ -e "$DEST/$skill" && ! -L "$DEST/$skill" ]]; then

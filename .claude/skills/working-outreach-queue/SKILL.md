@@ -45,7 +45,8 @@ O=".venv/bin/python scripts/outreach.py"
   `staging-linkedin-message`, which queues it for the paced LinkedIn sender
   (or sends it now, on request) **only after Ben approves the exact text** (rule
   changed 2026-11-04; queue 2026-11-05). iMessage or WhatsApp:
-  give him the text to send. Email: dispatch `email-builder` with the consulting
+  `staging-text-message`, which sends **only after Ben approves the exact
+  text** and then records the brief or nudge. Email: dispatch `email-builder` with the consulting
   identity; it leaves a draft. **Never send anything else**, and never put a
   drafted message in the contact doc.
 - **Flag a finished message.** In a per-person session, end the reply that hands
@@ -123,7 +124,9 @@ checks. `outreach linkedin list` shows set-aside rows and why.
 3. Ben writes and sends the note himself. **Email** goes from the consulting
    identity and records itself. **LinkedIn** records itself too, through the
    send queue (`staging-linkedin-message`; a hand send is recorded with
-   `$O linkedin record …`). **Any other channel:** after he confirms it went, run
+   `$O linkedin record …`). **iMessage / WhatsApp:** `staging-text-message`
+   sends it once he approves the exact text, then records it. **Any other
+   channel:** after he confirms it went, run
    `$O mark <person> briefed --channel imessage|whatsapp|call|in_person`.
 4. **Verify an email brief:** once Ben says it's sent, re-run
    `$O today --json`. The week's briefs should rise and the person should
