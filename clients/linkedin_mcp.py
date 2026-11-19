@@ -3,7 +3,15 @@ Cloud Functions never import this.
 
 The sender pins the server version (LINKEDIN_MCP_VERSION, `uvx mcp-server-linkedin==<v>`)
 because services/linkedin_result.py is written against that version's send_message and
-reply_to_conversation contracts. Claude sessions keep running @latest through .mcp.json.
+reply_to_conversation contracts. Claude sessions run the same pinned version through .mcp.json.
+
+Every client runs the server with --daemon: one detached owner process holds the one
+browser and runs tool calls one at a time, and each client (the sender, every Claude
+session) is a thin frontend that forwards to it. Without it each client started its own
+browser and handed the shared profile back and forth, and a session taking the browser in
+the middle of a send left the composer closed (composer_unavailable, a queue pause). The
+pin has to match .mcp.json's: a newer frontend replaces an older owner, so a session on a
+newer version would run the sender's calls on a version it was not written against.
 
 The sender's server runs with LINKEDIN_MCP_REMOTE_TOOLS and LINKEDIN_MCP_CHECK_FOR_UPDATES
 off: from 4.30.0 it otherwise fetches a remote tool catalog at start (and checks PyPI),
@@ -31,7 +39,7 @@ SERVER_ENV = {
 
 
 def server_args(version: str) -> list[str]:
-    return [f"mcp-server-linkedin=={version}"]
+    return [f"mcp-server-linkedin=={version}", "--daemon"]
 
 
 def _unknown() -> dict:
