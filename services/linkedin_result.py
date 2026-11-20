@@ -23,9 +23,18 @@ from urllib.parse import unquote
 RATE_LIMIT_MARGIN = 300
 RATE_LIMIT_DEFAULT = 3600
 
-# One message's problem: set it aside and move on.
+# One message's problem: set it aside and move on. composer_unavailable is the recipient's
+# messaging page with no free-text composer (not a 1st-degree connection, an InMail with only
+# quick replies, an unaccepted message request); it comes back retry_safe with nothing typed.
+# A cause that hits every message still pauses the queue after SET_ASIDE_STREAK in a row.
 SET_ASIDE_STATUSES = frozenset(
-    {"message_unavailable", "composer_occupied", "recipient_resolution_failed", "invalid_message"}
+    {
+        "message_unavailable",
+        "composer_occupied",
+        "composer_unavailable",
+        "recipient_resolution_failed",
+        "invalid_message",
+    }
 )
 # Raised before anything is submitted: the row is safe to put back.
 _REQUEUE_ERRORS = {
