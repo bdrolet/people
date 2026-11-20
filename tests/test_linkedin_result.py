@@ -53,7 +53,13 @@ def test_any_retry_unsafe_unsent_is_check_linkedin():
 
 @pytest.mark.parametrize(
     "status",
-    ["message_unavailable", "composer_occupied", "recipient_resolution_failed", "invalid_message"],
+    [
+        "message_unavailable",
+        "composer_occupied",
+        "composer_unavailable",
+        "recipient_resolution_failed",
+        "invalid_message",
+    ],
 )
 def test_one_message_problems_are_set_aside(status):
     o = map_result(refused(status), row_thread_id=None)
@@ -65,7 +71,6 @@ def test_one_message_problems_are_set_aside(status):
     [
         "enter_to_send_enabled",
         "confirmation_required",
-        "composer_unavailable",
         "compose_interact_failed",
         "send_unavailable",
         "brand_new",

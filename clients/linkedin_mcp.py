@@ -9,7 +9,7 @@ Every client runs the server with --daemon: one detached owner process holds the
 browser and runs tool calls one at a time, and each client (the sender, every Claude
 session) is a thin frontend that forwards to it. Without it each client started its own
 browser and handed the shared profile back and forth, and a session taking the browser in
-the middle of a send left the composer closed (composer_unavailable, a queue pause). The
+the middle of a send left the composer closed (composer_unavailable). The
 pin has to match .mcp.json's: a newer frontend replaces an older owner, so a session on a
 newer version would run the sender's calls on a version it was not written against.
 

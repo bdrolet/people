@@ -55,8 +55,8 @@ he has to answer it himself.
 3. Watch for these statuses:
    - `enter_to_send_enabled`: relay the instructions (switch LinkedIn's setting
      to "Click Send to send"), then retry the dry run.
-   - `message_unavailable` (not a 1st-degree connection, no Message action):
-     stop. Whether to send InMail or a connection note is Ben's call.
+   - `message_unavailable` or `composer_unavailable` (not a 1st-degree
+     connection, no Message action, or no free-text composer): stop. Whether to send InMail or a connection note is Ben's call.
    - `composer_occupied`: a draft is already in that thread. Leave it alone and
      tell him.
 
